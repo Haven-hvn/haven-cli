@@ -1,0 +1,35 @@
+{
+  "$schema": "https://deno.land/x/deno/cli/schemas/config-file.v1.json",
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["deno.window", "dom"],
+    "allowJs": false
+  },
+  "tasks": {
+    "start": "deno run --allow-read --allow-write --allow-net --allow-env main.ts",
+    "dev": "deno run --allow-read --allow-write --allow-net --allow-env --watch main.ts",
+    "check": "deno check main.ts",
+    "test": "deno test --allow-read --allow-write --allow-net --allow-env"
+  },
+  "imports": {
+    "@lit-protocol/lit-client": "npm:@lit-protocol/lit-client@^8.0.0",
+    "@lit-protocol/networks": "npm:@lit-protocol/networks@^8.0.0",
+    "@lit-protocol/auth": "npm:@lit-protocol/auth@^8.0.0",
+    "@lit-protocol/auth-helpers": "npm:@lit-protocol/auth-helpers@^8.0.0",
+    "@lit-protocol/types": "npm:@lit-protocol/types@^8.0.0",
+    "ethers": "npm:ethers@^6.0.0",
+    "viem": "npm:viem@^2.0.0",
+    "filecoin-pin": "npm:filecoin-pin@^0.14.0"
+  },
+  "lint": {
+    "rules": {
+      "tags": ["recommended"]
+    }
+  },
+  "fmt": {
+    "useTabs": false,
+    "lineWidth": 100,
+    "indentWidth": 2,
+    "singleQuote": true
+  }
+}
