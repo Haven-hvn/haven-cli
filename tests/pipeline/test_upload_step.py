@@ -156,10 +156,12 @@ class TestUploadStepUpload:
         # Verify bridge calls
         assert mock_bridge.call.call_count == 2
         
-        # Check synapse.connect call (uses env vars, no params needed)
+        # Check synapse.connect call (now includes network configuration)
         connect_call = mock_bridge.call.call_args_list[0]
         assert connect_call[0][0] == "synapse.connect"
-        assert connect_call[0][1] == {}
+        assert "rpcUrl" in connect_call[0][1]
+        assert "networkMode" in connect_call[0][1]
+        assert connect_call[0][1]["networkMode"] == "testnet"
         
         # Check synapse.upload call
         upload_call = mock_bridge.call.call_args_list[1]
