@@ -12,14 +12,14 @@
     "test": "deno test --allow-all"
   },
   "imports": {
-    "@lit-protocol/lit-client": "npm:@lit-protocol/lit-client@^8.0.0",
-    "@lit-protocol/networks": "npm:@lit-protocol/networks@^8.0.0",
-    "@lit-protocol/auth": "npm:@lit-protocol/auth@^8.0.0",
-    "@lit-protocol/auth-helpers": "npm:@lit-protocol/auth-helpers@^8.0.0",
-    "@lit-protocol/types": "npm:@lit-protocol/types@^8.0.0",
-    "ethers": "npm:ethers@^6.0.0",
-    "viem": "npm:viem@^2.0.0",
-    "filecoin-pin": "npm:filecoin-pin@^0.14.0"
+    "@lit-protocol/lit-client": "npm:@lit-protocol/lit-client@8.3.1",
+    "@lit-protocol/networks": "npm:@lit-protocol/networks@8.4.1",
+    "@lit-protocol/auth": "npm:@lit-protocol/auth@8.2.3",
+    "@lit-protocol/auth-helpers": "npm:@lit-protocol/auth-helpers@8.2.1",
+    "@lit-protocol/types": "npm:@lit-protocol/types@8.0.4",
+    "ethers": "npm:ethers@6.16.0",
+    "viem": "npm:viem@2.45.1",
+    "filecoin-pin": "npm:filecoin-pin@0.15.1"
   },
   "lint": {
     "rules": {
