@@ -69,6 +69,16 @@ def show_config(
         return "****"
     
     sections = {
+        "blockchain": [
+            ("network_mode", config.blockchain.network_mode, False),
+            ("is_mainnet", str(config.blockchain.is_mainnet), False),
+            ("lit_network", config.blockchain.get_lit_network(), False),
+            ("filecoin_rpc_url", config.blockchain.get_filecoin_rpc_url(), False),
+            ("arkiv_rpc_url", config.blockchain.get_arkiv_rpc_url(), False),
+            ("lit_network_override", config.blockchain.lit_network_override or "", False),
+            ("filecoin_rpc_override", config.blockchain.filecoin_rpc_override or "", False),
+            ("arkiv_rpc_override", config.blockchain.arkiv_rpc_override or "", False),
+        ],
         "pipeline": [
             ("vlm_enabled", str(config.pipeline.vlm_enabled), False),
             ("vlm_model", config.pipeline.vlm_model, False),
@@ -229,15 +239,48 @@ def init_config(
     
     if interactive:
         # Interactive wizard
+        console.print("[bold cyan]Blockchain Network Configuration[/bold cyan]")
+        console.print("  [dim]This setting controls the network for all blockchain integrations[/dim]")
+        console.print("  [dim](Lit Protocol, Filecoin, Arkiv)[/dim]")
+        
+        network_choices = ["testnet", "mainnet"]
+        network_default = config.blockchain.network_mode
+        console.print(f"  [1] Testnet (safe for development)")
+        console.print(f"  [2] Mainnet (uses real tokens)")
+        
+        network_choice = typer.prompt(
+            "  Select network",
+            default="1",
+            show_choices=False,
+        )
+        
+        if network_choice == "2":
+            confirm = typer.confirm(
+                "  [red]⚠️  WARNING: Mainnet uses real tokens. Are you sure?[/red]",
+                default=False
+            )
+            if confirm:
+                config.blockchain.network_mode = "mainnet"
+            else:
+                config.blockchain.network_mode = "testnet"
+        else:
+            config.blockchain.network_mode = "testnet"
+        
+        console.print(f"  [green]✓[/green] Network set to: {config.blockchain.network_mode}")
+        console.print()
+        
         console.print("[bold cyan]Arkiv Configuration[/bold cyan]")
         arkiv_enabled = typer.confirm("  Enable Arkiv sync?", default=config.pipeline.sync_enabled)
         config.pipeline.sync_enabled = arkiv_enabled
         if arkiv_enabled:
+            # Show the auto-configured endpoint
+            console.print(f"  [dim]Arkiv RPC: {config.blockchain.get_arkiv_rpc_url()}[/dim]")
             arkiv_endpoint = typer.prompt(
-                "  Arkiv RPC URL",
-                default=config.pipeline.arkiv_endpoint or "https://api.arkiv.example.com"
+                "  Arkiv RPC URL (press Enter to use default)",
+                default="",
             )
-            config.pipeline.arkiv_endpoint = arkiv_endpoint if arkiv_endpoint else None
+            if arkiv_endpoint:
+                config.pipeline.arkiv_endpoint = arkiv_endpoint
         
         console.print()
         console.print("[bold cyan]VLM Configuration[/bold cyan]")
@@ -420,6 +463,102 @@ def edit_config() -> None:
         raise typer.Exit(code=1)
 
 
+@app.command("network")
+def set_network(
+    mode: str = typer.Argument(
+        None,
+        help="Network mode: 'mainnet' or 'testnet'. If not provided, shows current network.",
+    ),
+) -> None:
+    """Set or show the blockchain network mode.
+    
+    This single setting controls the network for all blockchain integrations:
+    - Lit Protocol (encryption)
+    - Filecoin (storage)
+    - Arkiv (blockchain sync)
+    
+    Examples:
+        haven config network              # Show current network
+        haven config network testnet      # Switch to testnet
+        haven config network mainnet      # Switch to mainnet
+    """
+    from haven_cli.config import get_config, set_config_value, clear_config_cache
+    from haven_cli.services.blockchain_network import validate_network_mode
+    
+    config = get_config()
+    
+    if mode is None:
+        # Show current network
+        console.print("[bold]Blockchain Network Configuration[/bold]")
+        console.print()
+        
+        table = Table()
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        
+        network_color = "red" if config.blockchain.is_mainnet else "yellow"
+        
+        table.add_row("Network Mode", f"[{network_color}]{config.blockchain.network_mode}[/{network_color}]")
+        table.add_row("Is Mainnet", str(config.blockchain.is_mainnet))
+        table.add_row("Is Testnet", str(config.blockchain.is_testnet))
+        table.add_row("", "")
+        table.add_row("Lit Network", config.blockchain.get_lit_network())
+        table.add_row("Filecoin RPC", config.blockchain.get_filecoin_rpc_url())
+        table.add_row("Arkiv RPC", config.blockchain.get_arkiv_rpc_url())
+        
+        # Show overrides if set
+        if config.blockchain.lit_network_override:
+            table.add_row("", "")
+            table.add_row("Lit Override", config.blockchain.lit_network_override)
+        if config.blockchain.filecoin_rpc_override:
+            table.add_row("Filecoin Override", config.blockchain.filecoin_rpc_override)
+        if config.blockchain.arkiv_rpc_override:
+            table.add_row("Arkiv Override", config.blockchain.arkiv_rpc_override)
+        
+        console.print(table)
+        
+        if config.blockchain.is_mainnet:
+            console.print()
+            console.print("[yellow]⚠️  WARNING: You are configured for MAINNET.[/yellow]")
+            console.print("[yellow]   Real tokens will be used for transactions.[/yellow]")
+    else:
+        # Validate and set network mode
+        is_valid, error_msg = validate_network_mode(mode)
+        if not is_valid:
+            console.print(f"[red]Error: {error_msg}[/red]")
+            raise typer.Exit(code=1)
+        
+        # Set the network mode
+        try:
+            set_config_value("blockchain", "network_mode", mode.lower())
+            clear_config_cache()
+            
+            # Show what changed
+            console.print(f"[green]✓[/green] Network mode set to: [bold]{mode.lower()}[/bold]")
+            console.print()
+            
+            # Reload to show updated values
+            config = get_config()
+            
+            table = Table(title="Updated Network Configuration")
+            table.add_column("Service", style="cyan")
+            table.add_column("Network/Endpoint", style="green")
+            
+            table.add_row("Lit Protocol", config.blockchain.get_lit_network())
+            table.add_row("Filecoin", config.blockchain.get_filecoin_rpc_url())
+            table.add_row("Arkiv", config.blockchain.get_arkiv_rpc_url())
+            
+            console.print(table)
+            
+            if config.blockchain.is_mainnet:
+                console.print()
+                console.print("[red]⚠️  WARNING: You are now on MAINNET. Real tokens will be used![/red]")
+        
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1)
+
+
 @app.command("env")
 def show_env_vars() -> None:
     """Show supported environment variables.
@@ -433,11 +572,12 @@ def show_env_vars() -> None:
     console.print()
     
     env_vars = [
+        ("HAVEN_NETWORK_MODE", "Blockchain network mode (mainnet/testnet)", "testnet"),
         ("HAVEN_VLM_ENABLED", "Enable/disable VLM analysis", "true/false"),
         ("HAVEN_VLM_MODEL", "VLM model to use", "zai-org/glm-4.6v-flash"),
         ("HAVEN_VLM_API_KEY", "API key for VLM service", "sk-..."),
         ("HAVEN_ENCRYPTION_ENABLED", "Enable/disable Lit Protocol encryption", "true/false"),
-        ("HAVEN_LIT_NETWORK", "Lit Protocol network", "datil-dev"),
+        ("HAVEN_LIT_NETWORK", "Lit Protocol network (override)", "datil-dev"),
         ("HAVEN_UPLOAD_ENABLED", "Enable/disable Filecoin upload", "true/false"),
         ("HAVEN_SYNC_ENABLED", "Enable/disable Arkiv sync", "true/false"),
         ("HAVEN_ARKIV_ENDPOINT", "Arkiv RPC endpoint URL", "https://..."),

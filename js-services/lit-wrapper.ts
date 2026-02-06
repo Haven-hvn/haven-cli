@@ -94,10 +94,20 @@ class LitWrapperImpl implements LitWrapper {
   }
 
   async connect(params: Record<string, unknown>): Promise<LitConnectResult> {
-    // Note: nagaDev (the development network) currently has handshake issues.
-    // Use 'naga' for production or 'naga-staging' for staging instead.
-    const network = (params.network as string) ?? 'naga';
+    // Support network mode parameter for unified mainnet/testnet configuration
+    const networkMode = (params.networkMode as string) ?? 'testnet';
+    
+    // Map network mode to Lit network names
+    // datil = mainnet, datil-dev = testnet
+    const networkFromMode = networkMode === 'mainnet' ? 'datil' : 'datil-dev';
+    
+    // params.network takes precedence over networkMode
+    const network = (params.network as string) ?? networkFromMode;
     const debug = (params.debug as boolean) ?? false;
+    
+    if (debug) {
+      console.error(`[lit-wrapper] Network mode: ${networkMode}, using Lit network: ${network}`);
+    }
 
     if (debug) {
       console.error(`[lit-wrapper] Connecting to Lit network: ${network}`);

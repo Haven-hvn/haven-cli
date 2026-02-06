@@ -25,6 +25,7 @@ from haven_cli.services.arkiv_sync import (
     InsufficientGasError,
     build_arkiv_config,
 )
+from haven_cli.services.blockchain_network import get_network_config
 
 
 class SyncStep(ConditionalStep):
@@ -175,14 +176,25 @@ class SyncStep(ConditionalStep):
         
         Priority:
         1. Explicit config values from self._config
-        2. Environment variables (via build_arkiv_config)
+        2. Network mode defaults
+        3. Environment variables (via build_arkiv_config)
         
         Returns:
             ArkivSyncConfig instance
         """
+        # Get network configuration
+        network_mode = self._config.get("network_mode", "testnet")
+        network_config = get_network_config(network_mode)
+        
         # Get values from config if available
         private_key = self._config.get("arkiv_private_key")
-        rpc_url = self._config.get("arkiv_rpc_url")
+        
+        # Use config value, network default, or environment variable
+        rpc_url = (
+            self._config.get("arkiv_rpc_url") 
+            or network_config.arkiv_rpc_url
+        )
+        
         enabled = self._config.get("arkiv_sync_enabled")
         expires_in = self._config.get("arkiv_expiration_seconds")
         
@@ -192,6 +204,7 @@ class SyncStep(ConditionalStep):
             rpc_url=rpc_url,
             enabled=enabled,
             expires_in=expires_in,
+            network_mode=network_mode,
         )
     
     async def _update_database(

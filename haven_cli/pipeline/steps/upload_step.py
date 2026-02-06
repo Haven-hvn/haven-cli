@@ -30,6 +30,7 @@ from haven_cli.pipeline.context import (
 from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import ErrorCategory, StepError, StepResult
 from haven_cli.pipeline.step import ConditionalStep
+from haven_cli.services.blockchain_network import get_network_config
 
 logger = logging.getLogger(__name__)
 
@@ -223,9 +224,15 @@ the Synapse SDK. It handles CAR file creation, upload, and
         Returns:
             Dictionary with Filecoin configuration
         """
+        # Get network configuration
+        network_mode = self._config.get("network_mode", "testnet")
+        network_config = get_network_config(network_mode)
+        
         return {
             "data_set_id": context.options.get("dataset_id") or self._config.get("data_set_id", 1),
             "wait_for_deal": self._config.get("wait_for_deal", False),
+            "rpc_url": network_config.filecoin_rpc_url,
+            "network_mode": network_mode,
         }
     
     async def _get_js_bridge(self) -> JSRuntimeBridge:
@@ -268,11 +275,18 @@ the Synapse SDK. It handles CAR file creation, upload, and
         Raises:
             RuntimeError: If upload fails
         """
-        # Connect to Synapse (uses FILECOIN_RPC_URL and HAVEN_PRIVATE_KEY env vars)
+        # Connect to Synapse with network configuration
         logger.info("Connecting to Synapse...")
         
+        # Get network configuration
+        network_mode = self._config.get("network_mode", "testnet")
+        network_config = get_network_config(network_mode)
+        
         try:
-            await bridge.call("synapse.connect", {})
+            await bridge.call("synapse.connect", {
+                "rpcUrl": network_config.filecoin_rpc_url,
+                "networkMode": network_mode,
+            })
         except Exception as e:
             logger.error(f"Failed to connect to Synapse: {e}")
             raise RuntimeError(f"Synapse connection failed: {e}") from e

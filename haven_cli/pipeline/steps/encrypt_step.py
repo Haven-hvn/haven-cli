@@ -22,6 +22,7 @@ from haven_cli.pipeline.context import EncryptionMetadata, PipelineContext
 from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import StepError, StepResult
 from haven_cli.pipeline.step import ConditionalStep
+from haven_cli.services.blockchain_network import get_network_config
 
 logger = logging.getLogger(__name__)
 
@@ -190,9 +191,15 @@ class EncryptStep(ConditionalStep):
         """
         import os
         
-        # Ensure Lit is connected
-        lit_network = self._config.get("lit_network", "datil-dev")
-        logger.info(f"Connecting to Lit Protocol network: {lit_network}")
+        # Get network configuration (from blockchain.network_mode)
+        network_mode = self._config.get("network_mode", "testnet")
+        network_config = get_network_config(network_mode)
+        
+        # Ensure Lit is connected - use network mode config
+        lit_network = self._config.get("lit_network") or network_config.lit_network
+        chain = self._config.get("chain") or network_config.chain_for_access_control
+        
+        logger.info(f"Connecting to Lit Protocol network: {lit_network} (mode: {network_mode})")
         
         try:
             await bridge.call("lit.connect", {
@@ -222,7 +229,6 @@ class EncryptStep(ConditionalStep):
             )
         
         # Encrypt via Lit Protocol
-        chain = self._config.get("chain", "ethereum")
         logger.info(f"Encrypting content via Lit Protocol on chain: {chain}")
         
         try:
@@ -288,7 +294,10 @@ class EncryptStep(ConditionalStep):
         Returns:
             Dictionary with encryption result
         """
-        chain = self._config.get("chain", "ethereum")
+        # Get network configuration
+        network_mode = self._config.get("network_mode", "testnet")
+        network_config = get_network_config(network_mode)
+        chain = self._config.get("chain") or network_config.chain_for_access_control
         chunk_size = 1024 * 1024  # 1MB chunks
         
         logger.info(f"Using chunked encryption for large file")

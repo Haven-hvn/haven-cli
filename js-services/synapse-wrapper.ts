@@ -157,12 +157,26 @@ class SynapseWrapperImpl implements SynapseWrapper {
 
   async connect(params: Record<string, unknown>): Promise<SynapseConnectResult> {
     const connectParams = params as unknown as SynapseConnectParams;
-    const endpoint = connectParams.endpoint ?? 'https://api.calibration.node.glif.io/rpc/v1';
+    
+    // Support network mode for unified mainnet/testnet configuration
+    const networkMode = (params.networkMode as string) ?? 'testnet';
+    
+    // Default RPC URLs based on network mode
+    const defaultRpcUrl = networkMode === 'mainnet'
+      ? 'https://api.node.glif.io/rpc/v1'  // Filecoin mainnet
+      : 'https://api.calibration.node.glif.io/rpc/v1';  // Filecoin calibration testnet
+    
+    // params.endpoint and params.rpcUrl take precedence over networkMode defaults
+    const endpoint = connectParams.endpoint ?? defaultRpcUrl;
     
     // Support both API key and private key authentication
     const apiKey = connectParams.apiKey ?? Deno.env.get('SYNAPSE_API_KEY') ?? '';
     const privateKey = (params.privateKey as string) ?? Deno.env.get('HAVEN_PRIVATE_KEY') ?? '';
-    const rpcUrl = (params.rpcUrl as string) ?? Deno.env.get('FILECOIN_RPC_URL') ?? 'https://api.calibration.node.glif.io/rpc/v1';
+    const rpcUrl = (params.rpcUrl as string) ?? Deno.env.get('FILECOIN_RPC_URL') ?? defaultRpcUrl;
+    
+    if (params.debug) {
+      console.error(`[synapse-wrapper] Network mode: ${networkMode}, using RPC: ${rpcUrl}`);
+    }
 
     // Validate that we have authentication
     if (!apiKey && !privateKey) {
