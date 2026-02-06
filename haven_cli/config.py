@@ -98,7 +98,7 @@ class BlockchainConfig:
         """Get Lit Protocol network based on configuration."""
         if self.lit_network_override:
             return self.lit_network_override
-        return "datil" if self.is_mainnet else "datil-dev"
+        return "naga" if self.is_mainnet else "naga-dev"
     
     def get_filecoin_rpc_url(self) -> str:
         """Get Filecoin RPC URL based on configuration."""
