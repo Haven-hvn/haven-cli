@@ -32,6 +32,45 @@ class TestVerifyCidFormat:
         cid = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
         assert verify_cid_format(cid) is True
     
+    def test_valid_cidv1_bafk_prefix(self):
+        """Test valid CIDv1 with bafk prefix (raw binary codec)."""
+        # CIDv1 with bafk prefix - used by Filecoin for raw data
+        cid = "bafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm"
+        assert verify_cid_format(cid) is True
+    
+    def test_valid_cidv1_other_prefixes(self):
+        """Test valid CIDv1 with various baf prefixes."""
+        # Various CIDv1 prefixes should all be valid
+        # Note: base32 only uses a-z and 2-7 (not 0, 1, 8, 9)
+        cids = [
+            "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",  # dag-pb
+            "bafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm",  # raw
+            "bafyreiabc345def234ghi2jkl3mno4pqr5stu6vwx7yz2abc3def4ghi5jkl6mno7pqr",  # dag-cbor
+        ]
+        for cid in cids:
+            assert verify_cid_format(cid) is True, f"CID {cid[:20]}... should be valid"
+    
+    def test_cid_with_whitespace_stripping(self):
+        """Test that CIDs with whitespace/newline are handled correctly by caller."""
+        # The verify_cid_format function itself doesn't strip, but the CLI should
+        cid_clean = "bafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm"
+        cid_with_newline = "\nbafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm"
+        cid_with_crlf = "\r\nbafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm"
+        cid_with_space = "  bafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm  "
+        
+        # Clean CID should be valid
+        assert verify_cid_format(cid_clean) is True
+        
+        # CIDs with whitespace should be invalid (stripping is caller's responsibility)
+        assert verify_cid_format(cid_with_newline) is False
+        assert verify_cid_format(cid_with_crlf) is False
+        assert verify_cid_format(cid_with_space) is False
+        
+        # After stripping, they should be valid
+        assert verify_cid_format(cid_with_newline.strip()) is True
+        assert verify_cid_format(cid_with_crlf.strip()) is True
+        assert verify_cid_format(cid_with_space.strip()) is True
+    
     def test_invalid_empty(self):
         """Test empty CID."""
         assert verify_cid_format("") is False

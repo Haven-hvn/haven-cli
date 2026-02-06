@@ -92,6 +92,44 @@ class TestJSBridgeManagerConfiguration:
         
         with pytest.raises(RuntimeError, match="Cannot configure while bridge is running"):
             manager.configure(services_path=Path("/test"))
+    
+    def test_configure_passes_environment_variables(self):
+        """Test that configure passes HAVEN_*, FILECOIN_*, SYNAPSE_* env vars to config."""
+        import os
+        
+        manager = JSBridgeManager.get_instance()
+        
+        # Set test environment variables
+        os.environ["HAVEN_PRIVATE_KEY"] = "test_haven_key_123"
+        os.environ["FILECOIN_RPC_URL"] = "https://test.filecoin.rpc"
+        os.environ["FILECOIN_PRIVATE_KEY"] = "test_filecoin_key_456"
+        os.environ["SYNAPSE_API_KEY"] = "test_synapse_key_789"
+        os.environ["HAVEN_TEST_VAR"] = "test_value"
+        
+        try:
+            manager.configure(services_path=Path("/test/services"))
+            
+            # Verify env vars are captured in config
+            assert manager._config is not None
+            env_vars = manager._config.env_vars
+            
+            # HAVEN_* vars should be passed
+            assert env_vars.get("HAVEN_PRIVATE_KEY") == "test_haven_key_123"
+            assert env_vars.get("HAVEN_TEST_VAR") == "test_value"
+            
+            # FILECOIN_* vars should be passed
+            assert env_vars.get("FILECOIN_RPC_URL") == "https://test.filecoin.rpc"
+            assert env_vars.get("FILECOIN_PRIVATE_KEY") == "test_filecoin_key_456"
+            
+            # SYNAPSE_* vars should be passed
+            assert env_vars.get("SYNAPSE_API_KEY") == "test_synapse_key_789"
+            
+        finally:
+            # Clean up test env vars
+            for key in ["HAVEN_PRIVATE_KEY", "FILECOIN_RPC_URL", "FILECOIN_PRIVATE_KEY", 
+                       "SYNAPSE_API_KEY", "HAVEN_TEST_VAR"]:
+                if key in os.environ:
+                    del os.environ[key]
 
 
 class TestJSBridgeManagerBridgeLifecycle:
@@ -234,6 +272,7 @@ class TestJSBridgeManagerHealthChecks:
         mock_bridge = MagicMock()
         mock_bridge.is_ready = True
         mock_bridge.ping = AsyncMock(return_value=False)  # Unhealthy
+        mock_bridge.pending_request_count = 0  # No pending operations
         manager._bridge = mock_bridge
         manager._running = True
         
@@ -264,6 +303,7 @@ class TestJSBridgeManagerHealthChecks:
         mock_bridge = MagicMock()
         mock_bridge.is_ready = True
         mock_bridge.ping = AsyncMock(return_value=True)  # Healthy
+        mock_bridge.pending_request_count = 0  # No pending operations
         manager._bridge = mock_bridge
         manager._running = True
         
@@ -281,6 +321,37 @@ class TestJSBridgeManagerHealthChecks:
             )
             
             # Should not restart a healthy bridge
+            mock_restart.assert_not_called()
+    
+    @pytest.mark.asyncio
+    async def test_health_check_skips_when_operations_in_progress(self):
+        """Test that health check is skipped when operations are in progress."""
+        manager = JSBridgeManager.get_instance()
+        manager._health_check_interval = 0.1
+        
+        # Set up a bridge with pending operations
+        mock_bridge = MagicMock()
+        mock_bridge.is_ready = True
+        mock_bridge.ping = AsyncMock(return_value=True)
+        mock_bridge.pending_request_count = 2  # Operations in progress
+        manager._bridge = mock_bridge
+        manager._running = True
+        
+        with patch.object(manager, '_restart_bridge', new_callable=AsyncMock) as mock_restart:
+            manager._shutdown_event = asyncio.Event()
+            
+            async def stop_after_delay():
+                await asyncio.sleep(0.15)
+                manager._running = False
+                manager._shutdown_event.set()
+            
+            await asyncio.gather(
+                manager._health_check_loop(),
+                stop_after_delay()
+            )
+            
+            # Should not ping or restart when operations are in progress
+            mock_bridge.ping.assert_not_called()
             mock_restart.assert_not_called()
 
 
@@ -494,7 +565,7 @@ class TestConvenienceFunctions:
                 services_path=Path("/test"),
                 startup_timeout=45.0,
                 request_timeout=60.0,
-                health_check_interval=30.0,
+                health_check_interval=120.0,
                 runtime_executable=None,
                 debug=True,
             )

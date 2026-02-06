@@ -1,0 +1,12 @@
+# Documentation
+CONFIGURATION.md
+TEST_REPORT.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# JS Services
+js-services/deno.lock

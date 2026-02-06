@@ -56,8 +56,8 @@ class SyncStep(ConditionalStep):
     
     @property
     def default_enabled(self) -> bool:
-        """Arkiv sync is enabled by default."""
-        return True
+        """Arkiv sync is disabled by default."""
+        return False
     
     @property
     def max_retries(self) -> int:

@@ -320,7 +320,7 @@ haven config show --unmask
 ### Set Configuration Values
 
 ```bash
-haven config set pipeline.vlm_model gpt-4-vision-preview
+haven config set pipeline.vlm_model zai-org/glm-4.6v-flash
 haven config set pipeline.max_concurrent_videos 8
 haven config set scheduler.enabled false
 ```

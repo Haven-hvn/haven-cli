@@ -108,6 +108,11 @@ class JSRuntimeBridge:
         """Check if the runtime is ready to accept requests."""
         return self._state == RuntimeState.READY
     
+    @property
+    def pending_request_count(self) -> int:
+        """Get the number of pending requests."""
+        return len(self._pending_futures)
+    
     async def start(self) -> None:
         """
         Start the JS runtime subprocess.
@@ -333,20 +338,25 @@ class JSRuntimeBridge:
         # Build command
         args = get_runtime_args(runtime, entry_point, self._config.debug)
         
-        # Prepare environment
-        env = dict(self._config.env_vars)
+        # Prepare environment - merge filtered vars with parent environment
+        # This ensures the subprocess receives both the filtered HAVEN_*, FILECOIN_*, SYNAPSE_* vars
+        # and the parent's environment (PATH, HOME, etc.)
+        import os
+        env = dict(os.environ)  # Start with parent environment
+        env.update(self._config.env_vars)  # Overlay filtered vars
         if self._config.debug:
             env["DEBUG"] = "1"
         
         logger.debug(f"Starting JS runtime: {' '.join(args)}")
         
-        # Start process
+        # Start process with environment variables
+        # Always pass env dict to ensure subprocess receives the filtered environment
         self._process = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=env if env else None
+            env=env
         )
         
         # Start reader task

@@ -68,7 +68,7 @@ env_config = get_env_config()
 
 # Environment variables:
 # HAVEN_VLM_ENABLED=true
-# HAVEN_VLM_MODEL=gpt-4-vision-preview
+# HAVEN_VLM_MODEL=zai-org/glm-4.6v-flash
 # HAVEN_SYNAPSE_API_KEY=...
 # etc.
 ```

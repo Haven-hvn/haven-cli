@@ -8,6 +8,8 @@ the Synapse SDK. It:
 
 The step uses the JS Runtime Bridge to communicate with the
 Synapse SDK running in a Deno subprocess.
+
+The step is conditional and can be skipped via the upload_enabled option.
 """
 
 import asyncio
@@ -27,12 +29,12 @@ from haven_cli.pipeline.context import (
 )
 from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import ErrorCategory, StepError, StepResult
-from haven_cli.pipeline.step import PipelineStep
+from haven_cli.pipeline.step import ConditionalStep
 
 logger = logging.getLogger(__name__)
 
 
-class UploadStep(PipelineStep):
+class UploadStep(ConditionalStep):
     """Pipeline step for Filecoin upload.
     
     This step uploads video content to the Filecoin network using
@@ -58,6 +60,16 @@ the Synapse SDK. It handles CAR file creation, upload, and
     def name(self) -> str:
         """Step identifier."""
         return "upload"
+    
+    @property
+    def enabled_option(self) -> str:
+        """Context option that enables this step."""
+        return "upload_enabled"
+    
+    @property
+    def default_enabled(self) -> bool:
+        """Upload is enabled by default."""
+        return True
     
     @property
     def max_retries(self) -> int:
@@ -211,11 +223,7 @@ the Synapse SDK. It handles CAR file creation, upload, and
         Returns:
             Dictionary with Filecoin configuration
         """
-        config = get_config()
-        
         return {
-            "synapse_endpoint": config.pipeline.synapse_endpoint,
-            "synapse_api_key": config.pipeline.synapse_api_key,
             "data_set_id": context.options.get("dataset_id") or self._config.get("data_set_id", 1),
             "wait_for_deal": self._config.get("wait_for_deal", False),
         }
@@ -260,20 +268,11 @@ the Synapse SDK. It handles CAR file creation, upload, and
         Raises:
             RuntimeError: If upload fails
         """
-        # Ensure Synapse is connected
-        synapse_endpoint = config.get("synapse_endpoint")
-        synapse_api_key = config.get("synapse_api_key")
-        
-        if not synapse_endpoint:
-            raise RuntimeError("Synapse endpoint not configured")
-        
-        logger.info(f"Connecting to Synapse at: {synapse_endpoint}")
+        # Connect to Synapse (uses FILECOIN_RPC_URL and HAVEN_PRIVATE_KEY env vars)
+        logger.info("Connecting to Synapse...")
         
         try:
-            await bridge.call("synapse.connect", {
-                "endpoint": synapse_endpoint,
-                "apiKey": synapse_api_key,
-            })
+            await bridge.call("synapse.connect", {})
         except Exception as e:
             logger.error(f"Failed to connect to Synapse: {e}")
             raise RuntimeError(f"Synapse connection failed: {e}") from e
@@ -298,14 +297,20 @@ the Synapse SDK. It handles CAR file creation, upload, and
         logger.info(f"Starting Filecoin upload for: {file_to_upload}")
         
         try:
-            result = await bridge.call("synapse.upload", {
-                "filePath": file_to_upload,
-                "metadata": {
-                    "encrypted": encryption_metadata is not None,
-                    "dataSetId": config.get("data_set_id"),
+            # Use a longer timeout for Filecoin upload (180 seconds)
+            # Filecoin uploads typically take 60-120 seconds for small files
+            result = await bridge.call(
+                "synapse.upload",
+                {
+                    "filePath": file_to_upload,
+                    "metadata": {
+                        "encrypted": encryption_metadata is not None,
+                        "dataSetId": config.get("data_set_id"),
+                    },
+                    "onProgress": True,  # Enable progress notifications
                 },
-                "onProgress": True,  # Enable progress notifications
-            })
+                timeout=180.0,  # 3 minutes timeout for upload
+            )
         except Exception as e:
             logger.error(f"Filecoin upload failed: {e}")
             raise RuntimeError(f"Upload to Filecoin failed: {e}") from e

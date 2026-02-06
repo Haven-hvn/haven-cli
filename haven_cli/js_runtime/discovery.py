@@ -204,13 +204,12 @@ def _get_deno_args(
     args = [
         executable,
         "run",
-        # Permissions
+        # Permissions - all required for browser SDK compatibility
         "--allow-read",
         "--allow-write",
         "--allow-net",
         "--allow-env",
-        # Unstable features (may be needed for some APIs)
-        "--unstable-kv",
+        "--allow-sys",  # Required for Deno.hostname() in browser-shim.ts
     ]
     
     if debug:

@@ -516,9 +516,8 @@ class YouTubePlugin(ArchiverPlugin):
         if self._yt_config.cookies_file and self._yt_config.cookies_file.exists():
             cmd.extend(["--cookies", str(self._yt_config.cookies_file)])
         
-        # Add JS runtime if available
-        if self._js_runtime_path:
-            cmd.extend(["--remote-components", "ejs:github", "--js-runtimes", self._js_runtime_type])
+        # Note: yt-dlp doesn't support --remote-components or --js-runtimes options
+        # It auto-detects available JS runtimes internally
         
         cmd.append(url)
         
@@ -614,9 +613,9 @@ class YouTubePlugin(ArchiverPlugin):
             "--newline",
         ]
         
-        # Add JS runtime if available
-        if self._js_runtime_path:
-            cmd.extend(["--remote-components", "ejs:github", "--js-runtimes", self._js_runtime_type])
+        # Note: yt-dlp auto-detects JS runtimes internally
+        # The --remote-components and --js-runtimes options don't exist
+        # Keeping this comment for documentation purposes
         
         # Add cookies if available
         if self._yt_config.cookies_file and self._yt_config.cookies_file.exists():

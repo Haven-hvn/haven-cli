@@ -6,10 +6,10 @@
     "allowJs": false
   },
   "tasks": {
-    "start": "deno run --allow-read --allow-write --allow-net --allow-env main.ts",
-    "dev": "deno run --allow-read --allow-write --allow-net --allow-env --watch main.ts",
+    "start": "deno run --allow-all main.ts",
+    "dev": "deno run --allow-all --watch main.ts",
     "check": "deno check main.ts",
-    "test": "deno test --allow-read --allow-write --allow-net --allow-env"
+    "test": "deno test --allow-all"
   },
   "imports": {
     "@lit-protocol/lit-client": "npm:@lit-protocol/lit-client@^8.0.0",

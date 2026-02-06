@@ -59,7 +59,7 @@ class JSBridgeManager:
         self._bridge_lock = asyncio.Lock()
         self._running = False
         self._health_task: Optional[asyncio.Task] = None
-        self._health_check_interval = 30.0  # seconds
+        self._health_check_interval = 120.0  # seconds - longer than typical Filecoin uploads
         self._shutdown_event = asyncio.Event()
         
         # Configuration
@@ -101,7 +101,7 @@ class JSBridgeManager:
         services_path: Optional[Path] = None,
         startup_timeout: float = 30.0,
         request_timeout: float = 60.0,
-        health_check_interval: float = 30.0,
+        health_check_interval: float = 120.0,
         runtime_executable: Optional[str] = None,
         debug: bool = False,
     ) -> None:
@@ -123,11 +123,23 @@ class JSBridgeManager:
         
         self._services_path = services_path
         self._health_check_interval = health_check_interval
+        
+        # Pass through environment variables needed by JS services
+        import os
+        env_vars = {}
+        for key in os.environ:
+            # Pass through all HAVEN_*, FILECOIN_*, SYNAPSE_* vars and other important vars
+            if key.startswith(('HAVEN_', 'FILECOIN_', 'SYNAPSE_')) or key in (
+                'PATH', 'HOME', 'USER', 'DEBUG', 'LOG_LEVEL'
+            ):
+                env_vars[key] = os.environ[key]
+        
         self._config = RuntimeConfig(
             services_path=services_path,
             runtime_executable=runtime_executable,
             startup_timeout=startup_timeout,
             request_timeout=request_timeout,
+            env_vars=env_vars,
             debug=debug,
         )
         logger.debug(f"JSBridgeManager configured with health_check_interval={health_check_interval}s")
@@ -179,10 +191,21 @@ class JSBridgeManager:
             # Default to js-services directory relative to this package
             services_path = Path(__file__).parent.parent.parent / "js-services"
         
+        # Pass through environment variables needed by JS services
+        import os
+        env_vars = {}
+        for key in os.environ:
+            # Pass through all HAVEN_*, FILECOIN_*, SYNAPSE_* vars and other important vars
+            if key.startswith(('HAVEN_', 'FILECOIN_', 'SYNAPSE_')) or key in (
+                'PATH', 'HOME', 'USER', 'DEBUG', 'LOG_LEVEL'
+            ):
+                env_vars[key] = os.environ[key]
+        
         return RuntimeConfig(
             services_path=services_path,
             startup_timeout=30.0,
             request_timeout=60.0,
+            env_vars=env_vars,
         )
     
     def _start_health_checks(self) -> None:
@@ -201,6 +224,9 @@ class JSBridgeManager:
         
         This runs as a background task and monitors the bridge health.
         If the bridge becomes unhealthy, it attempts to restart it.
+        
+        Health checks are skipped when there are pending operations to avoid
+        restarting the bridge during long-running operations (e.g., Filecoin uploads).
         """
         while self._running:
             try:
@@ -214,6 +240,14 @@ class JSBridgeManager:
                     break
                 except asyncio.TimeoutError:
                     pass
+                
+                # Skip health check if there are pending operations
+                # This prevents restarting the bridge during long-running operations
+                if self._bridge and self._bridge.is_ready:
+                    pending_count = self._bridge.pending_request_count
+                    if pending_count > 0:
+                        logger.debug(f"Health check skipped: {pending_count} operation(s) in progress")
+                        continue
                 
                 # Perform health check
                 if self._bridge and self._bridge.is_ready:
@@ -530,7 +564,7 @@ def configure_bridge(
     services_path: Optional[Path] = None,
     startup_timeout: float = 30.0,
     request_timeout: float = 60.0,
-    health_check_interval: float = 30.0,
+    health_check_interval: float = 120.0,
     runtime_executable: Optional[str] = None,
     debug: bool = False,
 ) -> None:

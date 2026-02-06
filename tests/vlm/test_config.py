@@ -34,7 +34,7 @@ class TestVLMEngineConfig:
         config = VLMEngineConfig()
         
         assert config.model_type == "openai"
-        assert config.model_name == "gpt-4-vision-preview"
+        assert config.model_name == "zai-org/glm-4.6v-flash"
         assert config.api_key is None
         assert config.base_url is None
         assert config.timeout == 120.0

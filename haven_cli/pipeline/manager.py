@@ -441,7 +441,13 @@ def create_default_pipeline(
     """Create a pipeline manager with default steps.
     
     Convenience function for creating a standard pipeline with
-    all processing steps.
+    all processing steps. Steps are enabled/disabled based on config.
+    
+    Pipeline config keys (all in 'pipeline' section):
+        - vlm_enabled: Enable VLM analysis (default: False)
+        - encryption_enabled: Enable encryption (default: False)
+        - upload_enabled: Enable Filecoin upload (default: True)
+        - arkiv_sync_enabled: Enable Arkiv sync (default: False)
     
     Args:
         max_concurrent: Maximum concurrent pipeline executions
@@ -455,4 +461,29 @@ def create_default_pipeline(
     if config:
         builder.with_config(config)
     
-    return builder.with_default_steps().build()
+    # Always include ingest step
+    builder.with_ingest()
+    
+    # Get pipeline config - could be nested under 'pipeline' or flat
+    pipeline_config = config.get("pipeline", None) if config else None
+    
+    # Helper to get config value from PipelineConfig object or dict
+    def get_config_value(name, default):
+        if pipeline_config is None:
+            return default
+        return getattr(pipeline_config, name, default)
+    
+    # Check flags from context options (CLI flags) or config file
+    # CLI flags take precedence if they're in context options
+    vlm_enabled = get_config_value("vlm_enabled", False)
+    encryption_enabled = get_config_value("encryption_enabled", False)
+    upload_enabled = get_config_value("upload_enabled", True)
+    sync_enabled = get_config_value("sync_enabled", False) or get_config_value("arkiv_sync_enabled", False)
+    
+    # Add steps based on configuration
+    builder.with_analysis(enabled=vlm_enabled)
+    builder.with_encryption(enabled=encryption_enabled)
+    builder.with_upload() if upload_enabled else None  # Upload step is always added but can be skipped via context
+    builder.with_sync(enabled=sync_enabled)
+    
+    return builder.build()

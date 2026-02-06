@@ -101,12 +101,18 @@ const documentShim = {
 
 const navigatorShim = {
   userAgent: 'Haven-CLI/1.0 (Deno)',
-  platform: typeof Deno !== 'undefined' ? Deno.build.os : 'unknown',
+  platform: (() => {
+    try {
+      return typeof Deno !== 'undefined' ? Deno.build.os : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  })(),
   language: 'en-US',
   languages: ['en-US', 'en'],
   onLine: true,
   cookieEnabled: false,
-  hardwareConcurrency: navigator?.hardwareConcurrency ?? 4,
+  hardwareConcurrency: 4,
   maxTouchPoints: 0,
   vendor: 'Haven',
   vendorSub: '',
@@ -313,7 +319,8 @@ export function installBrowserShim(): void {
     g.history = historyShim;
   }
 
-  console.log('[browser-shim] Browser environment shim installed');
+  // Log to stderr to avoid polluting stdout (JSON-RPC protocol)
+  console.error('[browser-shim] Browser environment shim installed');
 }
 
 /**

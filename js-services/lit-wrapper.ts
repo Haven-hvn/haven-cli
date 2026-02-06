@@ -20,11 +20,12 @@ import type {
   HybridEncryptionMetadata,
 } from './types.ts';
 
-// Hybrid crypto imports
+// Hybrid crypto imports - use global state management
 import {
   initLitClient,
   disconnectLitClient,
   isLitClientConnected,
+  getLitClient,
   hybridEncryptFile,
   hybridDecryptFile,
   serializeHybridMetadata,
@@ -32,11 +33,7 @@ import {
 } from './hybrid-crypto.ts';
 
 import { createViemAccount } from './viem-adapter.ts';
-import { createLitClient } from '@lit-protocol/lit-client';
-import { nagaDev } from '@lit-protocol/networks';
-import { createAuthManager } from '@lit-protocol/auth';
 import { LitAccessControlConditionResource } from '@lit-protocol/auth-helpers';
-import { createMemoryStorage } from './lit-storage.ts';
 
 // Deno type declaration
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,20 +79,24 @@ export function createLitWrapper(): LitWrapper {
  * - File encryption/decryption support
  */
 class LitWrapperImpl implements LitWrapper {
-  private client: LitClient | null = null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private authManager: any = null;
-  private _isConnected = false;
   private _network = 'naga-dev';
   private _sessionExpiry: Date | null = null;
   private _nodeCount = 0;
 
   get isConnected(): boolean {
-    return this._isConnected && isLitClientConnected();
+    // Use global state from hybrid-crypto.ts as single source of truth
+    return isLitClientConnected();
+  }
+
+  // Access global client from hybrid-crypto.ts
+  private get client(): LitClient | null {
+    return getLitClient();
   }
 
   async connect(params: Record<string, unknown>): Promise<LitConnectResult> {
-    const network = (params.network as string) ?? 'datil-dev';
+    // Note: nagaDev (the development network) currently has handshake issues.
+    // Use 'naga' for production or 'naga-staging' for staging instead.
+    const network = (params.network as string) ?? 'naga';
     const debug = (params.debug as boolean) ?? false;
 
     if (debug) {
@@ -103,22 +104,11 @@ class LitWrapperImpl implements LitWrapper {
     }
 
     try {
-      // Initialize the Lit client using nagaDev network (SDK v8)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.client = await (createLitClient as any)({
-        network: nagaDev,
-      });
+      // Initialize the Lit client using global state from hybrid-crypto.ts
+      // This ensures both modules share the same client instance
+      // Pass the network parameter to ensure correct network is used
+      await initLitClient(network);
 
-      // Initialize AuthManager with memory storage for CLI environment
-      const appName = 'haven-player';
-      const networkName = network;
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.authManager = (createAuthManager as any)({
-        storage: createMemoryStorage(appName, networkName),
-      });
-
-      this._isConnected = true;
       this._network = network;
       this._nodeCount = 1; // SDK v8 doesn't expose connectedNodes directly
       this._sessionExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
@@ -136,32 +126,28 @@ class LitWrapperImpl implements LitWrapper {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error(`[lit-wrapper] Connection failed: ${errorMessage}`);
 
-      this._isConnected = false;
-      this.client = null;
-      this.authManager = null;
-
       throw new Error(`Failed to connect to Lit Protocol: ${errorMessage}`);
     }
   }
 
   async disconnect(): Promise<void> {
-    if (this.client) {
-      try {
-        await disconnectLitClient();
-      } catch (error) {
-        console.warn('[lit-wrapper] Error during disconnect:', error);
-      }
+    try {
+      await disconnectLitClient();
+    } catch (error) {
+      console.warn('[lit-wrapper] Error during disconnect:', error);
     }
 
-    this._isConnected = false;
     this._network = '';
     this._sessionExpiry = null;
-    this.client = null;
-    this.authManager = null;
   }
 
   async encrypt(params: Record<string, unknown>): Promise<LitEncryptResult> {
-    if (!this.isConnected || !this.client) {
+    if (!this.isConnected) {
+      throw new Error('Lit Protocol not connected');
+    }
+    
+    const currentClient = this.client;
+    if (!currentClient) {
       throw new Error('Lit Protocol not connected');
     }
 
@@ -188,7 +174,7 @@ class LitWrapperImpl implements LitWrapper {
       const dataToEncrypt = encoder.encode(atob(data));
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await (this.client as any).encrypt({
+      const result = await (currentClient as any).encrypt({
         dataToEncrypt,
         unifiedAccessControlConditions,
         chain,
@@ -209,7 +195,12 @@ class LitWrapperImpl implements LitWrapper {
   }
 
   async decrypt(params: Record<string, unknown>): Promise<LitDecryptResult> {
-    if (!this.isConnected || !this.client || !this.authManager) {
+    if (!this.isConnected) {
+      throw new Error('Lit Protocol not connected');
+    }
+    
+    const currentClient = this.client;
+    if (!currentClient) {
       throw new Error('Lit Protocol not connected');
     }
 
@@ -244,7 +235,7 @@ class LitWrapperImpl implements LitWrapper {
 
       // Decrypt using Lit SDK v8
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await (this.client as any).decrypt({
+      const result = await (currentClient as any).decrypt({
         data: {
           ciphertext,
           dataToEncryptHash,
@@ -308,11 +299,13 @@ class LitWrapperImpl implements LitWrapper {
       const fileBuffer = new Uint8Array(fileData).buffer;
 
       // Use hybrid encryption
+      // Pass network to ensure consistent client initialization
       const { encryptedFile, metadata } = await hybridEncryptFile(
         fileBuffer as ArrayBuffer,
         privateKey,
         chain,
-        (message) => console.error(`[lit-wrapper] ${message}`)
+        (message) => console.error(`[lit-wrapper] ${message}`),
+        this._network
       );
 
       // Write encrypted file
@@ -374,11 +367,13 @@ class LitWrapperImpl implements LitWrapper {
       const metadata = deserializeHybridMetadata(metadataJson);
 
       // Decrypt using hybrid encryption
+      // Pass network to enable payment verification on mainnet
       const decryptedData = await hybridDecryptFile(
         encryptedData,
         metadata,
         privateKey,
-        (message) => console.error(`[lit-wrapper] ${message}`)
+        (message) => console.error(`[lit-wrapper] ${message}`),
+        this._network
       );
 
       // Write decrypted file
@@ -447,13 +442,21 @@ class LitWrapperImpl implements LitWrapper {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async createAuthContext(privateKey: string): Promise<any> {
-    if (!this.client || !this.authManager) {
+    const currentClient = this.client;
+    if (!currentClient) {
       throw new Error('Lit client not initialized');
     }
 
     const viemAccount = createViemAccount(privateKey);
 
-    const authContext = await this.authManager.createEoaAuthContext({
+    // Import authManager dynamically from hybrid-crypto.ts to use global state
+    const { getAuthManager } = await import('./hybrid-crypto.ts');
+    const globalAuthManager = getAuthManager();
+    if (!globalAuthManager) {
+      throw new Error('Lit auth manager not initialized');
+    }
+
+    const authContext = await globalAuthManager.createEoaAuthContext({
       authConfig: {
         domain: 'haven-player.local',
         statement: 'Sign this message to authenticate with Haven Player',
@@ -468,7 +471,7 @@ class LitWrapperImpl implements LitWrapper {
       config: {
         account: viemAccount,
       },
-      litClient: this.client,
+      litClient: currentClient,
     });
 
     return authContext;

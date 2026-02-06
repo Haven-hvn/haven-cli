@@ -309,7 +309,7 @@ class TestExtractTransactionHash:
     
     def test_from_transaction_hash_attribute(self):
         """Test extracting from transactionHash attribute."""
-        receipt = MagicMock()
+        receipt = MagicMock(spec=[])
         receipt.transactionHash = "0xabc123"
         
         result = _extract_transaction_hash(receipt)
@@ -326,7 +326,7 @@ class TestExtractTransactionHash:
         assert result == "0xdef456"
     
     def test_from_tx_hash_attribute(self):
-        """Test extracting from tx_hash attribute."""
+        """Test extracting from tx_hash attribute (arkiv-sdk format)."""
         receipt = MagicMock(spec=[])
         receipt.tx_hash = "0xghi789"
         

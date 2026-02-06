@@ -26,7 +26,7 @@ database_url = "sqlite:///~/.local/share/haven/haven.db"
 
 [pipeline]
 vlm_enabled = true
-vlm_model = "gpt-4-vision-preview"
+vlm_model = "zai-org/glm-4.6v-flash"
 vlm_api_key = ""  # Or use HAVEN_VLM_API_KEY
 vlm_timeout = 120.0
 
@@ -34,7 +34,7 @@ encryption_enabled = true
 lit_network = "datil-dev"
 
 upload_enabled = true
-synapse_endpoint = "https://api.synapse.storage"
+synapse_endpoint = "https://api.calibration.node.glif.io/rpc/v1"
 synapse_api_key = ""  # Or use HAVEN_SYNAPSE_API_KEY
 
 sync_enabled = true
@@ -87,7 +87,7 @@ backup_count = 5
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | vlm_enabled | boolean | true | Enable AI analysis with VLM |
-| vlm_model | string | "gpt-4-vision-preview" | VLM model to use |
+| vlm_model | string | "zai-org/glm-4.6v-flash" | VLM model to use |
 | vlm_api_key | string | null | API key for VLM service |
 | vlm_timeout | float | 120.0 | Timeout for VLM requests (seconds) |
 | encryption_enabled | boolean | true | Enable Lit Protocol encryption |
@@ -151,7 +151,7 @@ All configuration options can be overridden via environment variables:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | HAVEN_VLM_ENABLED | Enable/disable VLM analysis | true/false |
-| HAVEN_VLM_MODEL | VLM model to use | gpt-4-vision-preview |
+| HAVEN_VLM_MODEL | VLM model to use | zai-org/glm-4.6v-flash |
 | HAVEN_VLM_API_KEY | API key for VLM service | sk-... |
 | HAVEN_ENCRYPTION_ENABLED | Enable/disable Lit encryption | true/false |
 | HAVEN_LIT_NETWORK | Lit Protocol network | datil-dev |
@@ -230,7 +230,7 @@ haven config set <section.key> <value>
 Examples:
 
 ```bash
-haven config set pipeline.vlm_model gpt-4-vision-preview
+haven config set pipeline.vlm_model zai-org/glm-4.6v-flash
 haven config set pipeline.max_concurrent_videos 8
 haven config set scheduler.enabled false
 haven config set logging.level DEBUG

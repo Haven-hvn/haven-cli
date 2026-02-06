@@ -56,6 +56,13 @@ class TestRunCommand:
         result = runner.invoke(app, ["--help"])
         
         assert result.exit_code == 0
+        assert "daemon" in result.output
+        
+    def test_run_daemon_help(self):
+        """Test run daemon subcommand help output."""
+        result = runner.invoke(app, ["daemon", "--help"])
+        
+        assert result.exit_code == 0
         assert "Haven daemon" in result.output
         assert "--daemon" in result.output
         assert "--verbose" in result.output

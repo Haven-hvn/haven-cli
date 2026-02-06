@@ -25,6 +25,23 @@ class TestVerifyCidFormat:
         """Test valid CIDv1 starts with baf."""
         assert verify_cid_format("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi") is True
     
+    def test_valid_cidv1_bafk_prefix(self):
+        """Test valid CIDv1 with bafk prefix (raw binary codec for Filecoin)."""
+        # This CID format was specifically mentioned in the TEST_REPORT as problematic
+        cid = "bafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm"
+        assert verify_cid_format(cid) is True
+    
+    def test_valid_cidv1_various_prefixes(self):
+        """Test various valid CIDv1 prefixes."""
+        # Note: base32 only uses a-z and 2-7 (not 0, 1, 8, 9)
+        cids = [
+            "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",  # dag-pb
+            "bafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm",  # raw (Filecoin)
+            "bafyreiabc345def234ghi2jkl3mno4pqr5stu6vwx7yz2abc3def4ghi5jkl6mno7pqr",  # dag-cbor
+        ]
+        for cid in cids:
+            assert verify_cid_format(cid) is True, f"CID {cid[:20]}... should be valid"
+    
     def test_invalid_cid(self):
         """Test invalid CID formats."""
         assert verify_cid_format("invalid") is False
@@ -99,6 +116,25 @@ class TestDownloadCommand:
         assert verify_cid_format("invalid-cid") is False
         assert verify_cid_format("") is False
         assert verify_cid_format("Qm") is False
+    
+    def test_download_cid_with_whitespace(self, tmp_path):
+        """Test that CIDs with whitespace are handled correctly after stripping."""
+        from haven_cli.crypto import verify_cid_format
+        
+        # CIDs with whitespace/newline should be stripped by CLI before validation
+        cid_with_newline = "\nbafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm"
+        cid_with_crlf = "\r\nbafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm"
+        cid_with_space = "  bafkreiemazil222k4kmfbkoheoet4h3rqfj2vqwpkun47g5bh5tqmy2ekm  "
+        
+        # Before stripping - invalid
+        assert verify_cid_format(cid_with_newline) is False
+        assert verify_cid_format(cid_with_crlf) is False
+        assert verify_cid_format(cid_with_space) is False
+        
+        # After stripping - valid (this is what the CLI does)
+        assert verify_cid_format(cid_with_newline.strip()) is True
+        assert verify_cid_format(cid_with_crlf.strip()) is True
+        assert verify_cid_format(cid_with_space.strip()) is True
     
     def test_download_existing_file_no_force(self, tmp_path):
         """Test download when output file exists without force flag."""

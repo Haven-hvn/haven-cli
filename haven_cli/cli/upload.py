@@ -7,11 +7,14 @@ import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-app = typer.Typer(help="Upload files to Filecoin network.")
+app = typer.Typer(
+    help="Upload files to Filecoin network.",
+    no_args_is_help=True,
+)
 console = Console()
 
 
-@app.callback(invoke_without_command=True)
+@app.command(name="file")
 def upload(
     file_path: Path = typer.Argument(
         ...,
@@ -68,17 +71,32 @@ def upload(
 
     from haven_cli.config import load_config
     from haven_cli.pipeline.context import PipelineContext
-    from haven_cli.pipeline.manager import PipelineManager
+    from haven_cli.pipeline.manager import create_default_pipeline
 
     config = load_config(config_file)
     
     console.print(f"[bold]Uploading:[/bold] {file_path.name}")
     
-    # Build pipeline options
+    # Get pipeline config values (PipelineConfig object uses attributes)
+    pipeline_config = config.pipeline if config else None
+    
+    # Build pipeline options - CLI flags override config file settings
+    # For conditional steps, we check both CLI flags and config settings
+    def get_config_value(name, default):
+        if pipeline_config is None:
+            return default
+        return getattr(pipeline_config, name, default)
+    
+    vlm_enabled = get_config_value("vlm_enabled", False) and not skip_vlm
+    encryption_enabled = get_config_value("encryption_enabled", False) or encrypt
+    upload_enabled = get_config_value("upload_enabled", True)
+    sync_enabled = get_config_value("sync_enabled", False) and not skip_arkiv
+    
     options = {
-        "encrypt": encrypt,
-        "vlm_enabled": not skip_vlm,
-        "arkiv_sync_enabled": not skip_arkiv,
+        "encrypt": encryption_enabled,
+        "vlm_enabled": vlm_enabled,
+        "upload_enabled": upload_enabled,
+        "arkiv_sync_enabled": sync_enabled,
         "dataset_id": dataset_id,
     }
     
@@ -88,8 +106,8 @@ def upload(
         options=options,
     )
     
-    # Initialize pipeline manager
-    pipeline_manager = PipelineManager(config=config)
+    # Initialize pipeline manager with all default steps
+    pipeline_manager = create_default_pipeline(config=config.__dict__ if config else None)
     
     async def run_pipeline() -> None:
         with Progress(

@@ -41,7 +41,7 @@ class TestSyncStepBasics:
     def test_default_enabled(self):
         """Test default enabled value."""
         step = SyncStep()
-        assert step.default_enabled is True
+        assert step.default_enabled is False
     
     def test_max_retries(self):
         """Test max retries is set correctly."""

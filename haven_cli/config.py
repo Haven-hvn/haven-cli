@@ -61,6 +61,67 @@ class ValidationError:
 
 
 @dataclass
+class BlockchainConfig:
+    """Configuration for blockchain network settings.
+    
+    Provides unified mainnet/testnet configuration across all
+    blockchain integrations (Lit, Filecoin, Arkiv).
+    
+    When network_mode is set, it automatically configures:
+    - Lit Protocol network (datil for mainnet, datil-dev for testnet)
+    - Filecoin RPC endpoint (mainnet or calibration testnet)
+    - Arkiv RPC endpoint (mainnet or hoodi testnet)
+    
+    Individual endpoint settings can still override the defaults.
+    """
+    
+    # Network mode - 'mainnet' or 'testnet'
+    # This single setting propagates to all blockchain integrations
+    network_mode: str = "testnet"
+    
+    # Optional: Override specific endpoints (if not set, uses network_mode defaults)
+    lit_network_override: Optional[str] = None
+    filecoin_rpc_override: Optional[str] = None
+    arkiv_rpc_override: Optional[str] = None
+    
+    @property
+    def is_mainnet(self) -> bool:
+        """Check if configured for mainnet."""
+        return self.network_mode.lower() == "mainnet"
+    
+    @property
+    def is_testnet(self) -> bool:
+        """Check if configured for testnet."""
+        return self.network_mode.lower() in ("testnet", "test", "dev")
+    
+    def get_lit_network(self) -> str:
+        """Get Lit Protocol network based on configuration."""
+        if self.lit_network_override:
+            return self.lit_network_override
+        return "datil" if self.is_mainnet else "datil-dev"
+    
+    def get_filecoin_rpc_url(self) -> str:
+        """Get Filecoin RPC URL based on configuration."""
+        if self.filecoin_rpc_override:
+            return self.filecoin_rpc_override
+        return (
+            "https://api.node.glif.io/rpc/v1"  # Mainnet
+            if self.is_mainnet
+            else "https://api.calibration.node.glif.io/rpc/v1"  # Testnet
+        )
+    
+    def get_arkiv_rpc_url(self) -> str:
+        """Get Arkiv RPC URL based on configuration."""
+        if self.arkiv_rpc_override:
+            return self.arkiv_rpc_override
+        return (
+            "https://mainnet.arkiv.network/rpc"  # Mainnet
+            if self.is_mainnet
+            else "https://mendoza.hoodi.arkiv.network/rpc"  # Hoodi testnet
+        )
+
+
+@dataclass
 class PipelineConfig:
     """Configuration for the processing pipeline."""
     
@@ -71,15 +132,19 @@ class PipelineConfig:
     vlm_timeout: float = 120.0
     
     # Encryption (Lit Protocol)
+    # Note: lit_network is now derived from blockchain.network_mode
+    # Set blockchain.lit_network_override to override
     encryption_enabled: bool = True
-    lit_network: str = "datil-dev"
+    lit_network: str = "datil-dev"  # Deprecated: use blockchain.network_mode
     
     # Upload (Filecoin via Synapse)
+    # Note: synapse_endpoint defaults from blockchain.network_mode
     upload_enabled: bool = True
     synapse_endpoint: Optional[str] = None
     synapse_api_key: Optional[str] = None
     
     # Blockchain Sync (Arkiv)
+    # Note: arkiv_endpoint defaults from blockchain.network_mode
     sync_enabled: bool = True
     arkiv_endpoint: Optional[str] = None
     arkiv_contract: Optional[str] = None
@@ -163,17 +228,40 @@ class HavenConfig:
     plugins: PluginConfig = field(default_factory=PluginConfig)
     js_runtime: JSRuntimeConfig = field(default_factory=JSRuntimeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    blockchain: BlockchainConfig = field(default_factory=BlockchainConfig)
     
     # Database
     database_url: str = ""
     
     def __post_init__(self):
-        """Initialize derived values."""
+        """Initialize derived values and propagate network mode."""
         if not self.database_url:
             self.database_url = f"sqlite:///{self.data_dir}/haven.db"
         
         if self.scheduler.state_file is None:
             self.scheduler.state_file = self.data_dir / "scheduler_state.json"
+        
+        # Propagate network mode to legacy pipeline settings for backward compatibility
+        self._propagate_network_mode()
+    
+    def _propagate_network_mode(self) -> None:
+        """Propagate blockchain network mode to individual service configs.
+        
+        This ensures that setting blockchain.network_mode automatically
+        updates all the individual blockchain service configurations
+        (Lit, Filecoin, Arkiv) unless they have explicit overrides.
+        """
+        # Update Lit network if no override is set
+        if not self.blockchain.lit_network_override:
+            self.pipeline.lit_network = self.blockchain.get_lit_network()
+        
+        # Update Filecoin endpoint if not explicitly set
+        if not self.pipeline.synapse_endpoint and not self.blockchain.filecoin_rpc_override:
+            self.pipeline.synapse_endpoint = self.blockchain.get_filecoin_rpc_url()
+        
+        # Update Arkiv endpoint if not explicitly set
+        if not self.pipeline.arkiv_endpoint and not self.blockchain.arkiv_rpc_override:
+            self.pipeline.arkiv_endpoint = self.blockchain.get_arkiv_rpc_url()
 
 
 def load_config(
@@ -226,6 +314,11 @@ def _load_from_file(path: Path, config: HavenConfig) -> HavenConfig:
             data = tomllib.load(f)
         
         # Update config from file data
+        if "blockchain" in data:
+            for key, value in data["blockchain"].items():
+                if hasattr(config.blockchain, key):
+                    setattr(config.blockchain, key, value)
+        
         if "pipeline" in data:
             for key, value in data["pipeline"].items():
                 if hasattr(config.pipeline, key):
@@ -238,7 +331,12 @@ def _load_from_file(path: Path, config: HavenConfig) -> HavenConfig:
         
         if "plugins" in data:
             for key, value in data["plugins"].items():
-                if hasattr(config.plugins, key):
+                if key == "settings" and isinstance(value, dict):
+                    # Handle nested plugin settings (plugins.settings.*)
+                    for plugin_name, plugin_settings in value.items():
+                        if isinstance(plugin_settings, dict):
+                            config.plugins.plugin_settings[plugin_name] = plugin_settings
+                elif hasattr(config.plugins, key):
                     setattr(config.plugins, key, value)
         
         if "js_runtime" in data:
@@ -268,6 +366,21 @@ def _load_from_file(path: Path, config: HavenConfig) -> HavenConfig:
 def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     """Load configuration from environment variables."""
     
+    # Blockchain network mode - this is the primary network setting
+    if env_val := os.environ.get(f"{prefix}NETWORK_MODE"):
+        config.blockchain.network_mode = env_val
+    # Also check legacy HAVEN_NETWORK_MODE without prefix for convenience
+    if env_val := os.environ.get("HAVEN_NETWORK_MODE"):
+        config.blockchain.network_mode = env_val
+    
+    # Blockchain endpoint overrides
+    if env_val := os.environ.get(f"{prefix}LIT_NETWORK_OVERRIDE"):
+        config.blockchain.lit_network_override = env_val
+    if env_val := os.environ.get(f"{prefix}FILECOIN_RPC_OVERRIDE"):
+        config.blockchain.filecoin_rpc_override = env_val
+    if env_val := os.environ.get(f"{prefix}ARKIV_RPC_OVERRIDE"):
+        config.blockchain.arkiv_rpc_override = env_val
+    
     # Pipeline settings
     if env_val := os.environ.get(f"{prefix}VLM_ENABLED"):
         config.pipeline.vlm_enabled = env_val.lower() in ("true", "1", "yes")
@@ -278,8 +391,9 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     
     if env_val := os.environ.get(f"{prefix}ENCRYPTION_ENABLED"):
         config.pipeline.encryption_enabled = env_val.lower() in ("true", "1", "yes")
+    # LIT_NETWORK env var can override the network mode default
     if env_val := os.environ.get(f"{prefix}LIT_NETWORK"):
-        config.pipeline.lit_network = env_val
+        config.blockchain.lit_network_override = env_val
     
     if env_val := os.environ.get(f"{prefix}UPLOAD_ENABLED"):
         config.pipeline.upload_enabled = env_val.lower() in ("true", "1", "yes")
@@ -313,6 +427,9 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     if env_val := os.environ.get(f"{prefix}DATABASE_URL"):
         config.database_url = env_val
     
+    # After loading env vars, propagate network mode to individual settings
+    config._propagate_network_mode()
+    
     return config
 
 
@@ -339,11 +456,19 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f'data_dir = "{config.data_dir}"',
         f'database_url = "{config.database_url}"',
         "",
+        "# Blockchain Network Configuration",
+        "# Set network_mode to 'mainnet' or 'testnet' to configure all blockchain integrations",
+        "[blockchain]",
+        f'network_mode = "{config.blockchain.network_mode}"',
+        f'lit_network_override = "{config.blockchain.lit_network_override or ""}"',
+        f'filecoin_rpc_override = "{config.blockchain.filecoin_rpc_override or ""}"',
+        f'arkiv_rpc_override = "{config.blockchain.arkiv_rpc_override or ""}"',
+        "",
         "[pipeline]",
         f"vlm_enabled = {str(config.pipeline.vlm_enabled).lower()}",
         f'vlm_model = "{config.pipeline.vlm_model}"',
         f"encryption_enabled = {str(config.pipeline.encryption_enabled).lower()}",
-        f'lit_network = "{config.pipeline.lit_network}"',
+        f'lit_network = "{config.pipeline.lit_network}"  # Auto-set from blockchain.network_mode',
         f"upload_enabled = {str(config.pipeline.upload_enabled).lower()}",
         f"sync_enabled = {str(config.pipeline.sync_enabled).lower()}",
         f"max_concurrent_videos = {config.pipeline.max_concurrent_videos}",
@@ -355,6 +480,28 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f"max_concurrent_jobs = {config.scheduler.max_concurrent_jobs}",
         f'default_cron = "{config.scheduler.default_cron}"',
         "",
+        "[plugins]",
+        f"enabled_plugins = {config.plugins.enabled_plugins}",
+        f"disabled_plugins = {config.plugins.disabled_plugins}",
+        "",
+        "[plugins.settings]",
+    ]
+    
+    # Add plugin-specific settings
+    for plugin_name, settings in config.plugins.plugin_settings.items():
+        lines.append(f"\n[plugins.settings.{plugin_name}]")
+        for key, value in settings.items():
+            if isinstance(value, str):
+                lines.append(f'{key} = "{value}"')
+            elif isinstance(value, bool):
+                lines.append(f"{key} = {str(value).lower()}")
+            elif isinstance(value, (list, tuple)):
+                lines.append(f"{key} = {list(value)}")
+            else:
+                lines.append(f"{key} = {value}")
+    
+    lines.extend([
+        "",
         "[logging]",
         f'level = "{config.logging.level}"',
         "",
@@ -362,7 +509,7 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f"startup_timeout = {config.js_runtime.startup_timeout}",
         f"request_timeout = {config.js_runtime.request_timeout}",
         f"debug = {str(config.js_runtime.debug).lower()}",
-    ]
+    ])
     
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -412,7 +559,7 @@ def set_config_value(section: str, key: str, value: Any, config_path: Optional[P
     Set a single configuration value and persist to file.
     
     Args:
-        section: Configuration section (e.g., 'pipeline', 'scheduler')
+        section: Configuration section (e.g., 'pipeline', 'scheduler', 'blockchain')
         key: Configuration key within the section
         value: Value to set (will be converted to appropriate type)
         config_path: Path to config file (default: CONFIG_DIR / CONFIG_FILE)
@@ -449,6 +596,10 @@ def set_config_value(section: str, key: str, value: Any, config_path: Optional[P
     
     # Set the new value
     setattr(section_obj, key, converted_value)
+    
+    # If setting blockchain.network_mode, propagate to individual settings
+    if section == "blockchain" and key == "network_mode":
+        config._propagate_network_mode()
     
     # Save config
     save_config(config, config_path)
@@ -610,6 +761,17 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
         "config_dir": str(config.config_dir),
         "data_dir": str(config.data_dir),
         "database_url": mask_value("database_url", config.database_url),
+        "blockchain": {
+            "network_mode": config.blockchain.network_mode,
+            "is_mainnet": config.blockchain.is_mainnet,
+            "is_testnet": config.blockchain.is_testnet,
+            "lit_network": config.blockchain.get_lit_network(),
+            "filecoin_rpc_url": config.blockchain.get_filecoin_rpc_url(),
+            "arkiv_rpc_url": config.blockchain.get_arkiv_rpc_url(),
+            "lit_network_override": config.blockchain.lit_network_override,
+            "filecoin_rpc_override": config.blockchain.filecoin_rpc_override,
+            "arkiv_rpc_override": config.blockchain.arkiv_rpc_override,
+        },
         "pipeline": {
             "vlm_enabled": config.pipeline.vlm_enabled,
             "vlm_model": config.pipeline.vlm_model,

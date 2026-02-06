@@ -15,12 +15,13 @@
  */
 
 import { createLitClient } from '@lit-protocol/lit-client';
-import { nagaDev } from '@lit-protocol/networks';
+import { naga, nagaDev } from '@lit-protocol/networks';
 import { createAuthManager } from '@lit-protocol/auth';
 import { LitAccessControlConditionResource } from '@lit-protocol/auth-helpers';
 import { ethers } from 'ethers';
 import { createMemoryStorage } from './lit-storage.ts';
 import { createViemAccount } from './viem-adapter.ts';
+import { verifyPaymentSetup } from './lit-payment.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type LitClient = any;
@@ -369,10 +370,22 @@ let authManager: any = null;
 let initPromise: Promise<LitClient> | null = null;
 
 /**
+ * Network configuration mapping
+ */
+const NETWORK_CONFIGS: Record<string, typeof naga> = {
+  'naga': naga,  // Mainnet - works
+  'naga-dev': nagaDev,  // Devnet - currently has handshake issues
+  'naga-staging': nagaDev,  // Staging
+  'datil-dev': naga,  // Map to naga for compatibility
+};
+
+/**
  * Initialize or get existing Lit client for hybrid encryption
  * Uses nagaDev network (free development network) - Lit SDK v8
+ * 
+ * @param network - Network name (default: 'naga')
  */
-export async function initLitClient(): Promise<LitClient> {
+export async function initLitClient(network: string = 'naga'): Promise<LitClient> {
   if (litClient && authManager) {
     return litClient;
   }
@@ -383,13 +396,16 @@ export async function initLitClient(): Promise<LitClient> {
 
   initPromise = (async (): Promise<LitClient> => {
     try {
+      // Get network configuration (default to naga mainnet which works)
+      const networkConfig = NETWORK_CONFIGS[network] || naga;
+      
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       litClient = await (createLitClient as any)({
-        network: nagaDev,
+        network: networkConfig,
       });
 
       const appName = 'haven-player';
-      const networkName = 'naga-dev';
+      const networkName = network;
 
       // Always use memory storage in Deno CLI environment
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -397,7 +413,7 @@ export async function initLitClient(): Promise<LitClient> {
         storage: createMemoryStorage(appName, networkName),
       });
 
-      console.log('[Lit] Connected to Lit network (naga-dev) - SDK v8');
+      console.log(`[Lit] Connected to Lit network (${network}) - SDK v8`);
       return litClient;
     } catch (error) {
       litClient = null;
@@ -433,6 +449,14 @@ export async function disconnectLitClient(): Promise<void> {
  */
 export function getLitClient(): LitClient | null {
   return litClient;
+}
+
+/**
+ * Get the current AuthManager (null if not initialized)
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getAuthManager(): any | null {
+  return authManager;
 }
 
 /**
@@ -502,7 +526,8 @@ export async function hybridEncryptFile(
   file: ArrayBuffer,
   privateKey: string,
   chain: string = 'ethereum',
-  onProgress?: (message: string) => void
+  onProgress?: (message: string) => void,
+  network: string = 'naga'
 ): Promise<HybridEncryptionResult> {
   onProgress?.('Generating encryption key...');
 
@@ -523,7 +548,7 @@ export async function hybridEncryptFile(
 
   // Step 5: Initialize Lit client and encrypt AES key
   onProgress?.('Initializing Lit Protocol...');
-  const client = await initLitClient();
+  const client = await initLitClient(network);
   const walletAddress = getWalletAddressFromPrivateKey(privateKey);
 
   onProgress?.('Encrypting key with Lit Protocol...');
@@ -578,7 +603,8 @@ export async function hybridDecryptFile(
   encryptedFile: Uint8Array,
   metadata: HybridEncryptionMetadata,
   privateKey: string,
-  onProgress?: (message: string) => void
+  onProgress?: (message: string) => void,
+  network: string = 'naga'
 ): Promise<Uint8Array> {
   // Validate metadata version
   if (metadata.version !== 'hybrid-v1') {
@@ -588,7 +614,19 @@ export async function hybridDecryptFile(
   }
 
   onProgress?.('Initializing Lit Protocol...');
-  const client = await initLitClient();
+  
+  // Verify payment setup before attempting decryption (mainnet only)
+  // This is similar to how Synapse SDK checks upload readiness
+  try {
+    await verifyPaymentSetup(privateKey, network);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.warn('[Lit Payment] Payment verification warning:', errorMessage);
+    // Don't throw here - let the operation proceed and fail naturally if credits are required
+    // This allows dev networks to work without credits
+  }
+  
+  const client = await initLitClient(network);
 
   onProgress?.('Authenticating...');
   const authContext = await getAuthContext(privateKey, metadata.chain);

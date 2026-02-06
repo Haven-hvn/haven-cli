@@ -235,6 +235,9 @@ class IngestStep(PipelineStep):
         Returns:
             Database ID of the created/updated video record
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
             with get_db_session() as session:
                 repo = VideoRepository(session)
@@ -250,8 +253,6 @@ class IngestStep(PipelineStep):
                         file_size=metadata.file_size,
                         mime_type=metadata.mime_type,
                         phash=metadata.phash,
-                        width=metadata.width,
-                        height=metadata.height,
                     )
                     return existing.id
                 else:
@@ -263,14 +264,13 @@ class IngestStep(PipelineStep):
                         file_size=metadata.file_size,
                         mime_type=metadata.mime_type,
                         phash=metadata.phash,
-                        width=metadata.width,
-                        height=metadata.height,
                     )
                     return video.id
         except Exception as e:
             # If database save fails, don't block ingestion
             # Log error but allow pipeline to continue
             # Return -1 to indicate error
+            logger.error(f"Failed to save video to database: {e}")
             return -1
     
     async def on_complete(

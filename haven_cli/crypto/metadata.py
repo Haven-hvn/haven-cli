@@ -193,9 +193,10 @@ def verify_cid_format(cid: str) -> bool:
     if cid.startswith("Qm"):
         return len(cid) == 46 and all(c in "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" for c in cid)
     
-    # CIDv1: Starts with bafy (base32), typically 59+ characters
+    # CIDv1: Starts with baf (base32), typically 59+ characters
     if cid.startswith("baf"):
-        return len(cid) >= 59 and all(c in "abcdefghijklmnopqrstuvwxyz234567" for c in cid.lower())
+        # CIDv1 base32 encoded - variable length, typically 59+ chars
+        return len(cid) >= 55 and all(c in "abcdefghijklmnopqrstuvwxyz234567" for c in cid.lower())
     
     # Other CIDv1 variants
     if cid.startswith("ba"):

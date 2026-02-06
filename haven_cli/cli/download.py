@@ -23,11 +23,14 @@ from haven_cli.crypto import (
     verify_cid_format,
 )
 
-app = typer.Typer(help="Download and decrypt files from Filecoin network.")
+app = typer.Typer(
+    help="Download and decrypt files from Filecoin network.",
+    no_args_is_help=True,
+)
 console = Console()
 
 
-@app.callback(invoke_without_command=True)
+@app.command(name="cid")
 def download(
     cid: str = typer.Argument(
         ...,
@@ -82,9 +85,12 @@ def download(
     """
     config = load_config(config_file)
     
+    # Strip whitespace from CID (handle potential newline issues)
+    cid = cid.strip()
+    
     # Validate CID format
     if not verify_cid_format(cid):
-        console.print(f"[red]✗[/red] Invalid CID format: {cid}")
+        console.print(f"[red]✗[/red] Invalid CID format: {repr(cid)}")
         console.print("[yellow]CIDs should start with 'Qm' (CIDv0) or 'baf' (CIDv1)[/yellow]")
         raise typer.Exit(code=1)
     
@@ -117,18 +123,14 @@ def download(
                 manager = JSBridgeManager.get_instance()
                 
                 async with manager:
-                    # Connect to Synapse
+                    # Connect to Synapse (uses FILECOIN_RPC_URL and HAVEN_PRIVATE_KEY env vars)
                     progress.update(task, description="Connecting to Synapse...")
                     
-                    if config.pipeline.synapse_endpoint and config.pipeline.synapse_api_key:
-                        await js_call(
-                            JSRuntimeMethods.SYNAPSE_CONNECT,
-                            {
-                                "endpoint": config.pipeline.synapse_endpoint,
-                                "apiKey": config.pipeline.synapse_api_key,
-                            },
-                            max_retries=3,
-                        )
+                    await js_call(
+                        JSRuntimeMethods.SYNAPSE_CONNECT,
+                        {},
+                        max_retries=3,
+                    )
                     
                     # Download file from Filecoin
                     progress.update(task, description="Fetching from Filecoin...", advance=10)
@@ -294,6 +296,9 @@ def info(
     """
     config = load_config(config_file)
     
+    # Strip whitespace from CID (handle potential newline issues)
+    cid = cid.strip()
+    
     # Validate CID format
     if not verify_cid_format(cid):
         console.print(f"[red]✗[/red] Invalid CID format: {cid}")
@@ -305,16 +310,12 @@ def info(
             manager = JSBridgeManager.get_instance()
             
             async with manager:
-                # Connect to Synapse if credentials available
-                if config.pipeline.synapse_endpoint and config.pipeline.synapse_api_key:
-                    await js_call(
-                        JSRuntimeMethods.SYNAPSE_CONNECT,
-                        {
-                            "endpoint": config.pipeline.synapse_endpoint,
-                            "apiKey": config.pipeline.synapse_api_key,
-                        },
-                        max_retries=3,
-                    )
+                # Connect to Synapse (uses FILECOIN_RPC_URL and HAVEN_PRIVATE_KEY env vars)
+                await js_call(
+                    JSRuntimeMethods.SYNAPSE_CONNECT,
+                    {},
+                    max_retries=3,
+                )
                 
                 # Get status from Synapse
                 status = await js_call(

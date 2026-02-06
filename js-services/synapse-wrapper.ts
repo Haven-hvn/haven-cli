@@ -157,7 +157,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
 
   async connect(params: Record<string, unknown>): Promise<SynapseConnectResult> {
     const connectParams = params as unknown as SynapseConnectParams;
-    const endpoint = connectParams.endpoint ?? 'https://api.synapse.storage';
+    const endpoint = connectParams.endpoint ?? 'https://api.calibration.node.glif.io/rpc/v1';
     
     // Support both API key and private key authentication
     const apiKey = connectParams.apiKey ?? Deno.env.get('SYNAPSE_API_KEY') ?? '';
@@ -610,7 +610,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
     }
 
     const downloadParams = params as unknown as SynapseDownloadParams;
-    const { cid, outputPath } = downloadParams;
+    let { cid, outputPath } = downloadParams;
 
     if (!cid) {
       throw new Error('Missing required parameter: cid');
@@ -618,6 +618,9 @@ class SynapseWrapperImpl implements SynapseWrapper {
     if (!outputPath) {
       throw new Error('Missing required parameter: outputPath');
     }
+
+    // Strip whitespace from CID (handle potential newline issues)
+    cid = cid.trim();
 
     // Validate CID format
     if (!isValidCid(cid)) {
@@ -797,8 +800,13 @@ export function estimateStorageCost(
  */
 export function isValidCid(cid: string): boolean {
   // Basic CID validation
-  // CIDv0 starts with Qm, CIDv1 starts with bafy
-  return /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|bafy[a-z2-7]{52,})$/.test(cid);
+  // CIDv0 starts with Qm (base58-encoded, 46 chars total)
+  // CIDv1 starts with 'baf' (base32-encoded, typically 59+ chars)
+  // - bafy = dag-pb codec (most common for files/directories)
+  // - bafk = raw codec (for raw binary data)
+  // - bafq = eth-account-snapshot
+  // - etc.
+  return /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-z2-7]{55,})$/.test(cid);
 }
 
 /**

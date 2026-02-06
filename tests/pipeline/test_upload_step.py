@@ -51,15 +51,8 @@ class TestUploadStepConfig:
             options={},
         )
         
-        mock_config = MagicMock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "test-api-key"
+        config = step._get_filecoin_config(context)
         
-        with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
-            config = step._get_filecoin_config(context)
-        
-        assert config["synapse_endpoint"] == "https://synapse.example.com"
-        assert config["synapse_api_key"] == "test-api-key"
         assert config["data_set_id"] == 42
         assert config["wait_for_deal"] is False
     
@@ -71,12 +64,7 @@ class TestUploadStepConfig:
             options={"dataset_id": 99},
         )
         
-        mock_config = MagicMock()
-        mock_config.pipeline.synapse_endpoint = None
-        mock_config.pipeline.synapse_api_key = None
-        
-        with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
-            config = step._get_filecoin_config(context)
+        config = step._get_filecoin_config(context)
         
         # Context option should override config
         assert config["data_set_id"] == 99
@@ -89,12 +77,7 @@ class TestUploadStepConfig:
             options={},
         )
         
-        mock_config = MagicMock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "api-key"
-        
-        with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
-            config = step._get_filecoin_config(context)
+        config = step._get_filecoin_config(context)
         
         assert config["wait_for_deal"] is True
 
@@ -148,8 +131,6 @@ class TestUploadStepUpload:
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         
         config = {
-            "synapse_endpoint": "https://synapse.example.com",
-            "synapse_api_key": "test-key",
             "data_set_id": 1,
             "wait_for_deal": False,
         }
@@ -175,11 +156,10 @@ class TestUploadStepUpload:
         # Verify bridge calls
         assert mock_bridge.call.call_count == 2
         
-        # Check synapse.connect call
+        # Check synapse.connect call (uses env vars, no params needed)
         connect_call = mock_bridge.call.call_args_list[0]
         assert connect_call[0][0] == "synapse.connect"
-        assert connect_call[0][1]["endpoint"] == "https://synapse.example.com"
-        assert connect_call[0][1]["apiKey"] == "test-key"
+        assert connect_call[0][1] == {}
         
         # Check synapse.upload call
         upload_call = mock_bridge.call.call_args_list[1]
@@ -222,8 +202,6 @@ class TestUploadStepUpload:
         )
         
         config = {
-            "synapse_endpoint": "https://synapse.example.com",
-            "synapse_api_key": "test-key",
             "data_set_id": 1,
             "wait_for_deal": False,
         }
@@ -245,35 +223,6 @@ class TestUploadStepUpload:
         assert upload_call[0][1]["metadata"]["encrypted"] is True
     
     @pytest.mark.asyncio
-    async def test_upload_to_filecoin_missing_endpoint(self, tmp_path):
-        """Test upload fails without configured endpoint."""
-        step = UploadStep()
-        
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"test content")
-        
-        mock_bridge = MagicMock()
-        
-        config = {
-            "synapse_endpoint": None,
-            "synapse_api_key": None,
-            "data_set_id": 1,
-            "wait_for_deal": False,
-        }
-        
-        async def on_progress(stage: str, percent: int) -> None:
-            pass
-        
-        with pytest.raises(RuntimeError, match="Synapse endpoint not configured"):
-            await step._upload_to_filecoin(
-                mock_bridge,
-                str(video_file),
-                config,
-                None,
-                on_progress,
-            )
-    
-    @pytest.mark.asyncio
     async def test_upload_to_filecoin_connection_failure(self, tmp_path):
         """Test handling of Synapse connection failure."""
         step = UploadStep()
@@ -285,8 +234,6 @@ class TestUploadStepUpload:
         mock_bridge.call = AsyncMock(side_effect=RuntimeError("Connection refused"))
         
         config = {
-            "synapse_endpoint": "https://synapse.example.com",
-            "synapse_api_key": "test-key",
             "data_set_id": 1,
             "wait_for_deal": False,
         }
@@ -319,8 +266,6 @@ class TestUploadStepUpload:
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         
         config = {
-            "synapse_endpoint": "https://synapse.example.com",
-            "synapse_api_key": "test-key",
             "data_set_id": 1,
             "wait_for_deal": False,
         }
@@ -347,8 +292,6 @@ class TestUploadStepUpload:
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         
         config = {
-            "synapse_endpoint": "https://synapse.example.com",
-            "synapse_api_key": "test-key",
             "data_set_id": 1,
             "wait_for_deal": False,
         }
@@ -387,8 +330,6 @@ class TestUploadStepUpload:
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         
         config = {
-            "synapse_endpoint": "https://synapse.example.com",
-            "synapse_api_key": "test-key",
             "data_set_id": 1,
             "wait_for_deal": True,
         }
@@ -491,8 +432,6 @@ class TestUploadStepProcess:
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         
         mock_config = MagicMock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "test-key"
         
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
             with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
@@ -539,8 +478,6 @@ class TestUploadStepProcess:
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         
         mock_config = MagicMock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "test-key"
         
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
             with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
@@ -568,8 +505,6 @@ class TestUploadStepProcess:
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         
         mock_config = MagicMock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "test-key"
         
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
             with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
@@ -702,8 +637,6 @@ class TestUploadStepProgress:
         mock_bridge.on_notification = mock_on_notification
         
         mock_config = MagicMock()
-        mock_config.pipeline.synapse_endpoint = "https://synapse.example.com"
-        mock_config.pipeline.synapse_api_key = "test-key"
         
         context = PipelineContext(
             source_path=video_file,

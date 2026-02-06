@@ -30,7 +30,7 @@ class VLMEngineConfig:
     """
     
     model_type: str = "openai"
-    model_name: str = "gpt-4-vision-preview"
+    model_name: str = "zai-org/glm-4.6v-flash"
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     timeout: float = 120.0
@@ -73,6 +73,7 @@ class VLMMultiplexerEndpoint:
         name: Human-readable name
         weight: Load balancing weight
         max_concurrent: Maximum concurrent requests for this endpoint
+        model_id: Model identifier to use for this endpoint (passed to multiplexer LLM config)
     """
     
     base_url: str
@@ -80,6 +81,7 @@ class VLMMultiplexerEndpoint:
     weight: int = 1
     max_concurrent: int = 5
     api_key: Optional[str] = None
+    model_id: Optional[str] = None
 
 
 @dataclass
@@ -355,18 +357,21 @@ def get_example_multiplexer_config() -> str:
                 "name": "primary-server",
                 "weight": 8,
                 "max_concurrent": 10,
+                "model_id": "zai-org/glm-4.6v-flash",
             },
             {
                 "base_url": "http://secondary-server:1234/v1",
                 "name": "secondary-server",
                 "weight": 1,
                 "max_concurrent": 8,
+                "model_id": "zai-org/glm-4.6v-flash",
             },
             {
                 "base_url": "http://fallback-server:1234/v1",
                 "name": "fallback-server",
                 "weight": 1,
                 "max_concurrent": 2,
+                "model_id": "zai-org/glm-4.6v-flash",
             },
         ],
     }

@@ -50,9 +50,13 @@ class AnalyzeStep(ConditionalStep):
         - confidence: Overall analysis confidence score
     """
     
-    def __init__(self):
-        """Initialize the analyze step."""
-        super().__init__()
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """Initialize the analyze step.
+        
+        Args:
+            config: Step configuration (passed to base class)
+        """
+        super().__init__(config=config)
         self._processor: Optional[VLMProcessor] = None
         self._vlm_config: Optional[VLMConfig] = None
     
@@ -68,8 +72,8 @@ class AnalyzeStep(ConditionalStep):
     
     @property
     def default_enabled(self) -> bool:
-        """VLM analysis is enabled by default."""
-        return True
+        """VLM analysis is disabled by default."""
+        return False
     
     async def process(self, context: PipelineContext) -> StepResult:
         """Process VLM analysis.

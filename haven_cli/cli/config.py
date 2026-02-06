@@ -77,8 +77,6 @@ def show_config(
             ("encryption_enabled", str(config.pipeline.encryption_enabled), False),
             ("lit_network", config.pipeline.lit_network, False),
             ("upload_enabled", str(config.pipeline.upload_enabled), False),
-            ("synapse_endpoint", config.pipeline.synapse_endpoint or "", False),
-            ("synapse_api_key", mask(config.pipeline.synapse_api_key or "", True), True),
             ("sync_enabled", str(config.pipeline.sync_enabled), False),
             ("arkiv_endpoint", config.pipeline.arkiv_endpoint or "", False),
             ("arkiv_contract", config.pipeline.arkiv_contract or "", False),
@@ -154,7 +152,7 @@ def set_config(
     """Set a configuration value.
     
     Example:
-        haven config set pipeline.vlm_model gpt-4-vision-preview
+        haven config set pipeline.vlm_model zai-org/glm-4.6v-flash
         haven config set pipeline.max_concurrent_videos 8
         haven config set scheduler.enabled false
     """
@@ -231,20 +229,6 @@ def init_config(
     
     if interactive:
         # Interactive wizard
-        console.print("[bold cyan]Filecoin / Synapse Configuration[/bold cyan]")
-        synapse_endpoint = typer.prompt(
-            "  Synapse RPC URL",
-            default=config.pipeline.synapse_endpoint or "https://api.synapse.example.com"
-        )
-        synapse_api_key = typer.prompt(
-            "  Synapse API Key (optional)",
-            default="",
-            hide_input=True
-        )
-        config.pipeline.synapse_endpoint = synapse_endpoint if synapse_endpoint else None
-        config.pipeline.synapse_api_key = synapse_api_key if synapse_api_key else None
-        
-        console.print()
         console.print("[bold cyan]Arkiv Configuration[/bold cyan]")
         arkiv_enabled = typer.confirm("  Enable Arkiv sync?", default=config.pipeline.sync_enabled)
         config.pipeline.sync_enabled = arkiv_enabled
@@ -450,14 +434,14 @@ def show_env_vars() -> None:
     
     env_vars = [
         ("HAVEN_VLM_ENABLED", "Enable/disable VLM analysis", "true/false"),
-        ("HAVEN_VLM_MODEL", "VLM model to use", "gpt-4-vision-preview"),
+        ("HAVEN_VLM_MODEL", "VLM model to use", "zai-org/glm-4.6v-flash"),
         ("HAVEN_VLM_API_KEY", "API key for VLM service", "sk-..."),
         ("HAVEN_ENCRYPTION_ENABLED", "Enable/disable Lit Protocol encryption", "true/false"),
         ("HAVEN_LIT_NETWORK", "Lit Protocol network", "datil-dev"),
         ("HAVEN_UPLOAD_ENABLED", "Enable/disable Filecoin upload", "true/false"),
-        ("HAVEN_SYNAPSE_ENDPOINT", "Synapse RPC endpoint URL", "https://..."),
-        ("HAVEN_SYNAPSE_API_KEY", "Synapse API key", "..."),
         ("HAVEN_SYNC_ENABLED", "Enable/disable Arkiv sync", "true/false"),
+        ("HAVEN_ARKIV_ENDPOINT", "Arkiv RPC endpoint URL", "https://..."),
+        ("HAVEN_ARKIV_CONTRACT", "Arkiv contract address", "0x..."),
         ("HAVEN_SCHEDULER_ENABLED", "Enable/disable job scheduler", "true/false"),
         ("HAVEN_LOG_LEVEL", "Logging level", "DEBUG/INFO/WARNING/ERROR"),
         ("HAVEN_JS_RUNTIME", "JavaScript runtime to use", "node/bun/auto"),

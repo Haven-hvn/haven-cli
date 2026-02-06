@@ -11,7 +11,10 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-app = typer.Typer(help="Start Haven daemon with scheduler and pipeline processing.")
+app = typer.Typer(
+    help="Start Haven daemon with scheduler and pipeline processing.",
+    no_args_is_help=True,
+)
 console = Console()
 
 
@@ -38,7 +41,7 @@ def _setup_logging(verbose: bool, log_file: Optional[Path] = None) -> None:
     )
 
 
-@app.callback(invoke_without_command=True)
+@app.command(name="daemon")
 def run(
     config_file: Optional[Path] = typer.Option(
         None,

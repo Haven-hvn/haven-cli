@@ -178,8 +178,8 @@ def _extract_transaction_hash(receipt: Any) -> str | None:
     if not receipt:
         return None
     
-    # Try common attribute names
-    for attr_name in ['transactionHash', 'hash', 'txHash', 'tx_hash', 'transaction_hash']:
+    # Try common attribute names (arkiv-sdk uses tx_hash)
+    for attr_name in ['tx_hash', 'transactionHash', 'hash', 'txHash', 'transaction_hash']:
         if hasattr(receipt, attr_name):
             try:
                 value = getattr(receipt, attr_name)
