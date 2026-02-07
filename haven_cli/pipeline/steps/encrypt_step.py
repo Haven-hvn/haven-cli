@@ -14,6 +14,7 @@ The step is conditional and can be skipped via the encrypt option.
 
 import base64
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from haven_cli.js_runtime.bridge import JSRuntimeBridge
@@ -23,6 +24,7 @@ from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import StepError, StepResult
 from haven_cli.pipeline.step import ConditionalStep
 from haven_cli.services.blockchain_network import get_network_config
+from haven_cli.services.evm_utils import get_wallet_address_from_private_key
 
 logger = logging.getLogger(__name__)
 
@@ -390,12 +392,21 @@ class EncryptStep(ConditionalStep):
             Access control conditions for owner-only access
             
         Raises:
-            ValueError: If owner_wallet not configured
+            ValueError: If owner_wallet not configured and cannot be derived
         """
         wallet_address = context.options.get("owner_wallet") or self._config.get("owner_wallet")
+        
+        # Auto-derive owner_wallet from private key if not explicitly set
+        if not wallet_address:
+            private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("FILECOIN_PRIVATE_KEY")
+            if private_key:
+                wallet_address = get_wallet_address_from_private_key(private_key)
+                if wallet_address and wallet_address != "unknown":
+                    logger.info(f"Auto-derived owner_wallet from private key: {wallet_address}")
+        
         if not wallet_address:
             raise ValueError("owner_wallet required for owner_only pattern. "
-                           "Set it in config or context options.")
+                           "Set it in config, context options, or provide HAVEN_PRIVATE_KEY env var.")
         
         chain = self._config.get("chain", "ethereum")
         

@@ -10,8 +10,17 @@ app = typer.Typer(help="Manage archiver plugins.")
 console = Console()
 
 
-def _parse_config_value(value: str) -> Any:
-    """Parse configuration value string to appropriate type."""
+def _parse_config_value(value: str, key: Optional[str] = None, existing_config: Optional[dict] = None) -> Any:
+    """Parse configuration value string to appropriate type.
+    
+    Args:
+        value: The value string to parse
+        key: The configuration key name (used to detect list-type fields)
+        existing_config: Existing plugin config to check current type
+    
+    Returns:
+        Parsed value with appropriate type (list, bool, int, float, or str)
+    """
     # Boolean
     if value.lower() in ("true", "yes", "1"):
         return True
@@ -30,8 +39,47 @@ def _parse_config_value(value: str) -> Any:
     if "," in value:
         return [v.strip() for v in value.split(",")]
 
+    # Check if this is a list-type field that should always be a list
+    # even when only a single value is provided
+    if key and _is_list_field(key, existing_config):
+        return [value.strip()]
+
     # String
     return value
+
+
+def _is_list_field(key: str, existing_config: Optional[dict] = None) -> bool:
+    """Check if a configuration field should be treated as a list.
+    
+    Detects list-type fields by:
+    1. Checking if the key name suggests a list (ends with _ids, _list, etc.)
+    2. Checking the existing config value type
+    
+    Args:
+        key: The configuration key name
+        existing_config: Existing plugin config to check current type
+        
+    Returns:
+        True if the field should be treated as a list
+    """
+    # Check existing config first (if available)
+    if existing_config is not None:
+        existing_value = existing_config.get(key)
+        if isinstance(existing_value, list):
+            return True
+    
+    # Common list-type field name patterns
+    list_patterns = (
+        "_ids",      # e.g., channel_ids, video_ids
+        "_list",     # e.g., url_list
+        "_items",    # e.g., playlist_items
+        "_urls",     # e.g., feed_urls
+        "_keys",     # e.g., api_keys
+        "_tags",     # e.g., filter_tags
+        "_paths",    # e.g., watch_paths
+    )
+    
+    return key.endswith(list_patterns)
 
 
 @app.command("list")
@@ -291,7 +339,9 @@ def configure_plugin(
         k, v = key.split("=", 1)
         
         # Parse value (handle lists, bools, numbers)
-        parsed_value = _parse_config_value(v)
+        # Pass key and existing config to properly detect list-type fields
+        existing_config = plugin._config if plugin else None
+        parsed_value = _parse_config_value(v, key=k, existing_config=existing_config)
 
         # Update plugin config
         if plugin._config is None:

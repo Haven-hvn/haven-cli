@@ -212,6 +212,11 @@ class JobExecutor:
             Plugin instance or None if not found
         """
         from haven_cli.plugins.manager import PluginManager
+        from haven_cli.config import get_config
+        
+        # Get plugin-specific configuration from Haven config
+        config = get_config()
+        plugin_settings = config.plugins.plugin_settings.get(plugin_name, {})
         
         # Try to get from plugin manager
         manager = PluginManager()
@@ -223,8 +228,12 @@ class JobExecutor:
             registry = get_registry()
             plugin_class = registry.load(plugin_name)
             if plugin_class:
-                manager.register(plugin_class)
+                # Register with plugin-specific configuration
+                manager.register(plugin_class, config=plugin_settings)
                 plugin = manager.get_plugin(plugin_name)
+        elif plugin_settings:
+            # Update existing plugin's configuration
+            plugin.configure(plugin_settings)
         
         if plugin and not plugin._initialized:
             try:
@@ -439,7 +448,7 @@ class JobExecutor:
             
             with get_db_session() as session:
                 execution = JobExecution(
-                    job_id=result.job_id,
+                    job_id=str(result.job_id),  # Convert UUID to string for SQLite
                     plugin_name=plugin_name,
                     started_at=result.started_at,
                     completed_at=result.completed_at,

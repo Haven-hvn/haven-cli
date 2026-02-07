@@ -39,11 +39,14 @@ _global_scheduler: Optional["JobScheduler"] = None
 _scheduler_instance: Optional["JobScheduler"] = None
 
 
-def get_scheduler() -> "JobScheduler":
+def get_scheduler(load_jobs: bool = True) -> "JobScheduler":
     """Get the singleton JobScheduler instance.
     
     This function provides a global access point to the scheduler
     for CLI commands and other components.
+    
+    Args:
+        load_jobs: Whether to load persisted jobs from database (default: True)
     
     Returns:
         The singleton JobScheduler instance
@@ -51,6 +54,15 @@ def get_scheduler() -> "JobScheduler":
     global _scheduler_instance
     if _scheduler_instance is None:
         _scheduler_instance = JobScheduler()
+        if load_jobs:
+            # Load jobs synchronously for CLI access
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.run_until_complete(_scheduler_instance._load_persisted_jobs())
     return _scheduler_instance
 
 
@@ -452,13 +464,13 @@ class JobScheduler:
         # Set up event listeners
         self._setup_listeners()
 
+        # Start scheduler BEFORE adding jobs (next_run_time only available after start)
+        if self._scheduler:
+            self._scheduler.start()
+
         # Add all enabled jobs
         for job in self.active_jobs:
             self._add_to_apscheduler(job)
-
-        # Start scheduler
-        if self._scheduler:
-            self._scheduler.start()
 
         self._running = True
         logger.info(f"Scheduler started with {len(self.active_jobs)} jobs")

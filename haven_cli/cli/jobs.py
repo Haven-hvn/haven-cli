@@ -318,7 +318,7 @@ def job_history(
         if matching:
             target_job_id = matching[0].job_id
     
-    history = scheduler.get_history(job_id=target_job_id, limit=limit)
+    history = scheduler.get_history(job_id=target_job_id, limit=limit, from_database=True)
     
     table = Table(title=f"Job History{f' for {job_id}' if job_id else ''}")
     table.add_column("Job ID", style="cyan")
