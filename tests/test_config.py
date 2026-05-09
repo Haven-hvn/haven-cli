@@ -216,6 +216,43 @@ class TestConfigSaving:
             assert loaded.pipeline.vlm_model == "test-model"
             assert loaded.pipeline.vlm_enabled is False
 
+    def test_save_config_plugins_emit_valid_toml(self) -> None:
+        """Plugin lists and sources must be TOML, not Python repr (tomllib must parse)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            cfg = HavenConfig()
+            cfg.plugins.enabled_plugins = ["bittorrent", "youtube"]
+            cfg.plugins.disabled_plugins = []
+            cfg.plugins.plugin_settings["bittorrent"] = {
+                "enabled": True,
+                "download_dir": "/data/bt",
+                "max_concurrent_downloads": 2,
+                "sources": [
+                    {
+                        "name": "forum_a",
+                        "type": "forum",
+                        "domain": "example.com",
+                        "forum_id": "26",
+                        "max_threads": 5,
+                        "enabled": True,
+                    }
+                ],
+            }
+            save_config(cfg, config_path)
+            text = config_path.read_text(encoding="utf-8")
+            assert "['bittorrent'" not in text
+            assert "{'name'" not in text
+            assert 'enabled_plugins = ["bittorrent", "youtube"]' in text
+            assert "[[plugins.settings.bittorrent.sources]]" in text
+
+            loaded = load_config(config_path)
+            assert loaded.plugins.enabled_plugins == ["bittorrent", "youtube"]
+            bt = loaded.plugins.plugin_settings["bittorrent"]
+            assert bt["download_dir"] == "/data/bt"
+            assert len(bt["sources"]) == 1
+            assert bt["sources"][0]["domain"] == "example.com"
+            assert bt["sources"][0]["max_threads"] == 5
+
 
 class TestSetConfigValue:
     """Test set_config_value function."""

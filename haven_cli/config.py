@@ -540,6 +540,70 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     return config
 
 
+def _toml_escape_basic_string(raw: str) -> str:
+    """Escape a string for a TOML basic string (double quotes)."""
+    return raw.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _format_toml_inline_array(elements: list[Any]) -> str:
+    """Format a TOML array of booleans, integers, floats, or strings (no nested tables)."""
+    parts: list[str] = []
+    for el in elements:
+        if isinstance(el, bool):
+            parts.append("true" if el else "false")
+        elif isinstance(el, int):
+            parts.append(str(el))
+        elif isinstance(el, float):
+            parts.append(repr(el))
+        elif isinstance(el, str):
+            parts.append(f'"{_toml_escape_basic_string(el)}"')
+        else:
+            raise TypeError(
+                f"Unsupported TOML array element type: {type(el).__name__}"
+            )
+    return "[" + ", ".join(parts) + "]"
+
+
+def _plugin_setting_scalar_line(key: str, value: Any) -> str:
+    """One ``key = value`` line for a plugin settings table (non-list values)."""
+    if isinstance(value, str):
+        return f'{key} = "{_toml_escape_basic_string(value)}"'
+    if isinstance(value, bool):
+        return f"{key} = {str(value).lower()}"
+    if isinstance(value, int):
+        return f"{key} = {value}"
+    if isinstance(value, float):
+        return f"{key} = {repr(value)}"
+    raise TypeError(
+        f"Unsupported plugin setting scalar for {key!r}: {type(value).__name__}"
+    )
+
+
+def _plugin_settings_toml_lines(plugin_name: str, settings: dict[str, Any]) -> list[str]:
+    """Build TOML lines for ``[plugins.settings.{plugin_name}]`` and nested array-of-tables."""
+    lines: list[str] = [f"\n[plugins.settings.{plugin_name}]"]
+    deferred_aot: list[tuple[str, list[dict[str, Any]]]] = []
+
+    for key, value in settings.items():
+        if isinstance(value, (list, tuple)):
+            if len(value) == 0:
+                lines.append(f"{key} = []")
+            elif isinstance(value[0], dict):
+                deferred_aot.append((key, [dict(row) for row in value]))
+            else:
+                lines.append(f"{key} = {_format_toml_inline_array(list(value))}")
+        else:
+            lines.append(_plugin_setting_scalar_line(key, value))
+
+    for aot_key, rows in deferred_aot:
+        table_base = f"plugins.settings.{plugin_name}.{aot_key}"
+        for row in rows:
+            lines.append(f"[[{table_base}]]")
+            for rk, rv in row.items():
+                lines.append(_plugin_setting_scalar_line(str(rk), rv))
+    return lines
+
+
 def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
     """
     Save configuration to a TOML file.
@@ -553,18 +617,15 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
     
     # Ensure directory exists
     path.parent.mkdir(parents=True, exist_ok=True)
-    
-    def _toml_escape(raw: str) -> str:
-        return raw.replace("\\", "\\\\").replace('"', '\\"')
 
     # Build TOML content
     lines = [
         "# Haven CLI Configuration",
         "# Generated automatically - edit with care",
         "",
-        f'config_dir = "{_toml_escape(str(config.config_dir))}"',
-        f'data_dir = "{_toml_escape(str(config.data_dir))}"',
-        f'database_url = "{_toml_escape(config.database_url)}"',
+        f'config_dir = "{_toml_escape_basic_string(str(config.config_dir))}"',
+        f'data_dir = "{_toml_escape_basic_string(str(config.data_dir))}"',
+        f'database_url = "{_toml_escape_basic_string(config.database_url)}"',
         "",
         "# Blockchain Network Configuration",
         "# network_mode: legacy default; used when filecoin_network_mode / arkiv_network_mode are empty",
@@ -608,24 +669,15 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f'default_cron = "{config.scheduler.default_cron}"',
         "",
         "[plugins]",
-        f"enabled_plugins = {config.plugins.enabled_plugins}",
-        f"disabled_plugins = {config.plugins.disabled_plugins}",
+        f"enabled_plugins = {_format_toml_inline_array(list(config.plugins.enabled_plugins))}",
+        f"disabled_plugins = {_format_toml_inline_array(list(config.plugins.disabled_plugins))}",
         "",
         "[plugins.settings]",
     ]
     
     # Add plugin-specific settings
     for plugin_name, settings in config.plugins.plugin_settings.items():
-        lines.append(f"\n[plugins.settings.{plugin_name}]")
-        for key, value in settings.items():
-            if isinstance(value, str):
-                lines.append(f'{key} = "{value}"')
-            elif isinstance(value, bool):
-                lines.append(f"{key} = {str(value).lower()}")
-            elif isinstance(value, (list, tuple)):
-                lines.append(f"{key} = {list(value)}")
-            else:
-                lines.append(f"{key} = {value}")
+        lines.extend(_plugin_settings_toml_lines(plugin_name, settings))
     
     lines.extend([
         "",
