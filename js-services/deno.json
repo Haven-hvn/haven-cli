@@ -14,7 +14,7 @@
   "imports": {
     "ethers": "npm:ethers@6.16.0",
     "viem": "npm:viem@2.45.1",
-    "filecoin-pin": "npm:filecoin-pin@0.16.0"
+    "filecoin-pin": "npm:filecoin-pin@0.21.0"
   },
   "lint": {
     "rules": {

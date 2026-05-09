@@ -25,13 +25,15 @@ import {
   createUnixfsCarBuilder,
   type CarBuildResult,
   type CreateCarOptions,
-} from 'npm:filecoin-pin@^0.16.0/core/unixfs';
+} from 'filecoin-pin/core/unixfs';
 import {
   initializeSynapse as initSynapse,
   createStorageContext,
   cleanupSynapseService,
-} from 'npm:filecoin-pin@^0.16.0/core/synapse';
-import { executeUpload, checkUploadReadiness } from 'npm:filecoin-pin@0.16.0/core/upload';
+} from 'filecoin-pin/core/synapse';
+import { executeUpload, checkUploadReadiness } from 'filecoin-pin/core/upload';
+
+import { carFileByteLength, openCarReadableStream } from './car_stream.ts';
 
 // Import pino Logger type
 import type { Logger } from 'npm:pino@^10.0.0';
@@ -554,28 +556,28 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 20,
       });
 
-      // Read CAR file
-      console.error('[synapse-wrapper] Reading CAR file from:', carBuildResult.carPath);
-      const carBytes = await Deno.readFile(carBuildResult.carPath);
-      console.error('[synapse-wrapper] CAR file read complete, size:', carBytes.length);
+      // CAR byte length for readiness / payment (stat before streaming — no full-file buffer)
+      console.error('[synapse-wrapper] CAR path for upload stream:', carBuildResult.carPath);
+      const carFileSize = await carFileByteLength(carBuildResult.carPath);
+      console.error('[synapse-wrapper] CAR file size (stat):', carFileSize);
 
       onProgress?.({
         bytesUploaded: 0,
-        totalBytes: carBytes.length,
+        totalBytes: carFileSize,
         percentage: 25,
       });
 
       // Check upload readiness (payment validation)
       console.error('[synapse-wrapper] Starting checkUploadReadiness...');
       console.error('[synapse-wrapper] RPC URL:', rpcUrl);
-      console.error('[synapse-wrapper] File size:', carBytes.length);
+      console.error('[synapse-wrapper] File size:', carFileSize);
       
       // Wrap checkUploadReadiness with timeout to prevent indefinite hanging on RPC calls
       const readiness = await this._withTimeout(
         'checkUploadReadiness',
         checkUploadReadiness({
           synapse: synapse as any,
-          fileSize: carBytes.length,
+          fileSize: carFileSize,
           autoConfigureAllowances: true,
         }),
         600000 // 600 second (10 minute) timeout for readiness check
@@ -594,7 +596,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
 
       onProgress?.({
         bytesUploaded: 0,
-        totalBytes: carBytes.length,
+        totalBytes: carFileSize,
         percentage: 30,
       });
 
@@ -613,7 +615,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
 
       onProgress?.({
         bytesUploaded: 0,
-        totalBytes: carBytes.length,
+        totalBytes: carFileSize,
         percentage: 35,
       });
 
@@ -621,10 +623,11 @@ class SynapseWrapperImpl implements SynapseWrapper {
       // Parse the root CID string to a CID object
       const rootCidString = carBuildResult.rootCid.toString();
       
-      // Upload with timeout and retry logic
+      // Upload with timeout and retry logic (fresh ReadableStream per attempt on retry)
       const uploadResult = await this._executeUploadWithTimeout(
         synapseService as any,
-        carBytes,
+        carBuildResult.carPath,
+        carFileSize,
         rootCidString,
         filePath,
         onProgress
@@ -638,14 +641,14 @@ class SynapseWrapperImpl implements SynapseWrapper {
       }
 
       onProgress?.({
-        bytesUploaded: carBytes.length,
-        totalBytes: carBytes.length,
+        bytesUploaded: carFileSize,
+        totalBytes: carFileSize,
         percentage: 100,
       });
 
       return {
         cid: rootCidString,
-        size: carBytes.length,
+        size: carFileSize,
         uploadedAt: new Date().toISOString(),
         dealId: uploadResult.pieceId?.toString(),
       };
@@ -713,7 +716,8 @@ class SynapseWrapperImpl implements SynapseWrapper {
    */
   private async _executeUploadWithTimeout(
     synapseService: any,
-    carBytes: Uint8Array,
+    carPath: string,
+    carByteLength: number,
     rootCidString: string,
     filePath: string,
     onProgress?: ProgressCallback,
@@ -723,11 +727,12 @@ class SynapseWrapperImpl implements SynapseWrapper {
     let lastError: Error | null = null;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const { handle, stream } = await openCarReadableStream(carPath);
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
         this._logger.info(`Upload attempt ${attempt}/${maxRetries} for ${filePath}`);
         
         // Create a promise that rejects after the timeout
-        let timeoutId: ReturnType<typeof setTimeout>;
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutId = setTimeout(() => {
             reject(new Error(`Upload timeout after ${timeoutMs}ms (attempt ${attempt})`));
@@ -735,30 +740,31 @@ class SynapseWrapperImpl implements SynapseWrapper {
         });
         // Clean up timeout if timeoutPromise is rejected (but not by the timer)
         timeoutPromise.catch(() => {
-          if (timeoutId) clearTimeout(timeoutId);
+          if (timeoutId !== undefined) clearTimeout(timeoutId);
         });
         
         // Execute upload with race against timeout
-        const uploadPromise = executeUpload(synapseService, carBytes, rootCidString as any, {
+        const uploadPromise = executeUpload(synapseService, stream, rootCidString as any, {
           logger: this._logger,
           contextId: filePath.split('/').pop() || 'upload',
           onProgress: (event: { type: string }) => {
-            if (event.type === 'onUploadComplete') {
+            // filecoin-pin 0.21+ UploadProgressEvents (legacy on* names kept for safety)
+            if (event.type === 'stored' || event.type === 'copyComplete' || event.type === 'onUploadComplete') {
               onProgress?.({
-                bytesUploaded: carBytes.length,
-                totalBytes: carBytes.length,
+                bytesUploaded: carByteLength,
+                totalBytes: carByteLength,
                 percentage: 80,
               });
-            } else if (event.type === 'onPieceAdded') {
+            } else if (event.type === 'piecesAdded' || event.type === 'onPieceAdded') {
               onProgress?.({
-                bytesUploaded: carBytes.length,
-                totalBytes: carBytes.length,
+                bytesUploaded: carByteLength,
+                totalBytes: carByteLength,
                 percentage: 90,
               });
-            } else if (event.type === 'onPieceConfirmed') {
+            } else if (event.type === 'piecesConfirmed' || event.type === 'onPieceConfirmed') {
               onProgress?.({
-                bytesUploaded: carBytes.length,
-                totalBytes: carBytes.length,
+                bytesUploaded: carByteLength,
+                totalBytes: carByteLength,
                 percentage: 95,
               });
             }
@@ -770,6 +776,8 @@ class SynapseWrapperImpl implements SynapseWrapper {
         
         // Race between upload and timeout
         const result = await Promise.race([uploadPromise, timeoutPromise]);
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+        timeoutId = undefined;
         this._logger.info(`Upload succeeded on attempt ${attempt}`);
         return result;
         
@@ -813,6 +821,13 @@ class SynapseWrapperImpl implements SynapseWrapper {
           this._logger.error(`Upload failed with non-retryable error: ${errorMessage}`);
           throw error;
         }
+      } finally {
+        try {
+          handle.close();
+        } catch {
+          // Ignore close errors (e.g. already closed)
+        }
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
       }
     }
     
@@ -1046,8 +1061,8 @@ class SynapseWrapperImpl implements SynapseWrapper {
 
       // If outputPath is specified, copy the CAR file there
       if (outputPath && outputPath !== carBuildResult.carPath) {
-        const carBytes = await Deno.readFile(carBuildResult.carPath);
-        await Deno.writeFile(outputPath, carBytes);
+        await Deno.copyFile(carBuildResult.carPath, outputPath);
+        const carSize = await carFileByteLength(outputPath);
         
         // Clean up the original CAR file
         try {
@@ -1059,7 +1074,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
         return {
           carPath: outputPath,
           rootCid: carBuildResult.rootCid.toString(),
-          size: carBytes.length,
+          size: carSize,
         };
       }
 
