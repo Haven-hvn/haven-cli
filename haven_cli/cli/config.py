@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 import typer
 from rich.console import Console
@@ -171,6 +171,95 @@ def _prompt_encryption_access_gate(config: Any) -> None:
         console.print(f"  [dim]owner_wallet[/dim] {config.pipeline.owner_wallet}")
     if config.pipeline.nft_contract:
         console.print(f"  [dim]nft_contract[/dim] {config.pipeline.nft_contract}")
+
+
+def _prompt_bittorrent_plugin(config: Any) -> None:
+    """Interactive BitTorrent plugin section for ``haven config init``."""
+    from haven_cli.bittorrent_plugin_init import (
+        build_bittorrent_plugin_settings,
+        sync_bittorrent_plugin_lists,
+    )
+
+    console.print()
+    console.print("[bold cyan]BitTorrent plugin[/bold cyan]")
+    console.print(
+        "  [dim]Scheduled jobs can scrape forum magnet links and download via libtorrent.[/dim]"
+    )
+    bt_on = typer.confirm(
+        "  Enable BitTorrent plugin?",
+        default=True,
+    )
+
+    download_default = str(config.data_dir / "bittorrent")
+    dl_dir = "downloads/bittorrent"
+    max_cd = 3
+    sources: List[Dict[str, Any]] = []
+
+    if bt_on:
+        dl_dir = typer.prompt(
+            "  Download directory",
+            default=download_default,
+        ).strip() or download_default
+        max_cd = int(
+            typer.prompt(
+                "  Max concurrent torrent downloads",
+                default="3",
+            )
+        )
+        add_forum = typer.confirm(
+            "  Add a forum magnet source now?",
+            default=False,
+        )
+        if add_forum:
+            name = (
+                typer.prompt("  Source name (identifier)", default="primary_forum").strip()
+                or "primary_forum"
+            )
+            domain = typer.prompt(
+                "  Forum domain (hostname only, e.g. example.com)",
+                default="",
+            ).strip()
+            if domain:
+                forum_id = (
+                    typer.prompt("  Forum ID (fid query parameter)", default="1").strip()
+                    or "1"
+                )
+                max_threads = int(
+                    typer.prompt(
+                        "  Max threads to scan from the forum listing",
+                        default="10",
+                    )
+                )
+                sources.append(
+                    {
+                        "name": name,
+                        "type": "forum",
+                        "domain": domain,
+                        "forum_id": forum_id,
+                        "max_threads": max_threads,
+                        "enabled": True,
+                    }
+                )
+            else:
+                console.print(
+                    "  [yellow]No domain entered — skip forum source "
+                    "(edit [plugins.settings.bittorrent] later).[/yellow]"
+                )
+
+    settings = build_bittorrent_plugin_settings(
+        enabled=bt_on,
+        download_dir=dl_dir,
+        max_concurrent_downloads=max_cd,
+        sources=sources if bt_on else None,
+    )
+    config.plugins.plugin_settings["bittorrent"] = settings
+    sync_bittorrent_plugin_lists(
+        config.plugins.enabled_plugins,
+        config.plugins.disabled_plugins,
+        bittorrent_enabled=bt_on,
+    )
+    status = "enabled" if bt_on else "disabled"
+    console.print(f"  [green]✓[/green] BitTorrent plugin {status}")
 
 
 @app.command("show")
@@ -519,6 +608,8 @@ def init_config(
             default=config.scheduler.enabled
         )
         config.scheduler.enabled = scheduler_enabled
+        
+        _prompt_bittorrent_plugin(config)
         
         console.print()
         console.print("[bold cyan]Logging Configuration[/bold cyan]")
