@@ -562,11 +562,6 @@ async with manager:
 ```python
 from haven_cli.js_runtime.protocol import JSRuntimeMethods
 
-# Lit Protocol methods
-JSRuntimeMethods.LIT_CONNECT
-JSRuntimeMethods.LIT_ENCRYPT
-JSRuntimeMethods.LIT_DECRYPT
-
 # Synapse methods
 JSRuntimeMethods.SYNAPSE_CONNECT
 JSRuntimeMethods.SYNAPSE_UPLOAD
@@ -578,33 +573,7 @@ JSRuntimeMethods.PING
 JSRuntimeMethods.HEALTH_CHECK
 ```
 
-### Example: Lit Protocol
-
-```python
-from haven_cli.js_runtime.manager import JSBridgeManager, js_call
-from haven_cli.js_runtime.protocol import JSRuntimeMethods
-
-async def encrypt_file(file_path: str) -> dict:
-    manager = JSBridgeManager.get_instance()
-    
-    async with manager:
-        # Connect to Lit
-        await js_call(
-            JSRuntimeMethods.LIT_CONNECT,
-            {"network": "datil-dev"},
-        )
-        
-        # Encrypt file
-        result = await js_call(
-            JSRuntimeMethods.LIT_ENCRYPT,
-            {
-                "filePath": file_path,
-                "accessControlConditions": [...],
-            },
-        )
-        
-        return result
-```
+Encryption is handled in Python by Haven-AOL helpers (`haven_cli.crypto.haven_aol_local`) and does not require Lit runtime calls.
 
 ### Example: Synapse
 
@@ -663,7 +632,7 @@ The uploaded entity follows the Haven Cross-Application Data Format v1.0.0, ensu
     "is_encrypted": True,                   # Encryption status
     "cid_hash": "sha256...",                # SHA256 of CID
     "vlm_json_cid": "Qm...",                # VLM analysis CID
-    "lit_encryption_metadata": "{...}",     # Lit encryption metadata
+    "encryption_metadata": "{...}",         # Haven-AOL encryption metadata
     "cid_encryption_metadata": "{...}",     # CID encryption metadata
     "segment_metadata": {...},              # Multi-segment info
     "duration": 300.5,                      # Duration in seconds

@@ -140,7 +140,7 @@ class TestLoadEncryptionMetadata:
     async def test_load_from_sidecar(self, tmp_path):
         """Test loading metadata from sidecar file."""
         file_path = tmp_path / "video.mp4"
-        metadata_path = tmp_path / "video.mp4.lit"
+        metadata_path = tmp_path / "video.mp4.encmeta"
         
         # Create metadata file
         metadata_data = {
@@ -170,7 +170,7 @@ class TestLoadEncryptionMetadata:
     async def test_load_invalid_json(self, tmp_path):
         """Test loading with invalid JSON."""
         file_path = tmp_path / "video.mp4"
-        metadata_path = tmp_path / "video.mp4.lit"
+        metadata_path = tmp_path / "video.mp4.encmeta"
         
         metadata_path.write_text("invalid json")
         
@@ -195,7 +195,7 @@ class TestSaveEncryptionMetadata:
         
         await save_encryption_metadata(file_path, metadata)
         
-        metadata_path = tmp_path / "video.mp4.lit"
+        metadata_path = tmp_path / "video.mp4.encmeta"
         assert metadata_path.exists()
         
         data = json.loads(metadata_path.read_text())
@@ -215,7 +215,7 @@ class TestSaveEncryptionMetadata:
         
         await save_encryption_metadata(file_path, metadata)
         
-        metadata_path = tmp_path / "video.mp4.lit"
+        metadata_path = tmp_path / "video.mp4.encmeta"
         data = json.loads(metadata_path.read_text())
         
         # Both formats should be present for compatibility
@@ -234,7 +234,7 @@ class TestGetEncryptionMetadataPath:
         
         result = get_encryption_metadata_path(file_path)
         
-        assert result == Path("/path/to/video.mp4.lit")
+        assert result == Path("/path/to/video.mp4.encmeta")
     
     def test_get_path_with_multiple_extensions(self):
         """Test getting metadata path for file with multiple extensions."""
@@ -242,7 +242,7 @@ class TestGetEncryptionMetadataPath:
         
         result = get_encryption_metadata_path(file_path)
         
-        assert result == Path("/path/to/video.tar.gz.lit")
+        assert result == Path("/path/to/video.tar.gz.encmeta")
 
 
 class TestDeleteEncryptionMetadata:
@@ -252,7 +252,7 @@ class TestDeleteEncryptionMetadata:
     async def test_delete_existing(self, tmp_path):
         """Test deleting existing metadata file."""
         file_path = tmp_path / "video.mp4"
-        metadata_path = tmp_path / "video.mp4.lit"
+        metadata_path = tmp_path / "video.mp4.encmeta"
         metadata_path.write_text("{}")
         
         result = await delete_encryption_metadata(file_path)
@@ -277,7 +277,7 @@ class TestFindEncryptionMetadata:
     async def test_find_by_cid(self, tmp_path):
         """Test finding metadata by CID from sidecar."""
         file_path = tmp_path / "video.mp4"
-        metadata_path = tmp_path / "video.mp4.lit"
+        metadata_path = tmp_path / "video.mp4.encmeta"
         
         metadata_data = {
             "ciphertext": "test",

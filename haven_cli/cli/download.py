@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +16,8 @@ from rich.table import Table
 from haven_cli.config import load_config
 from haven_cli.js_runtime.manager import JSBridgeManager, js_call
 from haven_cli.js_runtime.protocol import JSRuntimeMethods
+from haven_cli.crypto.haven_aol_local import GateParams, decrypt_bytes
+from haven_cli.services.evm_utils import normalize_haven_aol_chain
 from haven_cli.crypto import (
     EncryptionMetadata,
     load_encryption_metadata,
@@ -49,7 +51,7 @@ def download(
         False,
         "--decrypt",
         "-d",
-        help="Decrypt file after download using Lit Protocol.",
+        help="Decrypt file after download using Haven-AOL.",
     ),
     config_file: Optional[Path] = typer.Option(
         None,
@@ -67,16 +69,16 @@ def download(
     """Download a file from Filecoin network.
     
     This command retrieves a file by its CID and optionally decrypts it
-    using Lit Protocol if it was encrypted during upload.
+    using Haven-AOL if it was encrypted during upload.
     
     The download process:
     1. Connects to the Synapse SDK
     2. Downloads the file from Filecoin to the specified output path
-    3. If --decrypt is specified, decrypts using Lit Protocol
+    3. If --decrypt is specified, decrypts using Haven-AOL
     
     Encryption metadata is looked up in the following order:
     1. Database (if CID was previously uploaded)
-    2. Sidecar file (.lit extension)
+    2. Sidecar file (.encmeta extension)
     
     Example:
         haven download bafybeig... --output video.mp4
@@ -148,13 +150,12 @@ def download(
                     
                     # Decrypt if requested
                     if decrypt:
-                        progress.update(task, description="Decrypting with Lit Protocol...")
+                        progress.update(task, description="Decrypting with Haven-AOL...")
                         
                         await _decrypt_file(
                             output,
                             output,
                             cid,
-                            config.blockchain.get_lit_network(),
                         )
                         
                         progress.update(task, description="Decryption complete")
@@ -189,16 +190,13 @@ async def _decrypt_file(
     input_path: Path,
     output_path: Path,
     cid: str,
-    lit_network: str,
 ) -> None:
-    """Decrypt a file using Lit Protocol.
+    """Decrypt a file using Haven-AOL.
     
     Args:
         input_path: Path to the encrypted file
         output_path: Path to write the decrypted file
         cid: Content ID for metadata lookup
-        lit_network: Lit Protocol network to use
-        
     Raises:
         ValueError: If encryption metadata is not found
         RuntimeError: If decryption fails
@@ -213,39 +211,47 @@ async def _decrypt_file(
     if not metadata:
         raise ValueError(
             f"No encryption metadata found for CID {cid}. "
-            "Ensure the file was encrypted during upload or provide a sidecar .lit file."
+            "Ensure the file was encrypted during upload or provide a sidecar .encmeta file."
         )
     
-    # Connect to Lit Protocol
-    await js_call(
-        JSRuntimeMethods.LIT_CONNECT,
-        {"network": lit_network},
-        max_retries=3,
-    )
-    
-    # Read encrypted file content
+    private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
+    if not private_key:
+        raise ValueError("HAVEN_PRIVATE_KEY is required for decryption")
+
     encrypted_data = input_path.read_bytes()
-    
-    # Decrypt via Lit Protocol
-    decrypt_result = await js_call(
-        JSRuntimeMethods.LIT_DECRYPT,
-        {
-            "ciphertext": metadata.ciphertext or base64.b64encode(encrypted_data).decode(),
-            "dataToEncryptHash": metadata.data_to_encrypt_hash,
-            "accessControlConditions": metadata.access_control_conditions,
-            "chain": metadata.chain,
-        },
-        max_retries=3,
+
+    gate_source = metadata.access_control_conditions[0] if metadata.access_control_conditions else {}
+    token_address = str(gate_source.get("contractAddress", "")).strip()
+    threshold_raw = gate_source.get("returnValueTest", {}).get("value", "1")
+    try:
+        threshold = int(str(threshold_raw))
+    except ValueError as exc:
+        raise ValueError("Invalid threshold value in encryption metadata") from exc
+    cid_value = str(gate_source.get("cid") or cid or "").strip()
+    if not cid_value:
+        cid_value = f"local-{input_path.name}"
+
+    if not token_address:
+        raise ValueError("Encryption metadata missing token contract address")
+
+    if not metadata.chain:
+        raise ValueError(
+            "Encryption metadata is missing chain. "
+            "Cannot decrypt without explicit Haven-AOL chain."
+        )
+
+    decrypted_data = decrypt_bytes(
+        ciphertext_bytes=encrypted_data,
+        private_key=private_key,
+        encrypted_key_b64=metadata.encrypted_key,
+        gate=GateParams(
+            chain=normalize_haven_aol_chain(str(metadata.chain)),
+            token_address=token_address,
+            threshold=threshold,
+            cid=cid_value,
+        ),
     )
-    
-    # Write decrypted data
-    if isinstance(decrypt_result, dict) and "decryptedData" in decrypt_result:
-        decrypted_data = base64.b64decode(decrypt_result["decryptedData"])
-    elif isinstance(decrypt_result, str):
-        decrypted_data = base64.b64decode(decrypt_result)
-    else:
-        raise RuntimeError(f"Unexpected decryption result format: {type(decrypt_result)}")
-    
+
     output_path.write_bytes(decrypted_data)
 
 
@@ -464,11 +470,11 @@ def decrypt_file(
         help="Overwrite existing file if it exists.",
     ),
 ) -> None:
-    """Decrypt a local file using Lit Protocol.
+    """Decrypt a local file using Haven-AOL.
     
-    This command decrypts a file that was encrypted with Lit Protocol.
+    This command decrypts a file that was encrypted with Haven-AOL.
     Encryption metadata is looked up from the database (by CID) or from
-    a sidecar .lit file.
+    a sidecar .encmeta file.
     
     Example:
         haven download decrypt-file encrypted.mp4 --output decrypted.mp4
@@ -509,7 +515,6 @@ def decrypt_file(
                     input_path,
                     output,
                     cid or "",
-                    config.blockchain.get_lit_network(),
                 )
                 
                 progress.update(task, completed=True)

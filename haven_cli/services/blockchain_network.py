@@ -1,7 +1,6 @@
 """Blockchain Network Configuration.
 
-Provides unified mainnet/testnet configuration for all blockchain integrations:
-- Lit Protocol (encryption)
+Provides unified mainnet/testnet configuration for blockchain integrations:
 - Filecoin (storage via Synapse)
 - Arkiv (blockchain sync)
 
@@ -12,9 +11,6 @@ Usage:
     
     config = get_config()
     network_config = get_network_config(config.blockchain.network_mode)
-    
-    # Use Lit network
-    lit_network = network_config.lit_network
     
     # Use Filecoin RPC
     filecoin_rpc = network_config.filecoin_rpc_url
@@ -57,16 +53,14 @@ class NetworkConfig:
     
     Attributes:
         mode: The network mode (mainnet or testnet)
-        lit_network: Lit Protocol network name
         filecoin_rpc_url: Filecoin RPC endpoint
         filecoin_chain_id: Filecoin chain ID
         arkiv_rpc_url: Arkiv RPC endpoint
         arkiv_chain_name: Human-readable chain name
-        chain_for_access_control: Chain name for Lit access control conditions
+        chain_for_access_control: Chain name for access control conditions
     """
     
     mode: NetworkMode
-    lit_network: str
     filecoin_rpc_url: str
     filecoin_chain_id: int
     arkiv_rpc_url: str
@@ -88,7 +82,6 @@ class NetworkConfig:
 _NETWORK_PRESETS: dict[NetworkMode, NetworkConfig] = {
     NetworkMode.MAINNET: NetworkConfig(
         mode=NetworkMode.MAINNET,
-        lit_network="datil",  # Lit Protocol mainnet
         filecoin_rpc_url="wss://wss.node.glif.io/apigw/lotus/rpc/v1",
         filecoin_chain_id=314,  # Filecoin mainnet
         arkiv_rpc_url="https://mainnet.arkiv.network/rpc",  # Arkiv mainnet
@@ -97,7 +90,6 @@ _NETWORK_PRESETS: dict[NetworkMode, NetworkConfig] = {
     ),
     NetworkMode.TESTNET: NetworkConfig(
         mode=NetworkMode.TESTNET,
-        lit_network="datil-dev",  # Lit Protocol testnet (can also use "naga" or "naga-dev")
         filecoin_rpc_url="wss://wss.calibration.node.glif.io/apigw/lotus/rpc/v1",
         filecoin_chain_id=314159,  # Filecoin Calibration testnet
         arkiv_rpc_url="https://mendoza.hoodi.arkiv.network/rpc",  # Arkiv on Hoodi testnet
@@ -121,10 +113,8 @@ def get_network_config(mode: str | NetworkMode) -> NetworkConfig:
         
     Example:
         >>> config = get_network_config("testnet")
-        >>> config.lit_network
-        'datil-dev'
         >>> config.filecoin_rpc_url
-        'https://api.calibration.node.glif.io/rpc/v1'
+        'wss://wss.calibration.node.glif.io/apigw/lotus/rpc/v1'
     """
     if isinstance(mode, str):
         mode = NetworkMode.from_string(mode)
@@ -176,18 +166,6 @@ def validate_network_mode(mode: str) -> tuple[bool, Optional[str]]:
 
 
 # Convenience functions for common use cases
-
-def get_lit_network(mode: str | NetworkMode = "testnet") -> str:
-    """Get Lit Protocol network name for the specified mode.
-    
-    Args:
-        mode: Network mode ('mainnet' or 'testnet')
-        
-    Returns:
-        Lit Protocol network name (e.g., 'datil', 'datil-dev')
-    """
-    return get_network_config(mode).lit_network
-
 
 def get_filecoin_rpc_url(mode: str | NetworkMode = "testnet") -> str:
     """Get Filecoin RPC URL for the specified mode.

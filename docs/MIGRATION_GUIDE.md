@@ -62,7 +62,7 @@ A migration script is provided at `scripts/migrate_entities.py`.
 2. **Payload field rename**: `encrypted` → `is_encrypted`
 3. **Attributes field removal**: Remove `root_cid` from public attributes
 4. **Payload field removal**: Remove `encryption_ciphertext`
-5. **Encryption metadata consolidation**: Combine scattered fields into `lit_encryption_metadata`
+5. **Encryption metadata consolidation**: Combine scattered fields into `encryption_metadata`
 6. **Type normalization**: Ensure `is_encrypted` is int 0 or 1 in attributes
 
 ### Manual Review Required
@@ -272,7 +272,7 @@ Migrating entities requires gas fees for the update transactions.
   "payload": {
     "filecoin_root_cid": "Qm...",
     "is_encrypted": 1,
-    "lit_encryption_metadata": "{...}",
+    "encryption_metadata": "{...}",
     "cid_hash": "sha256..."
   },
   "attributes": {

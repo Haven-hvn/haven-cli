@@ -558,7 +558,7 @@ class JobHistoryRepository:
         return {
             'status': job.status,
             'progress': job.progress_percent,
-            'lit_cid': job.lit_cid,
+            'encrypted_ref': job.encrypted_ref,
             'completed_at': job.completed_at.isoformat() if job.completed_at else None,
         }
 

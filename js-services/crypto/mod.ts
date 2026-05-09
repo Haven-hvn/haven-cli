@@ -9,8 +9,6 @@
  * - **Streaming AES**: `aes-streaming.ts` - Memory-efficient streaming encryption
  * - **Utils**: `utils.ts` - Key generation, hashing, and data conversion utilities
  * - **Streaming Utils**: `utils-streaming.ts` - Streaming hash computation
- * - **Access Control**: `access-control.ts` - Wallet and access control condition utilities
- * - **Lit Client**: `lit-client.ts` - Lit Protocol client integration
  *
  * ## Usage Examples
  *
@@ -49,13 +47,6 @@
 // ============================================================================
 
 export type {
-  // Access Control Types
-  EvmBasicAccessControlCondition,
-  UnifiedAccessControlCondition,
-  ChainName,
-  StandardContractType,
-  ReturnValueComparator,
-  ReturnValueTest,
   // Encryption Metadata Types
   HybridEncryptionMetadata,
   HybridEncryptionResult,
@@ -146,44 +137,6 @@ export type {
   /** Options for streaming AES decryption */
   AESStreamingDecryptOptions,
 } from './aes-streaming.ts';
-
-// ============================================================================
-// Access Control
-// ============================================================================
-
-export {
-  /** Normalize a private key to 32-byte hex format */
-  normalizePrivateKey,
-  /** Get wallet address from a private key */
-  getWalletAddressFromPrivateKey,
-  /** Create access control conditions for owner-only access */
-  createOwnerOnlyAccessControlConditions,
-  /** Convert conditions to unified format */
-  toUnifiedAccessControlConditions,
-} from './access-control.ts';
-
-// ============================================================================
-// Lit Client
-// ============================================================================
-
-export {
-  /** Initialize the Lit Protocol client */
-  initLitClient,
-  /** Disconnect from the Lit Protocol network */
-  disconnectLitClient,
-  /** Get the initialized Lit client instance */
-  getLitClient,
-  /** Get the Lit auth manager */
-  getAuthManager,
-  /** Check if Lit client is connected */
-  isLitClientConnected,
-  /** Encrypt data using Lit Protocol */
-  encryptWithLit,
-  /** Decrypt data using Lit Protocol */
-  decryptWithLit,
-  /** Encrypt an AES key using Lit Protocol */
-  encryptAesKeyWithLit,
-} from './lit-client.ts';
 
 // ============================================================================
 // Utilities

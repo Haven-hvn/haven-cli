@@ -3,7 +3,7 @@
 Each step handles a specific stage of the video processing pipeline:
 - IngestStep: Video ingestion, pHash calculation, database entry
 - AnalyzeStep: VLM (Visual Language Model) analysis
-- EncryptStep: Lit Protocol encryption
+- EncryptStep: Haven-AOL encryption
 - UploadStep: Filecoin upload via Synapse
 - SyncStep: Arkiv blockchain synchronization
 - CleanupStep: Remove local files after successful upload

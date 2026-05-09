@@ -80,7 +80,7 @@ class AIAnalysisResult:
 
 @dataclass
 class EncryptionMetadata:
-    """Metadata about file encryption via Lit Protocol.
+    """Metadata about file encryption via Haven-AOL.
     
     Aligned with EncryptionMetadata type from HavenPlayer.p specification.
     """
@@ -91,12 +91,12 @@ class EncryptionMetadata:
     key_hash: str = ""            # Hash of the encryption key
     iv: str = ""                  # Initialization vector (base64)
     access_control_conditions: List[Dict[str, Any]] = field(default_factory=list)
-    chain: str = "ethereum"
+    chain: str = ""
 
 
 @dataclass
 class CidEncryptionMetadata:
-    """Metadata about CID-level encryption via Lit Protocol.
+    """Metadata about CID-level encryption via Haven-AOL.
     
     Used when the CID itself is encrypted separately from the content.
     This allows different access control for the CID vs the content.
@@ -105,15 +105,15 @@ class CidEncryptionMetadata:
         encrypted_key: Encrypted symmetric key (base64)
         key_hash: Hash of the encryption key
         iv: Initialization vector (base64)
-        access_control_conditions: Lit Protocol access control conditions
-        chain: Blockchain for access control (default: ethereum)
+        access_control_conditions: access control conditions
+    chain: Blockchain for access control.
     """
     
     encrypted_key: str = ""
     key_hash: str = ""
     iv: str = ""
     access_control_conditions: List[Dict[str, Any]] = field(default_factory=list)
-    chain: str = "ethereum"
+    chain: str = ""
 
 
 @dataclass

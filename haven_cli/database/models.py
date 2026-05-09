@@ -71,7 +71,7 @@ class Video(Base):
     
     # Encryption status
     encrypted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    lit_encryption_metadata: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    encryption_metadata: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     
     # AI/VLM analysis
     has_ai_data: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -456,8 +456,8 @@ class EncryptionJob(Base):
     bytes_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     encrypt_speed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # bytes/sec
     
-    # Lit Protocol specific
-    lit_cid: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Encryption-specific metadata
+    encrypted_ref: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     access_control_conditions: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     
     # Timing
@@ -491,7 +491,7 @@ class EncryptionJob(Base):
             "bytes_processed": self.bytes_processed,
             "bytes_total": self.bytes_total,
             "encrypt_speed": self.encrypt_speed,
-            "lit_cid": self.lit_cid,
+            "encrypted_ref": self.encrypted_ref,
             "access_control_conditions": self.access_control_conditions,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,

@@ -274,6 +274,8 @@ class TestConfigValidation:
         config = HavenConfig()
         # Disable upload to avoid HAVEN_PRIVATE_KEY requirement in default test
         config.pipeline.upload_enabled = False
+        # Disable encryption to avoid requiring explicit evm_chain in this baseline test
+        config.pipeline.encryption_enabled = False
         errors = validate_config(config)
         # Default config should have warnings but no errors
         assert all(e.severity != "error" for e in errors)
@@ -309,6 +311,48 @@ class TestConfigValidation:
         api_key_warnings = [e for e in errors if "vlm_api_key" in e.field]
         assert len(api_key_warnings) >= 1
         assert api_key_warnings[0].severity == "warning"
+
+    def test_validate_requires_evm_chain_when_encryption_enabled(self):
+        """Test encryption validation requires explicit evm_chain."""
+        config = HavenConfig()
+        config.pipeline.upload_enabled = False
+        config.pipeline.encryption_enabled = True
+        config.pipeline.evm_chain = None
+        errors = validate_config(config)
+
+        evm_chain_errors = [e for e in errors if e.field == "pipeline.evm_chain"]
+        assert len(evm_chain_errors) == 1
+        assert evm_chain_errors[0].severity == "error"
+
+    def test_validate_requires_access_pattern_when_encryption_enabled(self):
+        """Test encryption validation requires explicit access_pattern."""
+        config = HavenConfig()
+        config.pipeline.upload_enabled = False
+        config.pipeline.encryption_enabled = True
+        config.pipeline.evm_chain = "EthMainnet"
+        config.pipeline.access_pattern = None
+        errors = validate_config(config)
+
+        pattern_errors = [e for e in errors if e.field == "pipeline.access_pattern"]
+        assert len(pattern_errors) == 1
+        assert pattern_errors[0].severity == "error"
+
+    def test_validate_token_gated_requires_contract_balance_and_standard(self):
+        """Test token_gated validation requires contract, min_balance, token_standard."""
+        config = HavenConfig()
+        config.pipeline.upload_enabled = False
+        config.pipeline.encryption_enabled = True
+        config.pipeline.evm_chain = "EthMainnet"
+        config.pipeline.access_pattern = "token_gated"
+        config.pipeline.token_contract = None
+        config.pipeline.min_balance = None
+        config.pipeline.token_standard = None
+        errors = validate_config(config)
+
+        fields = {e.field for e in errors}
+        assert "pipeline.token_contract" in fields
+        assert "pipeline.min_balance" in fields
+        assert "pipeline.token_standard" in fields
 
 
 class TestConfigExport:
@@ -392,6 +436,12 @@ class TestEnvironmentVariables:
         monkeypatch.setenv("HAVEN_LOG_LEVEL", "DEBUG")
         config = load_config()
         assert config.logging.level == "DEBUG"
+
+    def test_env_evm_chain(self, monkeypatch):
+        """Test HAVEN_EVM_CHAIN env var."""
+        monkeypatch.setenv("HAVEN_EVM_CHAIN", "ArbitrumOne")
+        config = load_config()
+        assert config.pipeline.evm_chain == "ArbitrumOne"
 
 
 class TestEnsureDirectories:

@@ -349,24 +349,21 @@ haven config init
 
 ### Encryption fails
 
-**Problem**: Lit Protocol encryption fails.
+**Problem**: Haven-AOL encryption fails.
 
 **Solutions**:
 
-1. **Check network connectivity** to Lit nodes
+1. **Verify encryption inputs**:
+   - Ensure `HAVEN_PRIVATE_KEY` is set
+   - Ensure `token_contract` is configured for token-gated/owner-only modes
+   - Ensure `chain` and threshold values are valid
 
-2. **Verify Lit network configuration**:
-   ```toml
-   [pipeline]
-   lit_network = "datil-dev"  # or "datil-test", "datil"
-   ```
-
-3. **Skip encryption**:
+2. **Skip encryption**:
    ```bash
    haven upload video.mp4  # without --encrypt
    ```
 
-4. **Check JS runtime** (see [JavaScript Runtime Issues](#javascript-runtime-issues))
+3. **Check pipeline logs** for metadata/derivation input errors
 
 ### Upload to Filecoin fails
 
@@ -458,16 +455,10 @@ haven config init
    ```
 
 2. **Check for sidecar file**:
-   - Look for `.lit` file alongside encrypted file
+   - Look for `.encmeta` file alongside encrypted file
    - Contains encryption metadata
 
-3. **Check Lit network**:
-   ```toml
-   [pipeline]
-   lit_network = "datil-dev"  # Must match upload network
-   ```
-
-4. **Verify access control conditions**:
+3. **Verify access control conditions**:
    - Must meet the conditions set during encryption
    - Check wallet/chain requirements
 

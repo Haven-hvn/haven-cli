@@ -1,4 +1,4 @@
-"""Encryption metadata handling for Lit Protocol.
+"""Encryption metadata handling for Haven-AOL.
 
 Provides functions to load and save encryption metadata for files,
 supporting both database storage and sidecar files.
@@ -28,7 +28,7 @@ async def load_encryption_metadata(file_path: Path) -> Optional[EncryptionMetada
     """Load encryption metadata for a file from sidecar.
     
     This function attempts to load encryption metadata from a sidecar
-    file (.lit extension). For database lookup by CID, use
+    file (.encmeta extension). For database lookup by CID, use
     load_encryption_metadata_by_cid instead.
     
     Args:
@@ -43,7 +43,7 @@ async def load_encryption_metadata(file_path: Path) -> Optional[EncryptionMetada
             print(f"Ciphertext hash: {metadata.data_to_encrypt_hash}")
     """
     # Try sidecar file first
-    metadata_path = file_path.with_suffix(file_path.suffix + ".lit")
+    metadata_path = file_path.with_suffix(file_path.suffix + ".encmeta")
     
     if metadata_path.exists():
         try:
@@ -83,9 +83,9 @@ async def load_encryption_metadata_by_cid(cid: str) -> Optional[EncryptionMetada
             video_repo = VideoRepository(session)
             video = video_repo.get_by_cid(cid)
             
-            if video and video.lit_encryption_metadata:
+            if video and video.encryption_metadata:
                 try:
-                    data = json.loads(video.lit_encryption_metadata)
+                    data = json.loads(video.encryption_metadata)
                     return _parse_encryption_metadata(data)
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     logger.warning(f"Failed to parse database metadata for CID {cid}: {e}")
@@ -112,11 +112,17 @@ def _parse_encryption_metadata(data: Dict[str, Any]) -> EncryptionMetadata:
     ciphertext = data.get("ciphertext", "")
     data_to_encrypt_hash = data.get("data_to_encrypt_hash") or data.get("dataToEncryptHash", "")
     access_control_conditions = data.get("access_control_conditions") or data.get("accessControlConditions", [])
-    chain = data.get("chain", "ethereum")
+    chain = data.get("chain", "")
+    encrypted_key = data.get("encrypted_key") or data.get("encryptedKey", "")
+    key_hash = data.get("key_hash") or data.get("keyHash", "")
+    iv = data.get("iv", "")
     
     return EncryptionMetadata(
         ciphertext=ciphertext,
         data_to_encrypt_hash=data_to_encrypt_hash,
+        encrypted_key=encrypted_key,
+        key_hash=key_hash,
+        iv=iv,
         access_control_conditions=access_control_conditions,
         chain=chain,
     )
@@ -128,7 +134,7 @@ async def save_encryption_metadata(
 ) -> None:
     """Save encryption metadata as sidecar file.
     
-    Saves encryption metadata to a sidecar file with .lit extension.
+    Saves encryption metadata to a sidecar file with .encmeta extension.
     This allows the metadata to travel with the file when moved.
     
     Args:
@@ -146,12 +152,17 @@ async def save_encryption_metadata(
             )
         )
     """
-    metadata_path = file_path.with_suffix(file_path.suffix + ".lit")
+    metadata_path = file_path.with_suffix(file_path.suffix + ".encmeta")
     
     data = {
         "ciphertext": metadata.ciphertext,
         "data_to_encrypt_hash": metadata.data_to_encrypt_hash,
         "dataToEncryptHash": metadata.data_to_encrypt_hash,  # For compatibility
+        "encrypted_key": metadata.encrypted_key,
+        "encryptedKey": metadata.encrypted_key,  # For compatibility
+        "key_hash": metadata.key_hash,
+        "keyHash": metadata.key_hash,  # For compatibility
+        "iv": metadata.iv,
         "access_control_conditions": metadata.access_control_conditions,
         "accessControlConditions": metadata.access_control_conditions,  # For compatibility
         "chain": metadata.chain,
@@ -214,7 +225,7 @@ def get_encryption_metadata_path(file_path: Path) -> Path:
     Returns:
         Path to the metadata sidecar file
     """
-    return file_path.with_suffix(file_path.suffix + ".lit")
+    return file_path.with_suffix(file_path.suffix + ".encmeta")
 
 
 async def delete_encryption_metadata(file_path: Path) -> bool:

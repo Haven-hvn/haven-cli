@@ -9,6 +9,29 @@
 
 This document provides a comprehensive manual verification checklist to ensure haven-cli uploads work correctly in real-world scenarios. Automated tests verify code logic, but manual testing verifies the actual user experience and integration with real services (Arkiv, Filecoin).
 
+## ICP Gate Signature Requirement
+
+For Haven-AOL mainnet canister decryption-gate checks, callers must provide a valid EIP-712 proof of EVM wallet ownership. The gate no longer accepts requests that only provide an `evmAddress`.
+
+Required signed payload (`primaryType = GateRequest`):
+
+- `evmAddress` (`address`)
+- `transportPublicKey` (`bytes`)
+- `nonce` (`uint256`)
+
+Required domain:
+
+- `name = "HavenAOL"`
+- `chainId = 1` (Ethereum mainnet)
+- `verifyingContract` = selected domain contract address for the request
+
+Required request fields to the canister:
+
+- `nonce`
+- `signature` (`r||s||v`, 65 bytes, `v` in {27, 28})
+- `eip712ChainId`
+- `eip712VerifyingContract`
+
 ## Prerequisites
 
 Before running these tests, ensure you have:
@@ -79,8 +102,8 @@ haven entity get <entity_key>
 Verify:
 - [ ] `payload.is_encrypted` is `true`
 - [ ] `attributes.is_encrypted` is `1`
-- [ ] `payload.lit_encryption_metadata` exists
-- [ ] `lit_encryption_metadata` is valid JSON (not a string in JSON)
+- [ ] `payload.encryption_metadata` exists
+- [ ] `encryption_metadata` is valid JSON (not a string in JSON)
 - [ ] JSON has required fields:
   - [ ] `version` = "hybrid-v1"
   - [ ] `encryptedKey` (base64 string)
@@ -162,8 +185,8 @@ Verify:
 - [ ] `attributes.creator_handle` is "@testuser"
 - [ ] `attributes.source_uri` is "https://example.com/original.mp4"
 - [ ] `attributes.updated_at` matches `created_at` format
-- [ ] `payload.lit_encryption_metadata.originalMimeType` exists
-- [ ] `payload.lit_encryption_metadata.originalSize` matches file size
+- [ ] `payload.encryption_metadata.originalMimeType` exists
+- [ ] `payload.encryption_metadata.originalSize` matches file size
 
 ---
 

@@ -1309,7 +1309,7 @@ class EncryptionJobRepository:
         job_id: int,
         status: str,
         error_message: Optional[str] = None,
-        lit_cid: Optional[str] = None,
+        encrypted_ref: Optional[str] = None,
     ) -> Optional[EncryptionJob]:
         """Update encryption job status."""
         from datetime import timezone
@@ -1324,8 +1324,8 @@ class EncryptionJobRepository:
             job.started_at = datetime.now(timezone.utc)
         elif status == "completed":
             job.completed_at = datetime.now(timezone.utc)
-            if lit_cid:
-                job.lit_cid = lit_cid
+            if encrypted_ref:
+                job.encrypted_ref = encrypted_ref
         elif status == "failed":
             job.error_message = error_message
         

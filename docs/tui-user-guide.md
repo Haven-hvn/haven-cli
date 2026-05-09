@@ -166,7 +166,7 @@ Each pipeline stage has a distinct color:
 | `download` | Blue | Downloading from source |
 | `ingest` | Yellow | Extracting metadata |
 | `analysis` | Yellow | AI analysis (VLM) |
-| `encrypt` | Red | Lit Protocol encryption |
+| `encrypt` | Red | Haven-AOL encryption |
 | `upload` | Green | Uploading to Filecoin |
 | `sync` | Green | Blockchain sync |
 | `complete` | Bold Green | All stages finished |
@@ -213,7 +213,7 @@ The detail view shows comprehensive information about a single video.
 ├──────────────────────────────────────────────────────────────┤
 │ [Results]                                                    │
 │ IPFS CID:    bafybeig... (truncated)                         │
-│ Encrypted:   Yes (Lit Protocol)                              │
+│ Encrypted:   Yes (Haven-AOL)                                 │
 │ AI Analysis: Complete                                        │
 ├──────────────────────────────────────────────────────────────┤
 │ [b] Back  [r] Retry  [l] Logs  [g] Graph  [q] Quit            │

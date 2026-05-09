@@ -487,7 +487,6 @@ def create_default_pipeline(
             config = {
                 **config,
                 "network_mode": blockchain_config.network_mode,
-                "lit_network": blockchain_config.get_lit_network(),
                 "filecoin_rpc_url": blockchain_config.get_filecoin_rpc_url(),
                 "arkiv_rpc_url": blockchain_config.get_arkiv_rpc_url(),
             }

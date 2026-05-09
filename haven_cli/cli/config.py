@@ -72,10 +72,8 @@ def show_config(
         "blockchain": [
             ("network_mode", config.blockchain.network_mode, False),
             ("is_mainnet", str(config.blockchain.is_mainnet), False),
-            ("lit_network", config.blockchain.get_lit_network(), False),
             ("filecoin_rpc_url", config.blockchain.get_filecoin_rpc_url(), False),
             ("arkiv_rpc_url", config.blockchain.get_arkiv_rpc_url(), False),
-            ("lit_network_override", config.blockchain.lit_network_override or "", False),
             ("filecoin_rpc_override", config.blockchain.filecoin_rpc_override or "", False),
             ("arkiv_rpc_override", config.blockchain.arkiv_rpc_override or "", False),
         ],
@@ -253,7 +251,7 @@ def init_config(
         # Interactive wizard
         console.print("[bold cyan]Blockchain Network Configuration[/bold cyan]")
         console.print("  [dim]This setting controls the network for all blockchain integrations[/dim]")
-        console.print("  [dim](Lit Protocol, Filecoin, Arkiv)[/dim]")
+        console.print("  [dim](Haven-AOL, Filecoin, Arkiv)[/dim]")
         
         network_choices = ["testnet", "mainnet"]
         network_default = config.blockchain.network_mode
@@ -314,19 +312,10 @@ def init_config(
         console.print()
         console.print("[bold cyan]Encryption Configuration[/bold cyan]")
         encryption_enabled = typer.confirm(
-            "  Enable Lit Protocol encryption?",
+            "  Enable Haven-AOL encryption?",
             default=config.pipeline.encryption_enabled
         )
         config.pipeline.encryption_enabled = encryption_enabled
-        if encryption_enabled:
-            # Show the auto-configured network
-            console.print(f"  [dim]Lit Network: {config.blockchain.get_lit_network()}[/dim]")
-            lit_network = typer.prompt(
-                "  Lit Network (press Enter to use default)",
-                default="",
-            )
-            if lit_network:
-                config.blockchain.lit_network_override = lit_network
         
         console.print()
         console.print("[bold cyan]Pipeline Configuration[/bold cyan]")
@@ -493,7 +482,7 @@ def set_network(
     """Set or show the blockchain network mode.
     
     This single setting controls the network for all blockchain integrations:
-    - Lit Protocol (encryption)
+    - Haven-AOL (encryption)
     - Filecoin (storage)
     - Arkiv (blockchain sync)
     
@@ -522,14 +511,10 @@ def set_network(
         table.add_row("Is Mainnet", str(config.blockchain.is_mainnet))
         table.add_row("Is Testnet", str(config.blockchain.is_testnet))
         table.add_row("", "")
-        table.add_row("Lit Network", config.blockchain.get_lit_network())
         table.add_row("Filecoin RPC", config.blockchain.get_filecoin_rpc_url())
         table.add_row("Arkiv RPC", config.blockchain.get_arkiv_rpc_url())
         
         # Show overrides if set
-        if config.blockchain.lit_network_override:
-            table.add_row("", "")
-            table.add_row("Lit Override", config.blockchain.lit_network_override)
         if config.blockchain.filecoin_rpc_override:
             table.add_row("Filecoin Override", config.blockchain.filecoin_rpc_override)
         if config.blockchain.arkiv_rpc_override:
@@ -564,7 +549,7 @@ def set_network(
             table.add_column("Service", style="cyan")
             table.add_column("Network/Endpoint", style="green")
             
-            table.add_row("Lit Protocol", config.blockchain.get_lit_network())
+            table.add_row("Haven-AOL", "Local implementation")
             table.add_row("Filecoin", config.blockchain.get_filecoin_rpc_url())
             table.add_row("Arkiv", config.blockchain.get_arkiv_rpc_url())
             
@@ -752,8 +737,7 @@ def show_env_vars() -> None:
         ("HAVEN_VLM_API_KEY", "API key for VLM service", "sk-..."),
         ("HAVEN_VLM_MULTIPLEXER_ENABLED", "Enable VLM multiplexer", "true/false"),
         ("HAVEN_PRIVATE_KEY", "Private key for Filecoin blockchain auth (REQUIRED)", "0x..."),
-        ("HAVEN_ENCRYPTION_ENABLED", "Enable/disable Lit Protocol encryption", "true/false"),
-        ("HAVEN_LIT_NETWORK", "Lit Protocol network (override)", "datil-dev"),
+        ("HAVEN_ENCRYPTION_ENABLED", "Enable/disable Haven-AOL encryption", "true/false"),
         ("HAVEN_UPLOAD_ENABLED", "Enable/disable Filecoin upload", "true/false"),
         ("HAVEN_SYNC_ENABLED", "Enable/disable Arkiv sync", "true/false"),
         ("HAVEN_ARKIV_ENDPOINT", "Arkiv RPC endpoint URL", "https://..."),

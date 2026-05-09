@@ -30,7 +30,6 @@ database_url = "sqlite:///~/.local/share/haven/haven.db"
 network_mode = "testnet"
 
 # Optional: Override specific endpoints
-# lit_network_override = "datil-dev"
 # filecoin_rpc_override = "https://api.calibration.node.glif.io/rpc/v1"
 # arkiv_rpc_override = "https://mendoza.hoodi.arkiv.network/rpc"
 
@@ -96,7 +95,7 @@ backup_count = 5
 | vlm_model | string | "zai-org/glm-4.6v-flash" | VLM model to use |
 | vlm_api_key | string | null | API key for VLM service |
 | vlm_timeout | float | 120.0 | Timeout for VLM requests (seconds) |
-| encryption_enabled | boolean | true | Enable Lit Protocol encryption |
+| encryption_enabled | boolean | true | Enable Haven-AOL encryption |
 | upload_enabled | boolean | true | Enable Filecoin upload |
 | sync_enabled | boolean | true | Enable Arkiv blockchain sync |
 | arkiv_contract | string | null | Arkiv contract address |
@@ -108,11 +107,10 @@ The `[blockchain]` section provides unified network configuration for all blockc
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | network_mode | string | "testnet" | Network mode: "testnet" or "mainnet" |
-| lit_network_override | string | null | Override Lit Protocol network |
 | filecoin_rpc_override | string | null | Override Filecoin RPC endpoint URL |
 | arkiv_rpc_override | string | null | Override Arkiv RPC endpoint URL |
 
-**Note:** When `network_mode` is set to "testnet" or "mainnet", the appropriate endpoints for Lit Protocol, Filecoin, and Arkiv are automatically configured. Use the `*_override` settings only if you need to use custom endpoints.
+**Note:** When `network_mode` is set to "testnet" or "mainnet", the appropriate endpoints for Filecoin and Arkiv are automatically configured. Use the `*_override` settings only if you need to use custom endpoints.
 | max_concurrent_videos | integer | 4 | Maximum concurrent video processing |
 | retry_attempts | integer | 3 | Number of retry attempts for failed operations |
 | retry_delay | float | 5.0 | Delay between retries (seconds) |
@@ -168,7 +166,7 @@ All configuration options can be overridden via environment variables:
 | HAVEN_VLM_ENABLED | Enable/disable VLM analysis | true/false |
 | HAVEN_VLM_MODEL | VLM model to use | zai-org/glm-4.6v-flash |
 | HAVEN_VLM_API_KEY | API key for VLM service | sk-... |
-| HAVEN_ENCRYPTION_ENABLED | Enable/disable Lit encryption | true/false |
+| HAVEN_ENCRYPTION_ENABLED | Enable/disable Haven-AOL encryption | true/false |
 | HAVEN_UPLOAD_ENABLED | Enable/disable Filecoin upload | true/false |
 | HAVEN_SYNC_ENABLED | Enable/disable Arkiv sync | true/false |
 
@@ -177,7 +175,6 @@ All configuration options can be overridden via environment variables:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | HAVEN_NETWORK_MODE | Network mode (testnet/mainnet) | testnet |
-| HAVEN_LIT_NETWORK_OVERRIDE | Override Lit Protocol network | datil-dev |
 | HAVEN_FILECOIN_RPC_OVERRIDE | Override Filecoin RPC endpoint | https://... |
 | HAVEN_ARKIV_RPC_OVERRIDE | Override Arkiv RPC endpoint | https://... |
 

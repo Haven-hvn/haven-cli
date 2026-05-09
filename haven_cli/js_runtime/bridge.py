@@ -2,7 +2,7 @@
 JS Runtime Bridge.
 
 Manages the Deno/Node subprocess that runs browser-dependent SDKs
-(Lit Protocol, Synapse) with a browser environment shim.
+with a browser environment shim.
 """
 
 from __future__ import annotations
@@ -74,7 +74,6 @@ class RuntimeStatus:
     version: Optional[str] = None
     uptime_seconds: float = 0.0
     pending_requests: int = 0
-    lit_connected: bool = False
     synapse_connected: bool = False
     error_message: Optional[str] = None
 
@@ -84,11 +83,11 @@ class JSRuntimeBridge:
     Bridge to the JavaScript runtime subprocess.
     
     Manages lifecycle and communication with a Deno subprocess that
-    provides browser SDK functionality (Lit Protocol, Synapse).
+    provides browser SDK functionality.
     
     Example:
         async with JSRuntimeBridge(config) as bridge:
-            result = await bridge.call("lit.encrypt", {"data": "..."})
+            result = await bridge.call("synapse.getStatus", {"cid": "..."})
     """
     
     def __init__(self, config: Optional[RuntimeConfig] = None):
@@ -348,7 +347,6 @@ class JSRuntimeBridge:
                 version=result.get("version"),
                 uptime_seconds=result.get("uptimeSeconds", 0),
                 pending_requests=self._protocol.pending_count,
-                lit_connected=result.get("litConnected", False),
                 synapse_connected=result.get("synapseConnected", False)
             )
         except Exception as e:
@@ -450,7 +448,7 @@ class JSRuntimeBridge:
                     
                     # Check for Synapse/Lit SDK logs from underlying packages (filecoin-pin, etc.)
                     # These are non-JSON log messages that should be captured
-                    sdk_log_tags = ('[Synapse]', '[Lit]', '[Lit Payment]', '[lit-wrapper]', '[filecoin-pin]', '[haven-js]', '[browser-shim]')
+                    sdk_log_tags = ('[Synapse]', '[filecoin-pin]', '[haven-js]', '[browser-shim]')
                     if any(tag in decoded for tag in sdk_log_tags):
                         logger.info(f"JS: {decoded}")
                         continue
@@ -491,7 +489,7 @@ class JSRuntimeBridge:
                     decoded = line.decode().strip()
                     if decoded:
                         # Log Synapse/Lit SDK messages at appropriate level
-                        if '[Synapse]' in decoded or '[Lit]' in decoded:
+                        if '[Synapse]' in decoded:
                             logger.info(f"JS: {decoded}")
                         elif 'error' in decoded.lower() or 'ERROR' in decoded:
                             logger.error(f"JS stderr: {decoded}")

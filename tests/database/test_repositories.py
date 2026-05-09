@@ -260,8 +260,8 @@ class TestEncryptionJobRepository:
         assert updated.progress_percent == 75.0
         assert updated.encrypt_speed == 50000
     
-    def test_update_status_with_lit_cid(self, db_session: Session, sample_video: Video) -> None:
-        """Test completing encryption with Lit CID."""
+    def test_update_status_with_encrypted_ref(self, db_session: Session, sample_video: Video) -> None:
+        """Test completing encryption with encrypted reference."""
         repo = EncryptionJobRepository(db_session)
         
         job = repo.create(video_id=sample_video.id)
@@ -269,12 +269,12 @@ class TestEncryptionJobRepository:
         updated = repo.update_status(
             job_id=job.id,
             status="completed",
-            lit_cid="QmTest123",
+            encrypted_ref="QmTest123",
         )
         
         assert updated is not None
         assert updated.status == "completed"
-        assert updated.lit_cid == "QmTest123"
+        assert updated.encrypted_ref == "QmTest123"
         assert updated.completed_at is not None
 
 

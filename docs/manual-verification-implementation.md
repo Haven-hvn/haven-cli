@@ -155,7 +155,7 @@ The implementation maintains full compliance with the **Haven Cross-Application 
 - ✅ `is_encrypted` - boolean, NOT `encrypted`
 - ✅ `cid_hash` - SHA256 of CID
 - ✅ `vlm_json_cid` - CID of VLM analysis
-- ✅ `lit_encryption_metadata` - JSON string
+- ✅ `encryption_metadata` - JSON string
 - ✅ `cid_encryption_metadata` - JSON string
 - ✅ `segment_metadata` - Multi-segment recording info
 - ✅ `duration` - Duration in seconds

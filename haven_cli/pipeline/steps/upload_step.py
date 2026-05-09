@@ -15,6 +15,7 @@ Task 12: Writes progress to UploadJob and PipelineSnapshot tables.
 """
 
 import asyncio
+import base64
 import logging
 import os
 import time
@@ -22,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from haven_cli.config import get_config
+from haven_cli.crypto.haven_aol_local import GateParams, encrypt_bytes
 from haven_cli.database.connection import get_db_session
 from haven_cli.database.repositories import VideoRepository
 from haven_cli.js_runtime.bridge import JSRuntimeBridge
@@ -37,6 +39,7 @@ from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import ErrorCategory, StepError, StepResult
 from haven_cli.pipeline.step import ConditionalStep
 from haven_cli.services.blockchain_network import get_network_config
+from haven_cli.services.evm_utils import normalize_haven_aol_chain
 
 logger = logging.getLogger(__name__)
 
@@ -477,7 +480,7 @@ class UploadStep(ConditionalStep):
                         key_hash=cid_encryption_result.get("keyHash", ""),
                         iv=cid_encryption_result.get("iv", ""),
                         access_control_conditions=cid_encryption_result.get("accessControlConditions", []),
-                        chain=cid_encryption_result.get("chain", "ethereum"),
+                        chain=cid_encryption_result["chain"],
                     )
                     logger.info(f"CID encrypted for Arkiv sync")
                 except Exception as e:
@@ -791,52 +794,53 @@ class UploadStep(ConditionalStep):
         access_control_conditions: List[Dict[str, Any]],
         context: PipelineContext,
     ) -> Dict[str, Any]:
-        """Encrypt the CID using Lit Protocol for Arkiv sync.
-        
-        This encrypts the CID with the same access control conditions as the
-        video content, allowing the CID to be stored publicly in Arkiv
-        attributes while remaining decryptable only by authorized parties.
-        
-        Uses _js_call_with_retry for resilience during concurrent operations.
-        
-        Args:
-            cid: The CID to encrypt
-            access_control_conditions: Access control conditions for encryption
-            context: Pipeline context for progress updates
-            
-        Returns:
-            Dictionary with encryptedCid and encryption metadata details
-            
-        Raises:
-            RuntimeError: If CID encryption fails
-        """
+        """Encrypt the CID with local Haven-AOL logic for Arkiv sync."""
         logger.info(f"Encrypting CID for Arkiv sync: {cid[:30]}...")
-        
-        # Get network configuration
-        network_mode = self._config.get("network_mode", "testnet")
-        network_config = get_network_config(network_mode)
-        
-        # Get chain from config
-        chain = self._config.get("chain") or network_config.chain_for_access_control
-        
-        try:
-            result = await self._js_call_with_retry(
-                "lit.encryptCid",
-                {
-                    "cid": cid,
-                    "accessControlConditions": access_control_conditions,
-                    "chain": chain,
-                },
-                timeout=60.0,  # Shorter timeout for CID encryption (small data)
+
+        private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
+        if not private_key:
+            raise RuntimeError("HAVEN_PRIVATE_KEY is required for CID encryption")
+
+        gate_condition = access_control_conditions[0] if access_control_conditions else {}
+        token_address = str(gate_condition.get("contractAddress", "")).strip()
+        if not token_address:
+            raise RuntimeError("token_contract/contractAddress required for CID encryption")
+        threshold_raw = gate_condition.get("returnValueTest", {}).get("value", "1")
+        threshold = int(str(threshold_raw))
+        pipeline_cfg = self._config.get("pipeline")
+        config_chain = getattr(pipeline_cfg, "evm_chain", None) if pipeline_cfg is not None else self._config.get("evm_chain")
+        configured_chain = context.options.get("evm_chain") or config_chain
+        if not configured_chain:
+            raise RuntimeError(
+                "evm_chain is required for CID encryption. "
+                "Set --evm-chain or pipeline.evm_chain."
             )
-            
+        chain = normalize_haven_aol_chain(str(configured_chain))
+
+        try:
+            encrypted = encrypt_bytes(
+                plaintext=cid.encode("utf-8"),
+                private_key=private_key,
+                gate=GateParams(
+                    chain=chain,
+                    token_address=token_address,
+                    threshold=threshold,
+                    cid=cid,
+                ),
+            )
             logger.info(f"CID encrypted successfully")
-            return result
-            
+            return {
+                "encryptedCid": base64.b64encode(encrypted["ciphertext_bytes"]).decode("ascii"),
+                "encryptedKey": encrypted["encrypted_key_b64"],
+                "keyHash": encrypted["key_hash"],
+                "iv": encrypted["iv_b64"],
+                "accessControlConditions": access_control_conditions,
+                "chain": chain,
+            }
         except Exception as e:
             logger.error(f"CID encryption failed: {e}")
             raise RuntimeError(f"CID encryption failed: {e}") from e
-    
+
     def _categorize_error(self, error: Exception) -> ErrorCategory:
         """Categorize error for retry decisions.
         

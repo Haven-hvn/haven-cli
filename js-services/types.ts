@@ -43,179 +43,13 @@ export const ErrorCodes = {
   INSUFFICIENT_BALANCE: -32006, // Actor/wallet has insufficient funds for transaction
 } as const;
 
-// ============================================================================
-// Lit Protocol Types
-// ============================================================================
-
-export interface LitConnectParams {
-  network?: 'cayenne' | 'manzano' | 'habanero' | 'datil-dev' | 'datil-test' | 'datil';
-  debug?: boolean;
-}
-
-export interface LitConnectResult {
-  connected: boolean;
-  network: string;
-  nodeCount: number;
-}
-
-export interface LitEncryptParams {
-  data: string; // Base64 encoded data
-  accessControlConditions: AccessControlCondition[];
-  chain?: string;
-}
-
-export interface LitEncryptResult {
-  ciphertext: string; // Base64 encoded
-  dataToEncryptHash: string;
-  accessControlConditionHash: string;
-}
-
-export interface LitDecryptParams {
-  ciphertext: string; // Base64 encoded
-  dataToEncryptHash: string;
-  accessControlConditions: AccessControlCondition[];
-  chain?: string;
-  authSig?: AuthSig;
-}
-
-export interface LitDecryptResult {
-  decryptedData: string; // Base64 encoded
-}
-
-export interface AccessControlCondition {
-  contractAddress?: string;
-  standardContractType?: string;
-  chain: string;
-  method?: string;
-  parameters?: string[];
-  returnValueTest: {
-    comparator: string;
-    value: string;
-  };
-}
-
-export interface AuthSig {
-  sig: string;
-  derivedVia: string;
-  signedMessage: string;
-  address: string;
-}
-
-export interface LitSessionResult {
-  active: boolean;
-  expiresAt?: string;
-  resourceAbilities?: string[];
-}
-
-// ============================================================================
-// Lit Protocol File Encryption Types
-// ============================================================================
-
-/**
- * Parameters for encrypting a file using hybrid encryption
- */
-export interface LitEncryptFileParams {
-  /** File path to encrypt (relative to working directory) */
-  filePath: string;
-  /** Access control conditions for decryption */
-  accessControlConditions?: AccessControlCondition[];
-  /** Blockchain chain (default: 'ethereum') */
-  chain?: string;
-  /** Private key for creating access control (if not provided, uses HAVEN_PRIVATE_KEY env) */
-  privateKey?: string;
-}
-
-/**
- * Result of file encryption operation
- */
-export interface LitEncryptFileResult {
-  /** Path to the encrypted file */
-  encryptedFilePath: string;
-  /** Path to the metadata file */
-  metadataPath: string;
-  /** Encryption metadata */
-  metadata: HybridEncryptionMetadata;
-  /** Size of original file in bytes */
-  originalSize: number;
-  /** Size of encrypted file in bytes */
-  encryptedSize: number;
-}
-
-/**
- * Parameters for decrypting a file
- */
-export interface LitDecryptFileParams {
-  /** Path to the encrypted file */
-  encryptedFilePath: string;
-  /** Path to the metadata file (optional, will use .meta.json suffix if not provided) */
-  metadataPath?: string;
-  /** Output path for decrypted file */
-  outputPath: string;
-  /** Private key for authentication (if not provided, uses HAVEN_PRIVATE_KEY env) */
-  privateKey?: string;
-}
-
-/**
- * Result of file decryption operation
- */
-export interface LitDecryptFileResult {
-  /** Path to the decrypted file */
-  outputPath: string;
-  /** Size of decrypted file in bytes */
-  size: number;
-  /** Whether integrity check passed */
-  integrityCheck: boolean;
-}
-
-// ============================================================================
-// Lit Protocol CID Encryption Types
-// ============================================================================
-
-/**
- * Parameters for encrypting a CID using Lit Protocol
- */
-export interface LitEncryptCidParams {
-  /** The CID string to encrypt */
-  cid: string;
-  /** Access control conditions for decryption */
-  accessControlConditions: AccessControlCondition[];
-  /** Blockchain chain (default: 'ethereum') */
-  chain?: string;
-  /** Private key for creating access control (if not provided, uses HAVEN_PRIVATE_KEY env) */
-  privateKey?: string;
-}
-
-/**
- * Result of CID encryption operation
- */
-export interface LitEncryptCidResult {
-  /** The encrypted CID string (ciphertext from Lit Protocol) */
-  encryptedCid: string;
-  /** SHA-256 hash of the original CID */
-  dataToEncryptHash: string;
-  /** BLS-encrypted AES key (base64-encoded) */
-  encryptedKey: string;
-  /** SHA-256 hash of the AES key (for verification) */
-  keyHash: string;
-  /** Base64-encoded 12-byte IV for AES-GCM */
-  iv: string;
-  /** AES algorithm identifier */
-  algorithm: 'AES-GCM';
-  /** Key length in bits */
-  keyLength: 256;
-  /** Access control conditions used for encryption */
-  accessControlConditions: AccessControlCondition[];
-  /** Blockchain chain identifier */
-  chain: string;
-}
-
 /**
  * Hybrid encryption metadata stored alongside the encrypted file
  */
 export interface HybridEncryptionMetadata {
   /** Version identifier for future compatibility */
   version: 'hybrid-v1';
-  /** BLS-encrypted AES key (base64-encoded ciphertext from Lit) */
+  /** Wrapped AES key (base64) */
   encryptedKey: string;
   /** SHA-256 hash of the AES key (for verification) */
   keyHash: string;
@@ -225,8 +59,8 @@ export interface HybridEncryptionMetadata {
   algorithm: 'AES-GCM';
   /** Key length in bits */
   keyLength: 256;
-  /** Access control conditions for Lit decryption */
-  accessControlConditions: AccessControlCondition[];
+  /** Access control conditions */
+  accessControlConditions: Record<string, unknown>[];
   /** Blockchain chain identifier */
   chain: string;
   /** Optional: Original file MIME type */
@@ -372,7 +206,6 @@ export interface ArkivRecord {
 export interface RuntimeStatus {
   version: string;
   uptimeSeconds: number;
-  litConnected: boolean;
   synapseConnected: boolean;
   pendingRequests: number;
 }

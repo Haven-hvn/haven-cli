@@ -68,7 +68,6 @@ class BlockchainConfig:
     blockchain integrations (Lit, Filecoin, Arkiv).
     
     When network_mode is set, it automatically configures:
-    - Lit Protocol network (datil for mainnet, datil-dev for testnet)
     - Filecoin RPC endpoint (mainnet or calibration testnet)
     - Arkiv RPC endpoint (mainnet or hoodi testnet)
     
@@ -80,7 +79,6 @@ class BlockchainConfig:
     network_mode: str = "testnet"
     
     # Optional: Override specific endpoints (if not set, uses network_mode defaults)
-    lit_network_override: Optional[str] = None
     filecoin_rpc_override: Optional[str] = None
     arkiv_rpc_override: Optional[str] = None
     
@@ -93,12 +91,6 @@ class BlockchainConfig:
     def is_testnet(self) -> bool:
         """Check if configured for testnet."""
         return self.network_mode.lower() in ("testnet", "test", "dev")
-    
-    def get_lit_network(self) -> str:
-        """Get Lit Protocol network based on configuration."""
-        if self.lit_network_override:
-            return self.lit_network_override
-        return "naga" if self.is_mainnet else "naga-dev"
     
     def get_filecoin_rpc_url(self) -> str:
         """Get Filecoin RPC URL based on configuration."""
@@ -156,10 +148,17 @@ class PipelineConfig:
         {"base_url": "http://localhost:1234/v1", "name": "local-llm", "weight": 1, "max_concurrent": 5}
     ])
     
-    # Encryption (Lit Protocol)
-    # Note: Lit network is derived from blockchain.network_mode
-    # Set blockchain.lit_network_override to override
+    # Encryption (Haven-AOL)
     encryption_enabled: bool = True
+    # Required chain for Haven-AOL gate metadata and decryption checks.
+    # Must map to one of: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet.
+    evm_chain: Optional[str] = None
+    access_pattern: Optional[str] = None
+    token_contract: Optional[str] = None
+    min_balance: Optional[str] = None
+    token_standard: Optional[str] = None
+    owner_wallet: Optional[str] = None
+    nft_contract: Optional[str] = None
     
     # Upload (Filecoin via Synapse)
     # Note: Synapse endpoint is derived from blockchain.network_mode
@@ -407,8 +406,6 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     if env_val := os.environ.get(f"{prefix}NETWORK_MODE"):
         config.blockchain.network_mode = env_val
     # Blockchain endpoint overrides
-    if env_val := os.environ.get(f"{prefix}LIT_NETWORK_OVERRIDE"):
-        config.blockchain.lit_network_override = env_val
     if env_val := os.environ.get(f"{prefix}FILECOIN_RPC_OVERRIDE"):
         config.blockchain.filecoin_rpc_override = env_val
     if env_val := os.environ.get(f"{prefix}ARKIV_RPC_OVERRIDE"):
@@ -471,10 +468,20 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     
     if env_val := os.environ.get(f"{prefix}ENCRYPTION_ENABLED"):
         config.pipeline.encryption_enabled = env_val.lower() in ("true", "1", "yes")
-    # LIT_NETWORK env var can override the network mode default
-    if env_val := os.environ.get(f"{prefix}LIT_NETWORK"):
-        config.blockchain.lit_network_override = env_val
-    
+    if env_val := os.environ.get(f"{prefix}EVM_CHAIN"):
+        config.pipeline.evm_chain = env_val
+    if env_val := os.environ.get(f"{prefix}ACCESS_PATTERN"):
+        config.pipeline.access_pattern = env_val
+    if env_val := os.environ.get(f"{prefix}TOKEN_CONTRACT"):
+        config.pipeline.token_contract = env_val
+    if env_val := os.environ.get(f"{prefix}MIN_BALANCE"):
+        config.pipeline.min_balance = env_val
+    if env_val := os.environ.get(f"{prefix}TOKEN_STANDARD"):
+        config.pipeline.token_standard = env_val
+    if env_val := os.environ.get(f"{prefix}OWNER_WALLET"):
+        config.pipeline.owner_wallet = env_val
+    if env_val := os.environ.get(f"{prefix}NFT_CONTRACT"):
+        config.pipeline.nft_contract = env_val
     if env_val := os.environ.get(f"{prefix}UPLOAD_ENABLED"):
         config.pipeline.upload_enabled = env_val.lower() in ("true", "1", "yes")
     # Note: Filecoin RPC endpoint is configured via blockchain.filecoin_rpc_override
@@ -527,20 +534,22 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
     # Ensure directory exists
     path.parent.mkdir(parents=True, exist_ok=True)
     
+    def _toml_escape(raw: str) -> str:
+        return raw.replace("\\", "\\\\").replace('"', '\\"')
+
     # Build TOML content
     lines = [
         "# Haven CLI Configuration",
         "# Generated automatically - edit with care",
         "",
-        f'config_dir = "{config.config_dir}"',
-        f'data_dir = "{config.data_dir}"',
-        f'database_url = "{config.database_url}"',
+        f'config_dir = "{_toml_escape(str(config.config_dir))}"',
+        f'data_dir = "{_toml_escape(str(config.data_dir))}"',
+        f'database_url = "{_toml_escape(config.database_url)}"',
         "",
         "# Blockchain Network Configuration",
         "# Set network_mode to 'mainnet' or 'testnet' to configure all blockchain integrations",
         "[blockchain]",
         f'network_mode = "{config.blockchain.network_mode}"',
-        f'lit_network_override = "{config.blockchain.lit_network_override or ""}"',
         f'filecoin_rpc_override = "{config.blockchain.filecoin_rpc_override or ""}"',
         f'arkiv_rpc_override = "{config.blockchain.arkiv_rpc_override or ""}"',
         "",
@@ -557,6 +566,13 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f"vlm_multiplexer_enabled = {str(config.pipeline.vlm_multiplexer_enabled).lower()}",
         f"vlm_max_concurrent_requests = {config.pipeline.vlm_max_concurrent_requests}",
         f"encryption_enabled = {str(config.pipeline.encryption_enabled).lower()}",
+        f'evm_chain = "{config.pipeline.evm_chain or ""}"',
+        f'access_pattern = "{config.pipeline.access_pattern or ""}"',
+        f'token_contract = "{config.pipeline.token_contract or ""}"',
+        f'min_balance = "{config.pipeline.min_balance or ""}"',
+        f'token_standard = "{config.pipeline.token_standard or ""}"',
+        f'owner_wallet = "{config.pipeline.owner_wallet or ""}"',
+        f'nft_contract = "{config.pipeline.nft_contract or ""}"',
         f"upload_enabled = {str(config.pipeline.upload_enabled).lower()}",
         f"sync_enabled = {str(config.pipeline.sync_enabled).lower()}",
         f"cleanup_enabled = {str(config.pipeline.cleanup_enabled).lower()}",
@@ -823,6 +839,86 @@ def validate_config(config: Optional[HavenConfig] = None) -> List[ValidationErro
             ))
     
     # Sync validation (if enabled)
+    # Haven-AOL chain validation (required when encryption is enabled)
+    if config.pipeline.encryption_enabled:
+        if not config.pipeline.evm_chain:
+            errors.append(ValidationError(
+                field="pipeline.evm_chain",
+                message=(
+                    "pipeline.evm_chain is required when encryption is enabled. "
+                    "Use one of: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet."
+                ),
+                severity="error"
+            ))
+        else:
+            from haven_cli.services.evm_utils import normalize_haven_aol_chain
+
+            try:
+                normalize_haven_aol_chain(config.pipeline.evm_chain)
+            except ValueError as exc:
+                errors.append(ValidationError(
+                    field="pipeline.evm_chain",
+                    message=str(exc),
+                    severity="error"
+                ))
+        pattern = (config.pipeline.access_pattern or "").strip().lower()
+        valid_patterns = {"token_gated", "nft_gated", "owner_only", "public"}
+        if pattern == "":
+            errors.append(ValidationError(
+                field="pipeline.access_pattern",
+                message=(
+                    "pipeline.access_pattern is required when encryption is enabled. "
+                    "Use one of: token_gated, nft_gated, owner_only, public."
+                ),
+                severity="error"
+            ))
+        elif pattern not in valid_patterns:
+            errors.append(ValidationError(
+                field="pipeline.access_pattern",
+                message=(
+                    f"Unsupported access pattern {config.pipeline.access_pattern!r}. "
+                    "Use one of: token_gated, nft_gated, owner_only, public."
+                ),
+                severity="error"
+            ))
+        elif pattern in {"token_gated", "owner_only"} and not config.pipeline.token_contract:
+            errors.append(ValidationError(
+                field="pipeline.token_contract",
+                message="pipeline.token_contract is required for token_gated and owner_only patterns.",
+                severity="error"
+            ))
+        if pattern == "token_gated":
+            if not config.pipeline.min_balance:
+                errors.append(ValidationError(
+                    field="pipeline.min_balance",
+                    message="pipeline.min_balance is required for token_gated pattern.",
+                    severity="error"
+                ))
+            if not config.pipeline.token_standard:
+                errors.append(ValidationError(
+                    field="pipeline.token_standard",
+                    message="pipeline.token_standard is required for token_gated pattern (ERC20 or ERC721).",
+                    severity="error"
+                ))
+            elif config.pipeline.token_standard not in {"ERC20", "ERC721"}:
+                errors.append(ValidationError(
+                    field="pipeline.token_standard",
+                    message="pipeline.token_standard must be ERC20 or ERC721.",
+                    severity="error"
+                ))
+        if pattern == "owner_only" and not config.pipeline.owner_wallet:
+            errors.append(ValidationError(
+                field="pipeline.owner_wallet",
+                message="pipeline.owner_wallet is required for owner_only pattern.",
+                severity="error"
+            ))
+        if pattern == "nft_gated" and not config.pipeline.nft_contract:
+            errors.append(ValidationError(
+                field="pipeline.nft_contract",
+                message="pipeline.nft_contract is required for nft_gated pattern.",
+                severity="error"
+            ))
+
     if config.pipeline.sync_enabled:
         # Validate Arkiv RPC override if set
         if config.blockchain.arkiv_rpc_override and not _validate_url(config.blockchain.arkiv_rpc_override):
@@ -916,10 +1012,8 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
             "network_mode": config.blockchain.network_mode,
             "is_mainnet": config.blockchain.is_mainnet,
             "is_testnet": config.blockchain.is_testnet,
-            "lit_network": config.blockchain.get_lit_network(),
             "filecoin_rpc_url": config.blockchain.get_filecoin_rpc_url(),
             "arkiv_rpc_url": config.blockchain.get_arkiv_rpc_url(),
-            "lit_network_override": config.blockchain.lit_network_override,
             "filecoin_rpc_override": config.blockchain.filecoin_rpc_override,
             "arkiv_rpc_override": config.blockchain.arkiv_rpc_override,
         },
@@ -939,6 +1033,13 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
             "vlm_max_concurrent_requests": config.pipeline.vlm_max_concurrent_requests,
             "vlm_multiplexer_endpoints": config.pipeline.vlm_multiplexer_endpoints,
             "encryption_enabled": config.pipeline.encryption_enabled,
+            "evm_chain": config.pipeline.evm_chain,
+            "access_pattern": config.pipeline.access_pattern,
+            "token_contract": config.pipeline.token_contract,
+            "min_balance": config.pipeline.min_balance,
+            "token_standard": config.pipeline.token_standard,
+            "owner_wallet": config.pipeline.owner_wallet,
+            "nft_contract": config.pipeline.nft_contract,
             "upload_enabled": config.pipeline.upload_enabled,
             "sync_enabled": config.pipeline.sync_enabled,
             "cleanup_enabled": config.pipeline.cleanup_enabled,

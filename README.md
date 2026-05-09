@@ -5,7 +5,7 @@ Decentralized video archival with AI-powered analysis and blockchain verificatio
 ## Features
 
 - 📹 **Video Archival**: Archive videos from YouTube, local files, and more
-- 🔐 **Encryption**: Lit Protocol access-controlled encryption
+- 🔐 **Encryption**: Haven-AOL access-controlled encryption
 - 🗄️ **Decentralized Storage**: Filecoin/IPFS via Synapse
 - 🤖 **AI Analysis**: VLM-powered timestamp and tag generation
 - ⛓️ **Blockchain Sync**: Arkiv on-chain metadata records
@@ -60,7 +60,7 @@ When working with Arkiv entities created by haven-cli:
 - `is_encrypted` - Boolean indicating encryption status
 - `cid_hash` - SHA256 hash of the CID
 - `vlm_json_cid` - CID of VLM analysis JSON
-- `lit_encryption_metadata` - JSON string of Lit encryption metadata
+- `encryption_metadata` - JSON string of encryption metadata
 - `segment_metadata` - Multi-segment recording info
 
 **Attributes Fields (Public):**
@@ -156,7 +156,7 @@ The Haven pipeline processes videos through these steps:
 
 1. **Ingest**: Extract metadata, calculate pHash, check duplicates
 2. **Analyze**: Run VLM to generate timestamps and tags (optional)
-3. **Encrypt**: Encrypt with Lit Protocol (optional)
+3. **Encrypt**: Encrypt with Haven-AOL (optional)
 4. **Upload**: Store on Filecoin via Synapse (optional)
 5. **Sync**: Record metadata on Arkiv blockchain (optional)
 

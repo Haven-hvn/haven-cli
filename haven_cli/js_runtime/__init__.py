@@ -1,7 +1,7 @@
 """JS Runtime Bridge for communicating with Deno/Node subprocess.
 
 The JS Runtime Bridge enables Python to communicate with JavaScript
-SDKs (Lit Protocol, Synapse) running in a Deno subprocess using
+SDKs (primarily Synapse) running in a Deno subprocess using
 JSON-RPC over stdio.
 """
 

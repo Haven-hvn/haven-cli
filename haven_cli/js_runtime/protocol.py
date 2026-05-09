@@ -316,12 +316,6 @@ class JSRuntimeMethods:
     SHUTDOWN = "shutdown"
     GET_STATUS = "getStatus"
     
-    # Lit Protocol
-    LIT_CONNECT = "lit.connect"
-    LIT_ENCRYPT = "lit.encrypt"
-    LIT_DECRYPT = "lit.decrypt"
-    LIT_GET_SESSION = "lit.getSession"
-    
     # Synapse SDK
     SYNAPSE_CONNECT = "synapse.connect"
     SYNAPSE_UPLOAD = "synapse.upload"

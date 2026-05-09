@@ -1,5 +1,7 @@
 # Haven CLI User Guide
 
+[Haven-AOL](https://github.com/Haven-hvn/haven-aol) is an ICP-native Always Online (AOL) protocol for conditional, token-gated access using VetKD keys. Haven CLI is the operator interface for those workflows across web3 collaboration patterns such as DAOs, DataDAOs, and agent swarms.
+
 ## Table of Contents
 
 1. [Installation](#installation)
@@ -124,7 +126,7 @@ The Haven pipeline processes videos through these steps:
 
 1. **Ingest**: Extract metadata, calculate pHash, check duplicates
 2. **Analyze**: Run VLM to generate timestamps and tags (optional)
-3. **Encrypt**: Encrypt with Lit Protocol (optional)
+3. **Encrypt**: Encrypt with Haven-AOL (optional)
 4. **Upload**: Store on Filecoin via Synapse (optional)
 5. **Sync**: Record metadata on Arkiv blockchain (optional)
 
@@ -160,7 +162,7 @@ Haven CLI uses the standardized Haven Cross-Application Data Format v1.0.0, ensu
 - `is_encrypted` - Boolean encryption status
 - `cid_hash` - SHA256 hash of CID
 - `vlm_json_cid` - CID of VLM analysis
-- `lit_encryption_metadata` - Lit Protocol metadata
+- `encryption_metadata` - Encryption metadata
 
 **Attributes Fields (Public):**
 - `title` - Video title

@@ -79,21 +79,21 @@ Version 1.0.0 introduces the Haven Cross-Application Data Format, ensuring full 
 **New Format:**
 ```json
 {
-  "lit_encryption_metadata": "{...}"
+  "encryption_metadata": "{...}"
 }
 ```
 
-**Impact:** Ciphertext is no longer stored in the payload (it's already on Filecoin). Use `lit_encryption_metadata` for decryption instructions.
+**Impact:** Ciphertext is no longer stored in the payload (it's already on Filecoin). Use `encryption_metadata` for decryption instructions.
 
 ### New Fields
 
-#### 1. Payload: `lit_encryption_metadata`
+#### 1. Payload: `encryption_metadata`
 
-Unified encryption metadata for Lit Protocol decryption.
+Unified encryption metadata for Haven-AOL decryption.
 
 ```json
 {
-  "lit_encryption_metadata": {
+  "encryption_metadata": {
     "version": "hybrid-v1",
     "encryptedKey": "base64...",
     "keyHash": "sha256...",

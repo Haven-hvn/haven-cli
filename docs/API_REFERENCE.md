@@ -35,7 +35,7 @@ Each video upload creates an Arkiv entity with two main components:
 │ • creator_handle         │ • is_encrypted                   │
 │ • source_uri             │ • cid_hash                       │
 │ • cid_hash               │ • vlm_json_cid                   │
-│ • is_encrypted           │ • lit_encryption_metadata        │
+│ • is_encrypted           │ • encryption_metadata            │
 │ • encrypted_cid          │ • cid_encryption_metadata        │
 │ • phash                  │ • segment_metadata               │
 │ • analysis_model         │ • codec_variants                 │
@@ -72,7 +72,7 @@ interface HavenPayload {
   // Optional Fields
   cid_hash?: string;                   // SHA256 of CID
   vlm_json_cid?: string;               // VLM analysis CID
-  lit_encryption_metadata?: string;    // JSON string of Lit metadata
+  encryption_metadata?: string;        // JSON string of encryption metadata
   cid_encryption_metadata?: string;    // JSON string of CID encryption
   segment_metadata?: SegmentMetadata;  // Multi-segment recording info
   codec_variants?: CodecVariant[];     // Available codec variants
@@ -132,9 +132,9 @@ interface CodecVariant {
       "type": "boolean",
       "description": "Whether the content is encrypted"
     },
-    "lit_encryption_metadata": {
+    "encryption_metadata": {
       "type": "string",
-      "description": "JSON string of LitEncryptionMetadata"
+      "description": "JSON string of EncryptionMetadata"
     },
     "cid_encryption_metadata": {
       "type": "string",
@@ -276,10 +276,10 @@ interface HavenAttributes {
 
 ### Lit Encryption Metadata Structure
 
-When a video is encrypted using Lit Protocol, the following metadata structure is stored in the payload as a JSON string:
+When a video is encrypted using Haven-AOL, the following metadata structure is stored in the payload as a JSON string:
 
 ```typescript
-interface LitEncryptionMetadata {
+interface EncryptionMetadata {
   version: 'hybrid-v1';               // Metadata format version
   encryptedKey: string;               // Base64 BLS-encrypted AES key
   keyHash: string;                    // SHA256 of original AES key
@@ -386,10 +386,10 @@ title = attributes.get("title")
 cid_hash = attributes.get("cid_hash")
 
 # Parse Lit encryption metadata (if encrypted)
-if is_encrypted and payload.get("lit_encryption_metadata"):
-    lit_meta = json.loads(payload["lit_encryption_metadata"])
-    encrypted_key = lit_meta["encryptedKey"]
-    access_conditions = lit_meta["accessControlConditions"]
+if is_encrypted and payload.get("encryption_metadata"):
+    encryption_meta = json.loads(payload["encryption_metadata"])
+    encrypted_key = encryption_meta["encryptedKey"]
+    access_conditions = encryption_meta["accessControlConditions"]
 ```
 
 #### Querying Entities
@@ -442,11 +442,11 @@ for (const entity of entities) {
   const cidHash = attributes.cid_hash as string;
   
   // Parse Lit encryption metadata
-  let litMeta: LitEncryptionMetadata | undefined;
-  const rawLitMeta = payload?.lit_encryption_metadata;
-  if (rawLitMeta && typeof rawLitMeta === 'string') {
+  let encryptionMeta: Record<string, unknown> | undefined;
+  const rawEncryptionMeta = payload?.encryption_metadata;
+  if (rawEncryptionMeta && typeof rawEncryptionMeta === 'string') {
     try {
-      litMeta = JSON.parse(rawLitMeta);
+      encryptionMeta = JSON.parse(rawEncryptionMeta);
     } catch {
       // ignore parse errors
     }
@@ -471,13 +471,13 @@ function parseHavenEntity(entity: ArkivEntity): Video {
     data[snakeKey] ?? data[camelKey];
   
   // Parse Lit encryption metadata
-  let litMeta: LitEncryptionMetadata | undefined;
-  const rawLitMeta = get('lit_encryption_metadata', 'litEncryptionMetadata');
-  if (rawLitMeta) {
-    if (typeof rawLitMeta === 'string') {
-      try { litMeta = JSON.parse(rawLitMeta); } catch { /* ignore */ }
+  let encryptionMeta: Record<string, unknown> | undefined;
+  const rawEncryptionMeta = get('encryption_metadata', 'encryptionMetadata');
+  if (rawEncryptionMeta) {
+    if (typeof rawEncryptionMeta === 'string') {
+      try { encryptionMeta = JSON.parse(rawEncryptionMeta); } catch { /* ignore */ }
     } else {
-      litMeta = rawLitMeta as LitEncryptionMetadata;
+      encryptionMeta = rawEncryptionMeta as Record<string, unknown>;
     }
   }
   
@@ -488,7 +488,7 @@ function parseHavenEntity(entity: ArkivEntity): Video {
     filecoinCid: (get('filecoin_root_cid', 'filecoinCid') as string) || '',
     encryptedCid: (get('encrypted_cid', 'encryptedCid') as string) || undefined,
     isEncrypted: Boolean(get('is_encrypted', 'isEncrypted')),
-    litEncryptionMetadata: litMeta,
+    encryptionMetadata: encryptionMeta,
     cidHash: (get('cid_hash', 'cidHash') as string) || undefined,
     vlmJsonCid: (get('vlm_json_cid', 'vlmJsonCid') as string) || undefined,
     createdAt: entity.created_at ? new Date(entity.created_at) : new Date(),

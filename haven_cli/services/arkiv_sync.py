@@ -384,8 +384,8 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
         # NOTE: ciphertext is NOT included here - it's already on Filecoin and would be a duplicate
         # The decryption function will use the Filecoin data instead of metadata.ciphertext
         if context.encryption_metadata:
-            # Build proper lit_encryption_metadata structure for decryption
-            lit_metadata: dict[str, Any] = {
+            # Build encryption metadata structure for decryption
+            encryption_metadata: dict[str, Any] = {
                 "version": "hybrid-v1",
                 "encryptedKey": context.encryption_metadata.encrypted_key,
                 "keyHash": context.encryption_metadata.key_hash,
@@ -398,15 +398,15 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
             
             # Add optional fields if available
             if context.video_metadata:
-                lit_metadata["originalMimeType"] = context.video_metadata.mime_type
-                lit_metadata["originalSize"] = context.video_metadata.file_size
+                encryption_metadata["originalMimeType"] = context.video_metadata.mime_type
+                encryption_metadata["originalSize"] = context.video_metadata.file_size
             
             # Add original hash if available from encryption result
             original_hash = context.get_step_data("encrypt", "original_hash")
             if original_hash:
-                lit_metadata["originalHash"] = original_hash
+                encryption_metadata["originalHash"] = original_hash
             
-            payload["lit_encryption_metadata"] = json.dumps(lit_metadata)
+            payload["encryption_metadata"] = json.dumps(encryption_metadata)
     else:
         # For non-encrypted videos, store filecoin_root_cid in payload (not in attributes for consistency)
         if context.upload_result and context.upload_result.root_cid:

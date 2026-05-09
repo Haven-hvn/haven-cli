@@ -50,7 +50,7 @@ haven upload <file> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--encrypt` | `-e` | Encrypt file with Lit Protocol before upload |
+| `--encrypt` | `-e` | Encrypt file with Haven-AOL before upload |
 | `--no-vlm` | | Skip VLM analysis step |
 | `--dataset` | `-d` | Dataset ID for Filecoin upload |
 | `--no-arkiv` | | Skip Arkiv blockchain sync |
@@ -62,7 +62,7 @@ This command processes a single file through the pipeline:
 
 1. **Ingest** - Calculate pHash, create database entry
 2. **Analyze** - VLM analysis (optional, skip with `--no-vlm`)
-3. **Encrypt** - Lit Protocol encryption (optional, enable with `--encrypt`)
+3. **Encrypt** - Haven-AOL encryption (optional, enable with `--encrypt`)
 4. **Upload** - Upload to Filecoin network
 5. **Sync** - Sync metadata to Arkiv blockchain (optional, skip with `--no-arkiv`)
 
@@ -75,7 +75,7 @@ Uploaded entities use the Haven Cross-Application Data Format v1.0.0, ensuring c
 - `is_encrypted` - Encryption status (`true`/`false` in payload, `0`/`1` in attributes)
 - `cid_hash` - SHA256 hash of CID (stored in both payload and attributes)
 - `vlm_json_cid` - CID of VLM analysis JSON
-- `lit_encryption_metadata` - Lit Protocol encryption metadata
+- `encryption_metadata` - Encryption metadata
 
 For complete format details, see [Arkiv Data Format](ARKIV_FORMAT.md).
 
@@ -124,13 +124,13 @@ haven download <cid> [OPTIONS]
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--output` | `-o` | Output path for downloaded file (required) |
-| `--decrypt` | `-d` | Decrypt file after download using Lit Protocol |
+| `--decrypt` | `-d` | Decrypt file after download using Haven-AOL |
 | `--force` | `-f` | Overwrite existing file if it exists |
 | `--config` | `-c` | Path to configuration file |
 
 ### Description
 
-Retrieves a file by its CID and optionally decrypts it using Lit Protocol if it was encrypted during upload.
+Retrieves a file by its CID and optionally decrypts it using Haven-AOL if it was encrypted during upload.
 
 ### Examples
 
@@ -182,7 +182,7 @@ haven download info bafybeig... --json
 
 ## haven download decrypt-file
 
-Decrypt a local file using Lit Protocol.
+Decrypt a local file using Haven-AOL.
 
 ```bash
 haven download decrypt-file <file> [OPTIONS]
@@ -205,7 +205,7 @@ haven download decrypt-file <file> [OPTIONS]
 
 ### Description
 
-Decrypts a file that was encrypted with Lit Protocol. Encryption metadata is looked up from the database (by CID) or from a sidecar `.lit` file.
+Decrypts a file that was encrypted with Haven-AOL. Encryption metadata is looked up from the database (by CID) or from a sidecar `.encmeta` file.
 
 ### Examples
 

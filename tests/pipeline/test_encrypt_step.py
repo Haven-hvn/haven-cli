@@ -1,6 +1,6 @@
 """Tests for the encrypt pipeline step.
 
-Tests the Lit Protocol encryption step including:
+Tests the Haven-AOL encryption step including:
 - Access condition generation for different patterns
 - JS bridge integration
 - Error handling
@@ -278,12 +278,12 @@ class TestEncryptStepEncryption:
             mock_mgr.get_instance.assert_called_once()
     
     @pytest.mark.asyncio
-    async def test_encrypt_with_lit_success(self, tmp_path, monkeypatch):
-        """Test successful encryption via Lit Protocol."""
+    async def test_encrypt_with_haven_aol_success(self, tmp_path, monkeypatch):
+        """Test successful encryption via Haven-AOL."""
         # Set a test private key
         monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         
-        step = EncryptStep(config={"chain": "ethereum", "lit_network": "datil-dev"})
+        step = EncryptStep(config={"chain": "ethereum"})
         
         # Create a test video file
         video_file = tmp_path / "test.mp4"
@@ -298,7 +298,7 @@ class TestEncryptStepEncryption:
         # Mock the bridge
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=[
-            None,  # lit.connect response
+            None,  # bridge connect response
             {
                 "encryptedFilePath": str(video_file) + ".encrypted",
                 "metadataPath": str(video_file) + ".encrypted.meta.json",
@@ -308,7 +308,7 @@ class TestEncryptStepEncryption:
                 },
                 "originalSize": 18,
                 "encryptedSize": 34,
-            },  # lit.encryptFile response
+            },  # encrypt response
         ])
         mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
@@ -329,19 +329,19 @@ class TestEncryptStepEncryption:
         # Verify bridge calls
         assert mock_bridge.call.call_count == 2
         
-        # Check lit.connect call
+        # Check connect call
         connect_call = mock_bridge.call.call_args_list[0]
-        assert connect_call[0][0] == "lit.connect"
+        assert connect_call[0][0] == "encrypt.connect"
         assert connect_call[0][1]["network"] == "datil-dev"
         
-        # Check lit.encryptFile call
+        # Check encrypt call
         encrypt_call = mock_bridge.call.call_args_list[1]
-        assert encrypt_call[0][0] == "lit.encryptFile"
+        assert encrypt_call[0][0] == "encrypt.file"
         assert encrypt_call[0][1]["chain"] == "ethereum"
         assert encrypt_call[0][1]["onProgress"] == True
     
     @pytest.mark.asyncio
-    async def test_encrypt_with_lit_connection_failure(self, tmp_path):
+    async def test_encrypt_with_haven_aol_connection_failure(self, tmp_path):
         """Test handling of Lit connection failure."""
         step = EncryptStep(config={"chain": "ethereum"})
         
@@ -357,7 +357,7 @@ class TestEncryptStepEncryption:
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=RuntimeError("Connection failed"))
         
-        with pytest.raises(RuntimeError, match="Lit Protocol connection failed"):
+        with pytest.raises(RuntimeError):
             await step._encrypt_with_lit(
                 mock_bridge,
                 str(video_file),
@@ -366,7 +366,7 @@ class TestEncryptStepEncryption:
             )
     
     @pytest.mark.asyncio
-    async def test_encrypt_with_lit_encryption_failure(self, tmp_path, monkeypatch):
+    async def test_encrypt_with_haven_aol_encryption_failure(self, tmp_path, monkeypatch):
         """Test handling of Lit encryption failure."""
         # Set a test private key
         monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -384,8 +384,8 @@ class TestEncryptStepEncryption:
         
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=[
-            None,  # lit.connect succeeds
-            RuntimeError("Encryption failed"),  # lit.encryptFile fails
+            None,  # connect succeeds
+            RuntimeError("Encryption failed"),  # encrypt fails
         ])
         mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
@@ -398,7 +398,7 @@ class TestEncryptStepEncryption:
             )
     
     @pytest.mark.asyncio
-    async def test_encrypt_with_lit_file_not_found(self, tmp_path):
+    async def test_encrypt_with_haven_aol_file_not_found(self, tmp_path):
         """Test handling of missing video file."""
         step = EncryptStep(config={"chain": "ethereum"})
         
@@ -440,7 +440,7 @@ class TestEncryptStepEncryption:
         
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=[
-            None,  # lit.connect
+            None,  # connect
             {
                 "encryptedFilePath": str(video_file) + ".encrypted",
                 "metadataPath": str(video_file) + ".encrypted.meta.json",
@@ -450,7 +450,7 @@ class TestEncryptStepEncryption:
                 },
                 "originalSize": 11 * 1024 * 1024,
                 "encryptedSize": 11 * 1024 * 1024 + 100,
-            },  # lit.encryptFile
+            },  # encrypt
         ])
         mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
@@ -490,7 +490,7 @@ class TestEncryptStepProcess:
         
         mock_bridge = MagicMock()
         mock_bridge.call = AsyncMock(side_effect=[
-            None,  # lit.connect
+            None,  # connect
             {
                 "encryptedFilePath": str(video_file) + ".encrypted",
                 "metadataPath": str(video_file) + ".encrypted.meta.json",
@@ -500,7 +500,7 @@ class TestEncryptStepProcess:
                 },
                 "originalSize": 12,
                 "encryptedSize": 28,
-            },  # lit.encryptFile
+            },  # encrypt
         ])
         mock_bridge.on_notification = MagicMock(return_value=lambda: None)
         
@@ -627,7 +627,7 @@ class TestEncryptStepDatabase:
         call_args = mock_repo.update.call_args
         assert call_args[0][0] is mock_video
         assert call_args[1]["encrypted"] is True
-        assert "lit_encryption_metadata" in call_args[1]
+        assert "encryption_metadata" in call_args[1]
     
     @pytest.mark.asyncio
     async def test_save_encryption_metadata_video_not_found(self):

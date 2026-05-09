@@ -353,7 +353,7 @@ class ResultsWidget(Static):
             lines.append(f"[dim]IPFS CID:[/dim]    [success]{cid_display}[/success]")
         
         if self._is_encrypted:
-            lines.append(f"[dim]Encrypted:[/dim]   [success]Yes (Lit Protocol)[/success]")
+            lines.append(f"[dim]Encrypted:[/dim]   [success]Yes (Haven-AOL)[/success]")
         
         if self._analysis_complete:
             lines.append(f"[dim]AI Analysis:[/dim] [success]Complete[/success]")

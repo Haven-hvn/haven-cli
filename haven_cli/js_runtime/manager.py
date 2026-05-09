@@ -41,11 +41,11 @@ class JSBridgeManager:
         # Get bridge via singleton manager
         manager = JSBridgeManager.get_instance()
         bridge = await manager.get_bridge()
-        result = await bridge.call("lit.encrypt", {...})
+        result = await bridge.call("synapse.getStatus", {"cid": "..."})
         
         # Or use context manager
         async with JSBridgeManager.get_instance() as manager:
-            result = await manager.call_with_retry("lit.encrypt", {...})
+            result = await manager.call_with_retry("synapse.getStatus", {"cid": "..."})
     """
     
     _instance: Optional['JSBridgeManager'] = None
@@ -763,7 +763,7 @@ async def js_call(method: str, params: Optional[dict] = None, **kwargs) -> Any:
         The result from the JS runtime
         
     Example:
-        result = await js_call("lit.encrypt", {"data": "..."})
+        result = await js_call("synapse.getStatus", {"cid": "..."})
     """
     return await JSBridgeManager.get_instance().call_with_retry(method, params, **kwargs)
 

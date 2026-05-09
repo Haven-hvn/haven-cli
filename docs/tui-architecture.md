@@ -546,7 +546,7 @@ class AnalyticsRepository:
 | `videos` | Core video metadata |
 | `downloads` | Download job status |
 | `upload_jobs` | Filecoin upload status |
-| `encryption_jobs` | Lit Protocol encryption status |
+| `encryption_jobs` | Haven-AOL encryption status |
 | `analysis_jobs` | VLM analysis status |
 | `sync_jobs` | Blockchain sync status |
 | `pipeline_snapshots` | Aggregated state for TUI |

@@ -6,8 +6,9 @@ Works across all EVM chains (Ethereum, Polygon, BSC, Avalanche, Arbitrum, Optimi
 from __future__ import annotations
 
 import logging
-from typing import Tuple, Optional
-from decimal import Decimal
+import re
+from dataclasses import dataclass
+from typing import Optional, Tuple, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,184 @@ class InsufficientGasError(Exception):
         self.original_error = original_error
         self.chain_name = chain_name
         self.native_token_symbol = native_token_symbol or "gas tokens"
+
+
+_EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+
+# Supported Haven-AOL canister chain variants.
+SUPPORTED_HAVEN_AOL_CHAINS: tuple[str, ...] = (
+    "EthMainnet",
+    "EthSepolia",
+    "ArbitrumOne",
+    "BaseMainnet",
+    "OptimismMainnet",
+)
+
+_HAVEN_AOL_CHAIN_ALIASES: dict[str, str] = {
+    "ethmainnet": "EthMainnet",
+    "ethereum": "EthMainnet",
+    "eth-mainnet": "EthMainnet",
+    "ethsepolia": "EthSepolia",
+    "eth-sepolia": "EthSepolia",
+    "sepolia": "EthSepolia",
+    "arbitrumone": "ArbitrumOne",
+    "arbitrum-one": "ArbitrumOne",
+    "arbitrum": "ArbitrumOne",
+    "basemainnet": "BaseMainnet",
+    "base-mainnet": "BaseMainnet",
+    "base": "BaseMainnet",
+    "optimismmainnet": "OptimismMainnet",
+    "optimism-mainnet": "OptimismMainnet",
+    "optimism": "OptimismMainnet",
+}
+
+
+def normalize_haven_aol_chain(chain: str) -> str:
+    """Normalize user/config chain string to a supported Haven-AOL chain variant."""
+    normalized = _HAVEN_AOL_CHAIN_ALIASES.get(chain.strip().lower())
+    if normalized is None:
+        valid = ", ".join(SUPPORTED_HAVEN_AOL_CHAINS)
+        raise ValueError(f"Unsupported EVM chain {chain!r}. Supported values: {valid}")
+    return normalized
+
+
+class Eip712TypedDataDomain(TypedDict):
+    name: str
+    chainId: int
+    verifyingContract: str
+
+
+class Eip712TypedDataField(TypedDict):
+    name: str
+    type: str
+
+
+class Eip712TypedDataMessage(TypedDict):
+    evmAddress: str
+    transportPublicKey: str
+    nonce: int
+
+
+class Eip712GateRequestTypedData(TypedDict):
+    types: dict[str, list[Eip712TypedDataField]]
+    primaryType: str
+    domain: Eip712TypedDataDomain
+    message: Eip712TypedDataMessage
+
+
+@dataclass(frozen=True)
+class GateRequestProof:
+    """Signed EIP-712 proof payload for requestDecryptionKey."""
+
+    evm_address: str
+    nonce: int
+    signature_hex: str
+    eip712_chain_id: int
+    eip712_verifying_contract: str
+    typed_data: Eip712GateRequestTypedData
+
+
+def _normalize_evm_address(address: str) -> str:
+    candidate = address.strip()
+    if not _EVM_ADDRESS_RE.fullmatch(candidate):
+        raise ValueError(f"Invalid EVM address: {address!r}")
+    return candidate
+
+
+def _bytes_to_hex_prefixed(raw: bytes) -> str:
+    return "0x" + raw.hex()
+
+
+def build_gate_request_typed_data(
+    evm_address: str,
+    transport_public_key: bytes,
+    nonce: int,
+    chain_id: int,
+    verifying_contract: str,
+    app_name: str = "HavenAOL",
+) -> Eip712GateRequestTypedData:
+    """Build EIP-712 typed data for the GateRequest primary type."""
+    if nonce < 0:
+        raise ValueError("nonce must be >= 0")
+    if chain_id <= 0:
+        raise ValueError("chain_id must be > 0")
+    if len(transport_public_key) == 0:
+        raise ValueError("transport_public_key must not be empty")
+
+    normalized_evm = _normalize_evm_address(evm_address)
+    normalized_contract = _normalize_evm_address(verifying_contract)
+
+    return {
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"},
+            ],
+            "GateRequest": [
+                {"name": "evmAddress", "type": "address"},
+                {"name": "transportPublicKey", "type": "bytes"},
+                {"name": "nonce", "type": "uint256"},
+            ],
+        },
+        "primaryType": "GateRequest",
+        "domain": {
+            "name": app_name,
+            "chainId": chain_id,
+            "verifyingContract": normalized_contract,
+        },
+        "message": {
+            "evmAddress": normalized_evm,
+            "transportPublicKey": _bytes_to_hex_prefixed(transport_public_key),
+            "nonce": nonce,
+        },
+    }
+
+
+def sign_gate_request_typed_data(
+    private_key: str,
+    transport_public_key: bytes,
+    nonce: int,
+    chain_id: int,
+    verifying_contract: str,
+    app_name: str = "HavenAOL",
+) -> GateRequestProof:
+    """Create and sign a GateRequest EIP-712 payload using the wallet private key."""
+    try:
+        from eth_account import Account
+        from eth_account.messages import encode_typed_data
+    except ImportError as exc:
+        raise RuntimeError(
+            "eth-account is required for EIP-712 signing. Install haven-cli[blockchain]."
+        ) from exc
+
+    normalized_key = private_key.strip()
+    if not normalized_key.startswith("0x"):
+        normalized_key = f"0x{normalized_key}"
+
+    signer = Account.from_key(normalized_key)
+    typed_data = build_gate_request_typed_data(
+        evm_address=signer.address,
+        transport_public_key=transport_public_key,
+        nonce=nonce,
+        chain_id=chain_id,
+        verifying_contract=verifying_contract,
+        app_name=app_name,
+    )
+    signable_message = encode_typed_data(full_message=typed_data)
+    signature = Account.sign_message(signable_message, normalized_key)
+    signature_hex = signature.signature.hex()
+    if not signature_hex.startswith("0x"):
+        signature_hex = "0x" + signature_hex
+
+    return GateRequestProof(
+        evm_address=signer.address,
+        nonce=nonce,
+        signature_hex=signature_hex,
+        eip712_chain_id=chain_id,
+        eip712_verifying_contract=_normalize_evm_address(verifying_contract),
+        typed_data=typed_data,
+    )
 
 
 def get_wallet_address_from_private_key(private_key: str) -> str:

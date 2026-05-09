@@ -8,14 +8,30 @@
 
 **Status:** ✅ FIXED
 
+## Additional Gate Security Requirement (EIP-712)
+
+Haven-AOL mainnet gate requests now require cryptographic proof that the requester controls the submitted EVM address. The proof must be an EIP-712 `GateRequest` signature bound to:
+
+- `evmAddress`
+- `transportPublicKey`
+- `nonce`
+
+Domain fields:
+
+- `name = "HavenAOL"`
+- `chainId`
+- `verifyingContract`
+
+This prevents address-impersonation attacks where a caller submits someone else's funded wallet address without controlling its private key.
+
 ## The Problem
 
-When a user requested encryption (`encrypt=True`) but the encryption step failed (e.g., due to Lit Protocol being unavailable, missing configuration, or network issues), the system would still proceed to upload the **unencrypted** file to Filecoin.
+When a user requested encryption (`encrypt=True`) but the encryption step failed (e.g., due to missing Haven-AOL inputs, metadata issues, or runtime errors), the system would still proceed to upload the **unencrypted** file to Filecoin.
 
 ### Vulnerability Scenario
 
 1. User runs: `haven upload video.mp4 --encrypt`
-2. Encryption step fails (e.g., Lit Protocol connection timeout)
+2. Encryption step fails (e.g., key/metadata derivation failure)
 3. Upload step executes anyway
 4. **Unencrypted file is uploaded to Filecoin** ❌
 
@@ -143,7 +159,7 @@ tests/pipeline/test_upload_step.py - 23 passed
 
 3. **Audit Logging**: Log all instances where encryption was requested but failed for security auditing.
 
-4. **Configuration Validation**: Validate encryption configuration (e.g., `owner_wallet`, Lit Protocol connectivity) before starting the pipeline to fail fast.
+4. **Configuration Validation**: Validate encryption configuration (e.g., `owner_wallet`, `token_contract`, `HAVEN_PRIVATE_KEY`) before starting the pipeline to fail fast.
 
 ## Related Files
 

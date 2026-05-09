@@ -32,7 +32,7 @@ Each video upload creates an Arkiv entity with two main components:
 │ • creator_handle         │ • is_encrypted                   │
 │ • source_uri             │ • cid_hash                       │
 │ • cid_hash               │ • vlm_json_cid                   │
-│ • is_encrypted           │ • lit_encryption_metadata        │
+│ • is_encrypted           │ • encryption_metadata            │
 │ • encrypted_cid          │ • segment_metadata               │
 │ • phash                  │ • codec_variants                 │
 │ • analysis_model         │ • duration                       │
@@ -54,7 +54,7 @@ The payload contains sensitive data that should remain private. It is stored as 
   "is_encrypted": true,
   "cid_hash": "sha256...",
   "vlm_json_cid": "Qm...",
-  "lit_encryption_metadata": "{...}",
+  "encryption_metadata": "{...}",
   "cid_encryption_metadata": "{...}",
   "segment_metadata": {
     "segment_index": 0,
@@ -77,7 +77,7 @@ The payload contains sensitive data that should remain private. It is stored as 
 | `is_encrypted` | boolean | Encryption status (`true` or `false`) |
 | `cid_hash` | string | SHA256 hash of `filecoin_root_cid` |
 | `vlm_json_cid` | string | CID of VLM analysis JSON on Filecoin |
-| `lit_encryption_metadata` | string | JSON string of Lit Protocol encryption metadata |
+| `encryption_metadata` | string | JSON string of Haven-AOL encryption metadata |
 | `cid_encryption_metadata` | string | JSON string of CID encryption metadata (for encrypted videos) |
 | `segment_metadata` | object | Multi-segment recording information |
 | `codec_variants` | array | Available codec variants (e.g., `["h264", "hevc"]`) |
@@ -187,7 +187,7 @@ Attributes are public, indexed fields that enable searching and duplicate detect
 | Encryption status | `is_encrypted` | `encrypted` |
 | CID hash | `cid_hash` | - |
 | VLM CID | `vlm_json_cid` | `vlm_cid` |
-| Lit metadata | `lit_encryption_metadata` | `encryption_metadata` |
+| Encryption metadata | `encryption_metadata` | `encryption_metadata` |
 | CID encryption | `cid_encryption_metadata` | `cid_encryption` |
 
 ## Cross-Application Compatibility

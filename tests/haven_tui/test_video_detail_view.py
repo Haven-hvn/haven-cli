@@ -145,7 +145,7 @@ def create_test_encryption_job(
         bytes_processed=10485760 if status == "completed" else int(10485760 * progress / 100),
         bytes_total=10485760,
         encrypt_speed=512000 if status == "encrypting" else 0,
-        lit_cid="test-lit-cid" if status == "completed" else None,
+        encrypted_ref="test-encrypted-ref" if status == "completed" else None,
         started_at=datetime.now(timezone.utc) - timedelta(minutes=3),
         completed_at=datetime.now(timezone.utc) if status == "completed" else None,
         error_message=None if status != "failed" else "Encryption error",
@@ -463,7 +463,7 @@ class TestResultsWidget:
         widget.set_results(is_encrypted=True)
         result = widget._render()
         assert "Encrypted" in result
-        assert "Lit Protocol" in result
+        assert "Haven-AOL" in result
     
     def test_analysis_complete(self):
         """Test analysis complete display."""

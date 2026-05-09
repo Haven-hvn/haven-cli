@@ -37,7 +37,7 @@ GOLD_STANDARD_FIELDS = {
         "is_encrypted",       # int 0 or 1 (not boolean)
         "cid_hash",
         "vlm_json_cid",
-        "lit_encryption_metadata",  # Only for encrypted videos
+        "encryption_metadata",  # Only for encrypted videos
         "segment_metadata",
         "cid_encryption_metadata",  # Only for encrypted videos
         # Note: duration, file_size are NOT in gold standard (recalculable)
@@ -60,7 +60,7 @@ GOLD_STANDARD_FIELDS = {
 
 FORBIDDEN_FIELDS = {
     "payload": ["root_cid", "encrypted", "encryption_ciphertext", "ciphertext"],
-    "attributes": ["root_cid", "filecoin_root_cid", "vlm_json_cid", "lit_encryption_metadata"]
+    "attributes": ["root_cid", "filecoin_root_cid", "vlm_json_cid", "encryption_metadata"]
 }
 
 
@@ -132,7 +132,7 @@ def create_test_context(
             }],
             chain="ethereum"
         )
-        # Add original hash for lit metadata
+        # Add original hash for encryption metadata
         context.set_step_data("encrypt", "original_hash", "sha256originalhash789")
     
     # Set analysis result if VLM analyzed
@@ -171,7 +171,7 @@ def validate_payload(payload: Dict[str, Any], encrypted: bool = False) -> None:
     if not encrypted:
         required.append("filecoin_root_cid")
     if encrypted:
-        required.append("lit_encryption_metadata")
+        required.append("encryption_metadata")
         required.append("cid_encryption_metadata")
     
     for field in required:
@@ -202,19 +202,19 @@ def validate_payload(payload: Dict[str, Any], encrypted: bool = False) -> None:
         assert len(cid_hash) == 64, f"cid_hash must be 64 hex chars, got {len(cid_hash)}"
         assert all(c in "0123456789abcdef" for c in cid_hash), "cid_hash must be hex"
     
-    # Validate lit_encryption_metadata structure if encrypted
+    # Validate encryption_metadata structure if encrypted
     if encrypted:
-        lit_meta = json.loads(payload["lit_encryption_metadata"])
-        assert lit_meta["version"] == "hybrid-v1", "lit_encryption_metadata version must be hybrid-v1"
-        assert "encryptedKey" in lit_meta, "lit_encryption_metadata must have encryptedKey"
-        assert "keyHash" in lit_meta, "lit_encryption_metadata must have keyHash"
-        assert "iv" in lit_meta, "lit_encryption_metadata must have iv"
-        assert lit_meta["algorithm"] == "AES-GCM", "algorithm must be AES-GCM"
-        assert lit_meta["keyLength"] == 256, "keyLength must be 256"
-        assert "accessControlConditions" in lit_meta, "accessControlConditions required"
-        assert "chain" in lit_meta, "chain required"
-        # Verify ciphertext is NOT in lit metadata (it's on Filecoin)
-        assert "ciphertext" not in lit_meta, "ciphertext must NOT be in lit_encryption_metadata"
+        encryption_meta = json.loads(payload["encryption_metadata"])
+        assert encryption_meta["version"] == "hybrid-v1", "encryption_metadata version must be hybrid-v1"
+        assert "encryptedKey" in encryption_meta, "encryption_metadata must have encryptedKey"
+        assert "keyHash" in encryption_meta, "encryption_metadata must have keyHash"
+        assert "iv" in encryption_meta, "encryption_metadata must have iv"
+        assert encryption_meta["algorithm"] == "AES-GCM", "algorithm must be AES-GCM"
+        assert encryption_meta["keyLength"] == 256, "keyLength must be 256"
+        assert "accessControlConditions" in encryption_meta, "accessControlConditions required"
+        assert "chain" in encryption_meta, "chain required"
+        # Verify ciphertext is NOT in metadata (it's on Filecoin)
+        assert "ciphertext" not in encryption_meta, "ciphertext must NOT be in encryption_metadata"
     
     print("    ✅ Payload validation passed")
 
@@ -288,17 +288,17 @@ def simulate_dapp_parsing(
     def get(snake_key: str, camel_key: str):
         return data.get(snake_key, data.get(camel_key))
     
-    # Parse lit_encryption_metadata (stored as JSON string in payload)
-    lit_meta = None
-    raw_lit_meta = get('lit_encryption_metadata', 'litEncryptionMetadata')
-    if raw_lit_meta:
-        if isinstance(raw_lit_meta, str):
+    # Parse encryption_metadata (stored as JSON string in payload)
+    encryption_meta = None
+    raw_encryption_meta = get('encryption_metadata', 'encryptionMetadata')
+    if raw_encryption_meta:
+        if isinstance(raw_encryption_meta, str):
             try:
-                lit_meta = json.loads(raw_lit_meta)
+                encryption_meta = json.loads(raw_encryption_meta)
             except json.JSONDecodeError:
-                lit_meta = None
+                encryption_meta = None
         else:
-            lit_meta = raw_lit_meta
+            encryption_meta = raw_encryption_meta
     
     # Parse segment metadata
     raw_segment = get('segment_metadata', 'segmentMetadata') or {}
@@ -322,7 +322,7 @@ def simulate_dapp_parsing(
         'filecoinCid': get('filecoin_root_cid', 'filecoinCid') or '',
         'encryptedCid': get('encrypted_cid', 'encryptedCid'),
         'isEncrypted': bool(get('is_encrypted', 'isEncrypted')),
-        'litEncryptionMetadata': lit_meta,
+        'encryptionMetadata': encryption_meta,
         'cidEncryptionMetadata': get('cid_encryption_metadata', 'cidEncryptionMetadata'),
         'hasAiData': bool(get('has_ai_data', 'hasAiData') or vlm_json_cid),
         'vlmJsonCid': vlm_json_cid,
@@ -397,8 +397,8 @@ def test_encrypted_upload():
     # Additional assertions for encrypted videos
     assert video['isEncrypted'] == True
     assert video['encryptedCid'] == "encryptedcidstring123"
-    assert video['litEncryptionMetadata'] is not None
-    assert video['litEncryptionMetadata']['version'] == 'hybrid-v1'
+    assert video['encryptionMetadata'] is not None
+    assert video['encryptionMetadata']['version'] == 'hybrid-v1'
     
     print("✅ Encrypted upload test passed")
 
@@ -523,7 +523,7 @@ def test_privacy_rules():
     assert "encrypted_cid" in attributes, "Encrypted videos should have encrypted_cid in attributes"
     
     # Payload should have encryption metadata for decryption
-    assert "lit_encryption_metadata" in payload, "Payload should have lit_encryption_metadata"
+    assert "encryption_metadata" in payload, "Payload should have encryption_metadata"
     assert "cid_encryption_metadata" in payload, "Payload should have cid_encryption_metadata"
     
     print("    ✅ Privacy rules enforced:")
@@ -560,7 +560,7 @@ def test_gold_standard_compliance():
         if field == "vlm_json_cid":
             # Only present when VLM analyzed and uploaded
             continue
-        if field in ["lit_encryption_metadata", "cid_encryption_metadata"]:
+        if field in ["encryption_metadata", "cid_encryption_metadata"]:
             # Only for encrypted videos
             continue
         if field == "segment_metadata":
@@ -582,14 +582,14 @@ def test_gold_standard_compliance():
     assert attributes["mint_id"] == "gold-mint-456"
     assert attributes["analysis_model"] == "llava-1.5-13b"
     
-    # Verify lit_encryption_metadata structure
-    lit_meta = json.loads(payload["lit_encryption_metadata"])
-    required_lit_fields = [
+    # Verify encryption_metadata structure
+    encryption_meta = json.loads(payload["encryption_metadata"])
+    required_encryption_fields = [
         "version", "encryptedKey", "keyHash", "iv",
         "algorithm", "keyLength", "accessControlConditions", "chain"
     ]
-    for field in required_lit_fields:
-        assert field in lit_meta, f"Required lit_encryption_metadata field missing: {field}"
+    for field in required_encryption_fields:
+        assert field in encryption_meta, f"Required encryption_metadata field missing: {field}"
     
     # Verify cid_encryption_metadata structure
     cid_meta = json.loads(payload["cid_encryption_metadata"])

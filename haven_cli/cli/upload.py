@@ -7,6 +7,7 @@ from typing import Optional
 import typer
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from haven_cli.services.evm_utils import normalize_haven_aol_chain, SUPPORTED_HAVEN_AOL_CHAINS
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,17 @@ Key Fields:
   • is_encrypted - Encryption status
   • cid_hash - SHA256 hash for duplicate detection
   • vlm_json_cid - VLM analysis CID
+
+Haven-AOL gated access (when --encrypt is enabled):
+  • --evm-chain selects the canister-supported EVM chain
+  • --access-pattern chooses gating mode (token_gated, nft_gated, owner_only, public)
+  • Pattern-specific flags configure token/NFT/owner requirements
+
+Required combinations:
+  • token_gated: --token-contract --min-balance --token-standard
+  • nft_gated: --nft-contract
+  • owner_only: --token-contract --owner-wallet
+  • public: no extra gate fields
 
 For format details: haven-cli/docs/ARKIV_FORMAT.md
 """,
@@ -43,7 +55,7 @@ def upload(
         False,
         "--encrypt",
         "-e",
-        help="Encrypt file with Lit Protocol before upload.",
+        help="Encrypt file with Haven-AOL before upload.",
     ),
     skip_vlm: bool = typer.Option(
         False,
@@ -83,15 +95,67 @@ def upload(
         "--source",
         help="Original source URL for provenance tracking.",
     ),
+    access_pattern: Optional[str] = typer.Option(
+        None,
+        "--access-pattern",
+        help=(
+            "Haven-AOL access pattern for encrypted uploads. "
+            "Options: token_gated, nft_gated, owner_only, public."
+        ),
+    ),
+    token_contract: Optional[str] = typer.Option(
+        None,
+        "--token-contract",
+        help=(
+            "Token contract address used for token_gated and owner_only patterns. "
+            "Required when access pattern is token_gated or owner_only."
+        ),
+    ),
+    min_balance: Optional[str] = typer.Option(
+        None,
+        "--min-balance",
+        help=(
+            "Minimum token balance threshold in smallest token unit. "
+            "Required for token_gated pattern."
+        ),
+    ),
+    token_standard: Optional[str] = typer.Option(
+        None,
+        "--token-standard",
+        help="Token standard for token_gated pattern. Required: ERC20 or ERC721.",
+    ),
+    owner_wallet: Optional[str] = typer.Option(
+        None,
+        "--owner-wallet",
+        help="Wallet allowed by owner_only pattern. Required for owner_only.",
+    ),
+    nft_contract: Optional[str] = typer.Option(
+        None,
+        "--nft-contract",
+        help="NFT contract address for nft_gated pattern. Required for nft_gated.",
+    ),
+    evm_chain: Optional[str] = typer.Option(
+        None,
+        "--evm-chain",
+        help=(
+            "Haven-AOL gate chain. Required for encrypted uploads. "
+            "Supported: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet."
+        ),
+    ),
 ) -> None:
     """Upload a file to Filecoin network.
     
     This command processes a single file through the pipeline:
     1. Ingest - Calculate pHash, create database entry
     2. Analyze - VLM analysis (optional, skip with --no-vlm)
-    3. Encrypt - Lit Protocol encryption (optional, enable with --encrypt)
+    3. Encrypt - Haven-AOL encryption (optional, enable with --encrypt)
     4. Upload - Upload to Filecoin network
     5. Sync - Sync metadata to Arkiv blockchain (optional, skip with --no-arkiv)
+
+    When encryption is enabled, you must provide Haven-AOL gate parameters:
+    - --evm-chain (or pipeline.evm_chain)
+    - --access-pattern (or pipeline.access_pattern)
+    - pattern-specific gate fields (see --help option descriptions)
     
     The created Arkiv entity uses the Haven Cross-Application Data Format v1.0.0,
     ensuring compatibility with haven-player (Gold Standard) and haven-dapp.
@@ -101,11 +165,13 @@ def upload(
     • is_encrypted - Encryption status (boolean in payload, 0/1 in attributes)
     • cid_hash - SHA256 hash for duplicate detection (payload & attributes)
     • vlm_json_cid - CID of VLM analysis JSON (private payload)
-    • lit_encryption_metadata - Lit Protocol metadata (private payload)
+    • encryption_metadata - encryption metadata (private payload)
     
     Example:
         haven upload file video.mp4
-        haven upload file video.mp4 --encrypt --dataset 123
+        haven upload file video.mp4 --encrypt --dataset 123 --evm-chain EthMainnet --access-pattern public
+        haven upload file video.mp4 --encrypt --evm-chain EthMainnet --access-pattern token_gated --token-contract 0x... --min-balance 1000000 --token-standard ERC20
+        haven upload file video.mp4 --encrypt --evm-chain BaseMainnet --access-pattern owner_only --token-contract 0x... --owner-wallet 0x...
         haven upload file video.mp4 --no-vlm --no-arkiv
         haven upload file video.mp4 --title "My Video" --creator "@user" --source "https://example.com"
     """
@@ -135,6 +201,62 @@ def upload(
     sync_enabled = get_config_value("sync_enabled", False) and not skip_arkiv
     cleanup_enabled = get_config_value("cleanup_enabled", False)
     
+    configured_chain = evm_chain or get_config_value("evm_chain", None)
+    normalized_evm_chain: Optional[str] = None
+    configured_access_pattern = access_pattern or get_config_value("access_pattern", None)
+    configured_token_contract = token_contract or get_config_value("token_contract", None)
+    configured_min_balance = min_balance or get_config_value("min_balance", None)
+    configured_token_standard = token_standard or get_config_value("token_standard", None)
+    configured_owner_wallet = owner_wallet or get_config_value("owner_wallet", None)
+    configured_nft_contract = nft_contract or get_config_value("nft_contract", None)
+    if encryption_enabled:
+        if configured_chain is None:
+            choices = ", ".join(SUPPORTED_HAVEN_AOL_CHAINS)
+            console.print(
+                "[red]✗[/red] Missing required EVM chain for encryption. "
+                f"Set --evm-chain or pipeline.evm_chain. Supported: {choices}"
+            )
+            raise typer.Exit(code=1)
+        try:
+            normalized_evm_chain = normalize_haven_aol_chain(configured_chain)
+        except ValueError as exc:
+            console.print(f"[red]✗[/red] {exc}")
+            raise typer.Exit(code=1)
+        if configured_access_pattern is None:
+            console.print(
+                "[red]✗[/red] Missing access pattern for encryption. "
+                "Set --access-pattern or pipeline.access_pattern."
+            )
+            raise typer.Exit(code=1)
+        valid_patterns = {"token_gated", "nft_gated", "owner_only", "public"}
+        normalized_pattern = configured_access_pattern.strip().lower()
+        if normalized_pattern not in valid_patterns:
+            console.print(
+                f"[red]✗[/red] Unsupported access pattern {configured_access_pattern!r}. "
+                "Use token_gated, nft_gated, owner_only, or public."
+            )
+            raise typer.Exit(code=1)
+        if normalized_pattern in {"token_gated", "owner_only"} and not configured_token_contract:
+            console.print(
+                "[red]✗[/red] token_contract is required for token_gated/owner_only patterns."
+            )
+            raise typer.Exit(code=1)
+        if normalized_pattern == "token_gated":
+            if configured_min_balance is None:
+                console.print("[red]✗[/red] min_balance is required for token_gated pattern.")
+                raise typer.Exit(code=1)
+            if configured_token_standard is None:
+                console.print("[red]✗[/red] token_standard is required for token_gated pattern.")
+                raise typer.Exit(code=1)
+        if normalized_pattern == "owner_only" and not configured_owner_wallet:
+            console.print("[red]✗[/red] owner_wallet is required for owner_only pattern.")
+            raise typer.Exit(code=1)
+        if normalized_pattern == "nft_gated" and not configured_nft_contract:
+            console.print("[red]✗[/red] nft_contract is required for nft_gated pattern.")
+            raise typer.Exit(code=1)
+    else:
+        normalized_pattern = configured_access_pattern.strip().lower() if configured_access_pattern else None
+
     options = {
         "encrypt": encryption_enabled,
         "vlm_enabled": vlm_enabled,
@@ -145,6 +267,13 @@ def upload(
         "title": title,
         "creator_handle": creator,
         "source_uri": source,
+        "evm_chain": normalized_evm_chain,
+        "access_pattern": normalized_pattern,
+        "token_contract": configured_token_contract,
+        "min_balance": configured_min_balance,
+        "token_standard": configured_token_standard,
+        "owner_wallet": configured_owner_wallet,
+        "nft_contract": configured_nft_contract,
     }
     
     # Create pipeline context

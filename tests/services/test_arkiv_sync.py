@@ -182,8 +182,8 @@ class TestBuildPayloadGoldStandard:
         assert "encryption_ciphertext" not in payload
         assert "ciphertext" not in payload
     
-    def test_lit_encryption_metadata_structure(self):
-        """Ensure lit_encryption_metadata has correct gold standard structure."""
+    def test_encryption_metadata_structure(self):
+        """Ensure encryption_metadata has correct gold standard structure."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -205,23 +205,23 @@ class TestBuildPayloadGoldStandard:
         
         payload = _build_payload(context)
         
-        assert "lit_encryption_metadata" in payload
-        lit_meta = json.loads(payload["lit_encryption_metadata"])
+        assert "encryption_metadata" in payload
+        encryption_meta = json.loads(payload["encryption_metadata"])
         
         # Required fields per gold standard
-        assert lit_meta["version"] == "hybrid-v1"
-        assert lit_meta["encryptedKey"] == "base64encryptedkey"
-        assert lit_meta["keyHash"] == "sha256keyhash"
-        assert lit_meta["iv"] == "base64iv123"
-        assert lit_meta["algorithm"] == "AES-GCM"
-        assert lit_meta["keyLength"] == 256
-        assert "accessControlConditions" in lit_meta
-        assert lit_meta["chain"] == "ethereum"
+        assert encryption_meta["version"] == "hybrid-v1"
+        assert encryption_meta["encryptedKey"] == "base64encryptedkey"
+        assert encryption_meta["keyHash"] == "sha256keyhash"
+        assert encryption_meta["iv"] == "base64iv123"
+        assert encryption_meta["algorithm"] == "AES-GCM"
+        assert encryption_meta["keyLength"] == 256
+        assert "accessControlConditions" in encryption_meta
+        assert encryption_meta["chain"] == "ethereum"
         
         # Optional but recommended fields
-        assert lit_meta["originalMimeType"] == "video/mp4"
-        assert lit_meta["originalSize"] == 10485760
-        assert lit_meta["originalHash"] == "sha256originalhash"
+        assert encryption_meta["originalMimeType"] == "video/mp4"
+        assert encryption_meta["originalSize"] == 10485760
+        assert encryption_meta["originalHash"] == "sha256originalhash"
     
     def test_cid_hash_in_payload(self):
         """Ensure cid_hash is present in payload and is valid SHA256."""
@@ -298,7 +298,7 @@ class TestBuildPayloadGoldStandard:
         
         # Should NOT have encrypted-specific fields
         assert "encrypted_cid" not in payload
-        assert "lit_encryption_metadata" not in payload
+        assert "encryption_metadata" not in payload
         assert "cid_encryption_metadata" not in payload
         
         # Gold standard does NOT include these fields (minimized payload)
@@ -335,13 +335,13 @@ class TestBuildPayloadGoldStandard:
         # Required encryption fields (gold standard uses int 0/1)
         assert "is_encrypted" in payload
         assert payload["is_encrypted"] == 1
-        assert "lit_encryption_metadata" in payload
+        assert "encryption_metadata" in payload
         assert "cid_encryption_metadata" in payload
         
-        # Verify lit_encryption_metadata structure
-        lit_meta = json.loads(payload["lit_encryption_metadata"])
-        assert lit_meta["version"] == "hybrid-v1"
-        assert lit_meta["encryptedKey"] == "base64encryptedkey"
+        # Verify encryption_metadata structure
+        encryption_meta = json.loads(payload["encryption_metadata"])
+        assert encryption_meta["version"] == "hybrid-v1"
+        assert encryption_meta["encryptedKey"] == "base64encryptedkey"
         
         # Verify cid_encryption_metadata structure
         cid_meta = json.loads(payload["cid_encryption_metadata"])
@@ -484,7 +484,7 @@ class TestBuildPayload:
         assert payload["is_encrypted"] == 0
     
     def test_payload_with_encryption(self):
-        """Test payload with encryption metadata includes lit_encryption_metadata."""
+        """Test payload with encryption metadata includes encryption_metadata."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             encryption_metadata=EncryptionMetadata(
@@ -505,22 +505,22 @@ class TestBuildPayload:
         # Old scattered fields should be removed
         assert "encryption_chain" not in payload
         assert "encryption_data_hash" not in payload
-        # New lit_encryption_metadata should be present
-        assert "lit_encryption_metadata" in payload
+        # New encryption_metadata should be present
+        assert "encryption_metadata" in payload
         
-        # Parse and verify the lit_encryption_metadata JSON structure
-        lit_metadata = json.loads(payload["lit_encryption_metadata"])
-        assert lit_metadata["version"] == "hybrid-v1"
-        assert lit_metadata["encryptedKey"] == "base64encryptedkey"
-        assert lit_metadata["keyHash"] == "keyhash456"
-        assert lit_metadata["iv"] == "base64iv"
-        assert lit_metadata["algorithm"] == "AES-GCM"
-        assert lit_metadata["keyLength"] == 256
-        assert lit_metadata["chain"] == "ethereum"
-        assert len(lit_metadata["accessControlConditions"]) == 1
+        # Parse and verify the encryption_metadata JSON structure
+        encryption_metadata = json.loads(payload["encryption_metadata"])
+        assert encryption_metadata["version"] == "hybrid-v1"
+        assert encryption_metadata["encryptedKey"] == "base64encryptedkey"
+        assert encryption_metadata["keyHash"] == "keyhash456"
+        assert encryption_metadata["iv"] == "base64iv"
+        assert encryption_metadata["algorithm"] == "AES-GCM"
+        assert encryption_metadata["keyLength"] == 256
+        assert encryption_metadata["chain"] == "ethereum"
+        assert len(encryption_metadata["accessControlConditions"]) == 1
     
     def test_payload_with_encryption_and_video_metadata(self):
-        """Test payload includes video metadata in lit_encryption_metadata."""
+        """Test payload includes video metadata in encryption_metadata."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -541,19 +541,19 @@ class TestBuildPayload:
         
         # Gold standard uses int (0 or 1) for is_encrypted
         assert payload["is_encrypted"] == 1
-        lit_metadata = json.loads(payload["lit_encryption_metadata"])
-        assert lit_metadata["originalMimeType"] == "video/mp4"
-        assert lit_metadata["originalSize"] == 10485760
+        encryption_metadata = json.loads(payload["encryption_metadata"])
+        assert encryption_metadata["originalMimeType"] == "video/mp4"
+        assert encryption_metadata["originalSize"] == 10485760
     
     def test_payload_without_encryption(self):
-        """Test payload without encryption does not include lit_encryption_metadata."""
+        """Test payload without encryption does not include encryption_metadata."""
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
         
         payload = _build_payload(context)
         
         # Gold standard uses int (0 or 1) for is_encrypted
         assert payload["is_encrypted"] == 0
-        assert "lit_encryption_metadata" not in payload
+        assert "encryption_metadata" not in payload
     
     def test_payload_with_cid_encryption(self):
         """Test payload with CID-level encryption metadata."""
@@ -830,7 +830,7 @@ class TestBuildAttributesGoldStandard:
         # Note: encrypted_cid IS allowed in attributes (it's the encrypted CID, safe for public)
         sensitive_fields = [
             "root_cid", "filecoin_root_cid",
-            "vlm_json_cid", "lit_encryption_metadata",
+            "vlm_json_cid", "encryption_metadata",
             "ciphertext", "encryption_key"
         ]
         
@@ -910,7 +910,7 @@ class TestBuildAttributes:
         """Test that MIME type is NOT in attributes (gold standard excludes it).
         
         The gold standard (haven-player) does not include mime_type in attributes
-        because it can be stored in lit_encryption_metadata for encrypted videos
+        because it can be stored in encryption_metadata for encrypted videos
         or recalculated from the file during restore.
         """
         context = PipelineContext(

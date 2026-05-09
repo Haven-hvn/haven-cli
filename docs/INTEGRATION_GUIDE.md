@@ -57,7 +57,7 @@ The Haven ecosystem consists of three main applications:
 1. Query Arkiv blockchain for owner's entities
 2. Parse entity (decode payload, extract attributes)
 3. Retrieve video content from Filecoin
-4. Decrypt if necessary (Lit Protocol)
+4. Decrypt if necessary (Haven-AOL)
 
 ---
 
@@ -70,7 +70,7 @@ The primary task for DApp developers is parsing Arkiv entities into Video object
 #### TypeScript Example
 
 ```typescript
-import type { Video, LitEncryptionMetadata } from '../types/video';
+import type { Video } from '../types/video';
 import { parseEntityPayload, type ArkivEntity } from '../lib/arkiv';
 
 function parseHavenEntity(entity: ArkivEntity): Video {
@@ -87,12 +87,12 @@ function parseHavenEntity(entity: ArkivEntity): Video {
   const get = (snakeKey: string, camelKey: string): unknown =>
     data[snakeKey] ?? data[camelKey];
   
-  // Parse Lit encryption metadata
-  let litMeta: LitEncryptionMetadata | undefined;
-  const rawLitMeta = get('lit_encryption_metadata', 'litEncryptionMetadata');
-  if (rawLitMeta && typeof rawLitMeta === 'string') {
+  // Parse encryption metadata
+  let encryptionMeta: Record<string, unknown> | undefined;
+  const rawEncryptionMeta = get('encryption_metadata', 'encryptionMetadata');
+  if (rawEncryptionMeta && typeof rawEncryptionMeta === 'string') {
     try {
-      litMeta = JSON.parse(rawLitMeta);
+      encryptionMeta = JSON.parse(rawEncryptionMeta);
     } catch { /* ignore parse errors */ }
   }
   
@@ -131,7 +131,7 @@ function parseHavenEntity(entity: ArkivEntity): Video {
     filecoinCid: (get('filecoin_root_cid', 'filecoinCid') as string) || '',
     encryptedCid: (get('encrypted_cid', 'encryptedCid') as string) || undefined,
     isEncrypted: Boolean(get('is_encrypted', 'isEncrypted')),
-    litEncryptionMetadata: litMeta,
+    encryptionMetadata: encryptionMeta,
     cidEncryptionMetadata: (get('cid_encryption_metadata', 'cidEncryptionMetadata') as Video['cidEncryptionMetadata']) || undefined,
     hasAiData: Boolean(get('has_ai_data', 'hasAiData') || vlmJsonCid),
     vlmJsonCid,
@@ -154,44 +154,19 @@ function parseHavenEntity(entity: ArkivEntity): Video {
 
 ### Handling Encrypted Videos
 
-#### Decrypting with Lit Protocol
+#### Decrypting with Haven-AOL
 
 ```typescript
-import * as LitJsSdk from '@lit-protocol/lit-node-client';
-
 interface DecryptVideoParams {
   encryptedCid: string;
-  litMetadata: LitEncryptionMetadata;
-  walletAddress: string;
-  authSig: string;
+  encryptionMetadata: Record<string, unknown>;
 }
 
 async function decryptVideo(params: DecryptVideoParams): Promise<string> {
-  const { encryptedCid, litMetadata, walletAddress, authSig } = params;
-  
-  // Initialize Lit client
-  const litClient = new LitJsSdk.LitNodeClient({
-    litNetwork: 'datil-dev', // or 'datil' for production
-  });
-  await litClient.connect();
-  
-  try {
-    // Decrypt the CID
-    const decrypted = await LitJsSdk.decryptToString(
-      {
-        accessControlConditions: litMetadata.accessControlConditions,
-        ciphertext: encryptedCid,
-        dataToEncryptHash: litMetadata.keyHash,
-        authSig,
-        chain: litMetadata.chain,
-      },
-      litClient
-    );
-    
-    return decrypted;
-  } finally {
-    await litClient.disconnect();
-  }
+  const { encryptedCid, encryptionMetadata } = params;
+  // Call your Haven-AOL decryption adapter here.
+  // The adapter should use encryptedCid + encryptionMetadata and user wallet context.
+  return await myHavenAolDecrypt(encryptedCid, encryptionMetadata);
 }
 
 // Usage example
@@ -200,15 +175,13 @@ async function getPlayableCid(video: Video, walletAddress: string, authSig: stri
     return video.filecoinCid || '';
   }
   
-  if (!video.encryptedCid || !video.litEncryptionMetadata) {
+  if (!video.encryptedCid || !video.encryptionMetadata) {
     throw new Error('Encrypted video missing required metadata');
   }
   
   return await decryptVideo({
     encryptedCid: video.encryptedCid,
-    litMetadata: video.litEncryptionMetadata,
-    walletAddress,
-    authSig,
+    encryptionMetadata: video.encryptionMetadata,
   });
 }
 ```
@@ -316,7 +289,7 @@ def build_payload(
     filecoin_root_cid: Optional[str],
     is_encrypted: bool,
     vlm_json_cid: Optional[str] = None,
-    lit_encryption_metadata: Optional[dict] = None,
+    encryption_metadata: Optional[dict] = None,
     cid_encryption_metadata: Optional[dict] = None,
     segment_metadata: Optional[dict] = None,
     duration: Optional[float] = None,
@@ -329,7 +302,7 @@ def build_payload(
         filecoin_root_cid: CID for non-encrypted videos
         is_encrypted: Whether the video is encrypted
         vlm_json_cid: CID of VLM analysis JSON
-        lit_encryption_metadata: Lit Protocol encryption metadata
+        encryption_metadata: Haven-AOL encryption metadata
         cid_encryption_metadata: CID encryption metadata
         segment_metadata: Multi-segment recording info
         duration: Video duration in seconds
@@ -353,11 +326,11 @@ def build_payload(
     if vlm_json_cid:
         payload["vlm_json_cid"] = vlm_json_cid
     
-    if lit_encryption_metadata:
+    if encryption_metadata:
         # Ensure no ciphertext in metadata
-        metadata = {k: v for k, v in lit_encryption_metadata.items() 
+        metadata = {k: v for k, v in encryption_metadata.items() 
                    if k != "ciphertext"}
-        payload["lit_encryption_metadata"] = json.dumps(metadata)
+        payload["encryption_metadata"] = json.dumps(metadata)
     
     if cid_encryption_metadata:
         payload["cid_encryption_metadata"] = json.dumps(cid_encryption_metadata)
@@ -491,7 +464,7 @@ async def upload_video_to_haven(
         filecoin_root_cid=filecoin_cid if not is_encrypted else None,
         is_encrypted=is_encrypted,
         vlm_json_cid=vlm_json_cid,
-        lit_encryption_metadata=lit_metadata,
+        encryption_metadata=encryption_metadata,
     )
     
     attributes = build_attributes(
@@ -580,12 +553,12 @@ def _build_payload(video: Video, segment_payload: dict | None) -> dict:
     if video.is_encrypted:
         if video.cid_encryption_metadata:
             payload["cid_encryption_metadata"] = video.cid_encryption_metadata
-        if video.lit_encryption_metadata:
+        if video.encryption_metadata:
             # Parse metadata and remove ciphertext if present
-            metadata_dict = json.loads(video.lit_encryption_metadata)
+            metadata_dict = json.loads(video.encryption_metadata)
             if "ciphertext" in metadata_dict:
                 metadata_dict.pop("ciphertext")
-            payload["lit_encryption_metadata"] = json.dumps(metadata_dict)
+            payload["encryption_metadata"] = json.dumps(metadata_dict)
     else:
         # For non-encrypted videos, store filecoin_root_cid in payload
         if video.filecoin_root_cid:
@@ -723,7 +696,7 @@ const isEncrypted = Boolean(
 #### Issue: Cannot decrypt video
 
 **Checklist:**
-1. Verify `lit_encryption_metadata` exists in payload
+1. Verify `encryption_metadata` exists in payload
 2. Check that `accessControlConditions` are valid
 3. Ensure user meets access conditions (e.g., owns required NFT)
 4. Verify Lit network connection (datil-dev vs datil)

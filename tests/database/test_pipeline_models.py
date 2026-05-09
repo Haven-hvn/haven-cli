@@ -193,18 +193,18 @@ class TestEncryptionJobModel:
         assert job.bytes_processed == 750000
         assert job.encrypt_speed == 50000
     
-    def test_encryption_job_lit_protocol(self, db_session: Session, sample_video: Video) -> None:
-        """Test encryption job with Lit Protocol data."""
+    def test_encryption_job_metadata_fields(self, db_session: Session, sample_video: Video) -> None:
+        """Test encryption job with encryption metadata fields."""
         job = EncryptionJob(
             video_id=sample_video.id,
             status="completed",
-            lit_cid="QmTest123",
+            encrypted_ref="QmTest123",
             access_control_conditions={"chain": "ethereum", "contract": "0x123"},
         )
         db_session.add(job)
         db_session.commit()
         
-        assert job.lit_cid == "QmTest123"
+        assert job.encrypted_ref == "QmTest123"
         assert job.access_control_conditions["chain"] == "ethereum"
     
     def test_encryption_job_relationship(self, db_session: Session, sample_video: Video) -> None:
@@ -225,7 +225,7 @@ class TestEncryptionJobModel:
         job = EncryptionJob(
             video_id=sample_video.id,
             status="completed",
-            lit_cid="QmTest",
+            encrypted_ref="QmTest",
         )
         db_session.add(job)
         db_session.commit()
@@ -233,7 +233,7 @@ class TestEncryptionJobModel:
         data = job.to_dict()
         assert data["video_id"] == sample_video.id
         assert data["status"] == "completed"
-        assert data["lit_cid"] == "QmTest"
+        assert data["encrypted_ref"] == "QmTest"
 
 
 class TestUploadJobModel:

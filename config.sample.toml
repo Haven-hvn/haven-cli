@@ -11,7 +11,6 @@
 network_mode = "testnet"
 
 # Optional: Override specific endpoints (if not set, uses network_mode defaults)
-# lit_network_override = "naga-dev"  # Override Lit network (e.g., "naga" for mainnet, "naga-dev" for testnet)
 # filecoin_rpc_override = ""         # Override Filecoin RPC endpoint
 # arkiv_rpc_override = ""            # Override Arkiv RPC endpoint
 
@@ -47,10 +46,25 @@ vlm_detected_tag_confidence = 0.99  # Confidence threshold for detected tags
 vlm_multiplexer_enabled = true
 vlm_max_concurrent_requests = 15  # Global limit on concurrent requests (admission control)
 
-# Encryption Settings (Lit Protocol)
+# Encryption Settings (Haven-AOL)
 # Note: Lit network is derived from blockchain.network_mode
-# Set blockchain.lit_network_override to override
 encryption_enabled = true
+# Required when encryption_enabled = true.
+# Supported: "EthMainnet", "EthSepolia", "ArbitrumOne", "BaseMainnet", "OptimismMainnet"
+evm_chain = "EthMainnet"
+# Required when encryption_enabled = true.
+# Options: "token_gated", "nft_gated", "owner_only", "public"
+access_pattern = "token_gated"
+# token_gated / owner_only
+token_contract = "0x0000000000000000000000000000000000000000"
+# token_gated only (smallest token unit)
+min_balance = "1"
+# token_gated only
+token_standard = "ERC20"  # ERC20 or ERC721
+# owner_only only
+# owner_wallet = "0x0000000000000000000000000000000000000000"
+# nft_gated only
+# nft_contract = "0x0000000000000000000000000000000000000000"
 
 # Upload Settings (Filecoin via Synapse)
 # Note: Filecoin RPC endpoint is derived from blockchain.network_mode

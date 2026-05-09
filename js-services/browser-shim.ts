@@ -2,7 +2,7 @@
  * Browser Environment Shim for Deno.
  *
  * Provides minimal browser API stubs required by browser-dependent SDKs
- * (Lit Protocol, Synapse) to function in a Deno environment.
+ * (primarily Synapse) to function in a Deno environment.
  *
  * This shim creates fake implementations of:
  * - window object

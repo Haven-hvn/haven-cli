@@ -29,7 +29,7 @@ class TestEncryptionUploadSecurity:
         
         Scenario:
         1. User requests encryption (encrypt=True)
-        2. Encryption step fails (e.g., Lit Protocol unavailable)
+        2. Encryption step fails (e.g., Haven-AOL unavailable)
         3. Upload step should NOT execute
         4. Original file should NOT be uploaded
         """
@@ -51,7 +51,7 @@ class TestEncryptionUploadSecurity:
         
         # Mock encryption to fail
         mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=RuntimeError("Lit Protocol unavailable"))
+        mock_bridge.call = AsyncMock(side_effect=RuntimeError("Haven-AOL unavailable"))
         
         # Mock upload bridge (should NOT be called)
         mock_upload_bridge = MagicMock()
@@ -181,7 +181,7 @@ class TestEncryptionUploadSecurity:
         # Mock encryption to succeed
         mock_encrypt_bridge = MagicMock()
         mock_encrypt_bridge.call = AsyncMock(side_effect=[
-            None,  # lit.connect
+            None,  # connect
             {
                 "encryptedFilePath": str(encrypted_file),
                 "metadataPath": str(video_file) + ".encrypted.meta.json",
@@ -191,7 +191,7 @@ class TestEncryptionUploadSecurity:
                 },
                 "originalSize": 17,
                 "encryptedSize": 33,
-            },  # lit.encryptFile
+            },  # encrypt
         ])
         mock_encrypt_bridge.on_notification = MagicMock(return_value=MagicMock())
         

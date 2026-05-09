@@ -1,8 +1,8 @@
 /**
  * Haven JS Runtime - Main Entry Point
  *
- * JSON-RPC 2.0 server that provides browser SDK functionality
- * (Lit Protocol, Synapse) to the Python CLI via stdio.
+ * JSON-RPC 2.0 server that provides Synapse SDK functionality
+ * to the Python CLI via stdio.
  */
 
 // Install browser shim FIRST before any other imports
@@ -17,7 +17,6 @@ import type {
   RuntimeStatus,
 } from './types.ts';
 import { ErrorCodes } from './types.ts';
-import { createLitWrapper, type LitWrapper } from './lit-wrapper.ts';
 import { createSynapseWrapper, type SynapseWrapper, InsufficientBalanceError } from './synapse-wrapper.ts';
 
 // ============================================================================
@@ -27,7 +26,6 @@ import { createSynapseWrapper, type SynapseWrapper, InsufficientBalanceError } f
 const VERSION = '1.0.0';
 const startTime = Date.now();
 
-let litWrapper: LitWrapper | null = null;
 let synapseWrapper: SynapseWrapper | null = null;
 let isShuttingDown = false;
 
@@ -145,9 +143,6 @@ const methods: MethodRegistry = {
   shutdown: async () => {
     isShuttingDown = true;
     // Cleanup
-    if (litWrapper) {
-      await litWrapper.disconnect();
-    }
     if (synapseWrapper) {
       await synapseWrapper.disconnect();
     }
@@ -160,89 +155,9 @@ const methods: MethodRegistry = {
     return {
       version: VERSION,
       uptimeSeconds: (Date.now() - startTime) / 1000,
-      litConnected: litWrapper?.isConnected ?? false,
       synapseConnected: synapseWrapper?.isConnected ?? false,
       pendingRequests: 0,
     };
-  },
-
-  // Lit Protocol methods
-  'lit.connect': async (params: unknown) => {
-    litWrapper = createLitWrapper();
-    return await litWrapper.connect(params as Record<string, unknown>);
-  },
-
-  'lit.encrypt': async (params: unknown) => {
-    if (!litWrapper?.isConnected) {
-      throw new Error('Lit Protocol not connected');
-    }
-    return await litWrapper.encrypt(params as Record<string, unknown>);
-  },
-
-  'lit.decrypt': async (params: unknown) => {
-    if (!litWrapper?.isConnected) {
-      throw new Error('Lit Protocol not connected');
-    }
-    return await litWrapper.decrypt(params as Record<string, unknown>);
-  },
-
-  'lit.getSession': async () => {
-    if (!litWrapper) {
-      return { active: false };
-    }
-    return await litWrapper.getSession();
-  },
-
-  'lit.encryptFile': async (params: unknown) => {
-    if (!litWrapper?.isConnected) {
-      throw new Error('Lit Protocol not connected');
-    }
-    const encryptParams = params as Record<string, unknown>;
-    
-    // If progress notifications are requested, set up callback
-    if (encryptParams.onProgress) {
-      return await litWrapper.encryptFile(encryptParams, (percent, message, bytesProcessed, totalBytes) => {
-        sendNotification('lit.encryptProgress', {
-          percent,
-          message,
-          bytesProcessed,
-          totalBytes,
-          percentage: Math.round(percent), // For compatibility
-        });
-      });
-    }
-    
-    return await litWrapper.encryptFile(encryptParams);
-  },
-
-  'lit.decryptFile': async (params: unknown) => {
-    if (!litWrapper?.isConnected) {
-      throw new Error('Lit Protocol not connected');
-    }
-    const decryptParams = params as Record<string, unknown>;
-    
-    // If progress notifications are requested, set up callback
-    if (decryptParams.onProgress) {
-      return await litWrapper.decryptFile(decryptParams, (percent, message, bytesProcessed, totalBytes) => {
-        sendNotification('lit.decryptProgress', {
-          percent,
-          message,
-          bytesProcessed,
-          totalBytes,
-          percentage: Math.round(percent), // For compatibility
-        });
-      });
-    }
-    
-    return await litWrapper.decryptFile(decryptParams);
-  },
-
-  'lit.encryptCid': async (params: unknown) => {
-    if (!litWrapper?.isConnected) {
-      throw new Error('Lit Protocol not connected');
-    }
-    const encryptParams = params as Record<string, unknown>;
-    return await litWrapper.encryptCid(encryptParams);
   },
 
   // Synapse SDK methods
