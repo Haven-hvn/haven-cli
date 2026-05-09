@@ -12,6 +12,7 @@ from rich.table import Table
 from rich.syntax import Syntax
 
 from haven_cli.access_pattern import parse_access_pattern_choice
+from haven_cli.bittorrent_plugin_init import BitTorrentJobInitSpec
 from haven_cli.services.evm_utils import SUPPORTED_HAVEN_AOL_CHAINS
 
 app = typer.Typer(help="Manage Haven configuration.")
@@ -173,12 +174,18 @@ def _prompt_encryption_access_gate(config: Any) -> None:
         console.print(f"  [dim]nft_contract[/dim] {config.pipeline.nft_contract}")
 
 
-def _prompt_bittorrent_plugin(config: Any) -> None:
-    """Interactive BitTorrent plugin section for ``haven config init``."""
+def _prompt_bittorrent_plugin(config: Any) -> Optional[BitTorrentJobInitSpec]:
+    """Interactive BitTorrent plugin section for ``haven config init``.
+
+    Returns:
+        Job spec if the user opts in to creating a recurring poll job, else ``None``.
+    """
     from haven_cli.bittorrent_plugin_init import (
         build_bittorrent_plugin_settings,
         sync_bittorrent_plugin_lists,
     )
+
+    job_spec: Optional[BitTorrentJobInitSpec] = None
 
     console.print()
     console.print("[bold cyan]BitTorrent plugin[/bold cyan]")
@@ -260,6 +267,33 @@ def _prompt_bittorrent_plugin(config: Any) -> None:
     )
     status = "enabled" if bt_on else "disabled"
     console.print(f"  [green]✓[/green] BitTorrent plugin {status}")
+
+    if bt_on and config.scheduler.enabled:
+        default_job = bool(sources)
+        if typer.confirm(
+            "  Create a scheduled job to poll BitTorrent sources (cron)?",
+            default=default_job,
+        ):
+            while True:
+                schedule = typer.prompt(
+                    "  Cron schedule",
+                    default=config.scheduler.default_cron,
+                ).strip()
+                try:
+                    from croniter import croniter
+
+                    croniter(schedule)
+                    break
+                except ValueError as exc:
+                    console.print(f"[red]Invalid cron: {exc}[/red]")
+            job_spec = BitTorrentJobInitSpec(schedule=schedule, on_success="archive_new")
+    elif bt_on and not config.scheduler.enabled:
+        console.print(
+            "  [dim]Scheduler is disabled — enable [scheduler.enabled] and run "
+            "`haven jobs create --plugin bittorrent` to poll on a schedule.[/dim]"
+        )
+
+    return job_spec
 
 
 @app.command("show")
@@ -512,6 +546,7 @@ def init_config(
     config.config_dir = config_dir
     config.data_dir = Path(os.environ.get("HAVEN_DATA_DIR", config_dir.parent.parent / ".local" / "share" / "haven"))
     
+    bt_job_spec: Optional[BitTorrentJobInitSpec] = None
     if interactive:
         # Interactive wizard — Filecoin / Arkiv networks vs EVM chain for gate assets
         console.print("[bold cyan]Filecoin (storage) network[/bold cyan]")
@@ -609,7 +644,7 @@ def init_config(
         )
         config.scheduler.enabled = scheduler_enabled
         
-        _prompt_bittorrent_plugin(config)
+        bt_job_spec = _prompt_bittorrent_plugin(config)
         
         console.print()
         console.print("[bold cyan]Logging Configuration[/bold cyan]")
@@ -634,6 +669,26 @@ def init_config(
     # Initialize database tables
     from haven_cli.database.connection import create_tables
     create_tables(config)
+    
+    if interactive and bt_job_spec is not None:
+        from haven_cli.bittorrent_plugin_init import create_bittorrent_scheduled_job_if_absent
+
+        try:
+            bt_result = create_bittorrent_scheduled_job_if_absent(
+                bt_job_spec.schedule,
+                bt_job_spec.on_success,
+            )
+        except ValueError as exc:
+            console.print(f"[yellow]Could not create BitTorrent scheduled job: {exc}[/yellow]")
+        else:
+            if bt_result == "created":
+                console.print(
+                    "[green]✓[/green] Scheduled BitTorrent polling job created (`haven jobs list`)."
+                )
+            else:
+                console.print(
+                    "[dim]BitTorrent scheduled job already exists; left unchanged.[/dim]"
+                )
     
     console.print()
     console.print(f"[green]✓[/green] Configuration initialized at {config_path}")
