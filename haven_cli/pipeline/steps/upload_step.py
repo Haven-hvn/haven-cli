@@ -555,15 +555,19 @@ class UploadStep(ConditionalStep):
         Returns:
             Dictionary with Filecoin configuration
         """
-        # Get network configuration
-        network_mode = self._config.get("network_mode", "testnet")
-        network_config = get_network_config(network_mode)
+        filecoin_mode = self._config.get(
+            "filecoin_network_mode",
+            self._config.get("network_mode", "testnet"),
+        )
+        rpc_url = self._config.get("filecoin_rpc_url")
+        if not rpc_url:
+            rpc_url = get_network_config(filecoin_mode).filecoin_rpc_url
         
         return {
             "data_set_id": context.options.get("dataset_id") or self._config.get("data_set_id", 1),
             "wait_for_deal": self._config.get("wait_for_deal", False),
-            "rpc_url": network_config.filecoin_rpc_url,
-            "network_mode": network_mode,
+            "rpc_url": rpc_url,
+            "network_mode": filecoin_mode,
         }
     
     async def _get_js_bridge(self) -> JSRuntimeBridge:
@@ -640,15 +644,19 @@ class UploadStep(ConditionalStep):
         # Connect to Synapse with network configuration
         logger.info("Connecting to Synapse...")
         
-        # Get network configuration
-        network_mode = self._config.get("network_mode", "testnet")
-        network_config = get_network_config(network_mode)
+        filecoin_mode = self._config.get(
+            "filecoin_network_mode",
+            self._config.get("network_mode", "testnet"),
+        )
+        rpc_url = self._config.get("filecoin_rpc_url")
+        if not rpc_url:
+            rpc_url = get_network_config(filecoin_mode).filecoin_rpc_url
         
         try:
             # Use longer timeout for Synapse connection (testnet can be slow)
             await self._js_call_with_retry("synapse.connect", {
-                "rpcUrl": network_config.filecoin_rpc_url,
-                "networkMode": network_mode,
+                "rpcUrl": rpc_url,
+                "networkMode": filecoin_mode,
             }, timeout=120.0)  # 2 minutes for connection
         except Exception as e:
             logger.error(f"Failed to connect to Synapse: {e}")
@@ -812,7 +820,8 @@ class UploadStep(ConditionalStep):
         configured_chain = context.options.get("evm_chain") or config_chain
         if not configured_chain:
             raise RuntimeError(
-                "evm_chain is required for CID encryption. "
+                "evm_chain is required for CID encryption "
+                "(EVM chain where access-control assets live). "
                 "Set --evm-chain or pipeline.evm_chain."
             )
         chain = normalize_haven_aol_chain(str(configured_chain))

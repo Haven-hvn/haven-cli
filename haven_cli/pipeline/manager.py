@@ -484,9 +484,13 @@ def create_default_pipeline(
         # These are derived from blockchain config and passed to steps for convenience
         blockchain_config = config.get("blockchain")
         if blockchain_config:
+            filecoin_mode = blockchain_config.effective_filecoin_network_mode
+            arkiv_mode = blockchain_config.effective_arkiv_network_mode
             config = {
                 **config,
-                "network_mode": blockchain_config.network_mode,
+                "network_mode": filecoin_mode,
+                "filecoin_network_mode": filecoin_mode,
+                "arkiv_network_mode": arkiv_mode,
                 "filecoin_rpc_url": blockchain_config.get_filecoin_rpc_url(),
                 "arkiv_rpc_url": blockchain_config.get_arkiv_rpc_url(),
             }

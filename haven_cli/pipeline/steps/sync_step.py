@@ -234,18 +234,17 @@ class SyncStep(ConditionalStep):
         Returns:
             ArkivSyncConfig instance
         """
-        # Get network configuration
-        network_mode = self._config.get("network_mode", "testnet")
-        network_config = get_network_config(network_mode)
+        arkiv_mode = self._config.get(
+            "arkiv_network_mode",
+            self._config.get("network_mode", "testnet"),
+        )
+        network_config = get_network_config(arkiv_mode)
         
         # Get values from config if available
         private_key = self._config.get("arkiv_private_key")
         
         # Use config value, network default, or environment variable
-        rpc_url = (
-            self._config.get("arkiv_rpc_url") 
-            or network_config.arkiv_rpc_url
-        )
+        rpc_url = self._config.get("arkiv_rpc_url") or network_config.arkiv_rpc_url
         
         enabled = self._config.get("arkiv_sync_enabled")
         expires_in = self._config.get("arkiv_expiration_seconds")
@@ -256,7 +255,7 @@ class SyncStep(ConditionalStep):
             rpc_url=rpc_url,
             enabled=enabled,
             expires_in=expires_in,
-            network_mode=network_mode,
+            network_mode=arkiv_mode,
         )
     
     async def _update_database(

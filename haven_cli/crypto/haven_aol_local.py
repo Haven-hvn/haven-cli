@@ -31,7 +31,12 @@ _TOKEN_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 @dataclass(frozen=True)
 class GateParams:
-    """Token gate parameters for Haven-AOL derivation."""
+    """Token gate parameters for Haven-AOL key derivation.
+
+    ``chain`` is the EVM network where access-control conditions are evaluated
+    (where the token/NFT contract exists), not the Internet Computer network
+    that hosts Haven-AOL.
+    """
 
     chain: str
     token_address: str

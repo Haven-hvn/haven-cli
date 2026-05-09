@@ -1,6 +1,7 @@
 """Haven upload command - Upload file to Filecoin."""
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -138,7 +139,8 @@ def upload(
         None,
         "--evm-chain",
         help=(
-            "Haven-AOL gate chain. Required for encrypted uploads. "
+            "EVM chain where access-control assets live (token/NFT for gates). "
+            "Required for encrypted uploads. "
             "Supported: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet."
         ),
     ),
@@ -152,8 +154,8 @@ def upload(
     4. Upload - Upload to Filecoin network
     5. Sync - Sync metadata to Arkiv blockchain (optional, skip with --no-arkiv)
 
-    When encryption is enabled, you must provide Haven-AOL gate parameters:
-    - --evm-chain (or pipeline.evm_chain)
+    When encryption is enabled, you must provide gate parameters:
+    - --evm-chain (or pipeline.evm_chain): EVM chain for access-control assets
     - --access-pattern (or pipeline.access_pattern)
     - pattern-specific gate fields (see --help option descriptions)
     
@@ -213,7 +215,7 @@ def upload(
         if configured_chain is None:
             choices = ", ".join(SUPPORTED_HAVEN_AOL_CHAINS)
             console.print(
-                "[red]✗[/red] Missing required EVM chain for encryption. "
+                "[red]✗[/red] Missing access-control asset chain for encryption. "
                 f"Set --evm-chain or pipeline.evm_chain. Supported: {choices}"
             )
             raise typer.Exit(code=1)
@@ -287,6 +289,15 @@ def upload(
     
     async def run_pipeline() -> None:
         from haven_cli.js_runtime.manager import JSBridgeManager
+        
+        debug_mode = (
+            os.environ.get("DEBUG") == "1"
+            or os.environ.get("LOG_LEVEL", "").lower() == "debug"
+        )
+        JSBridgeManager.get_instance().configure(
+            network_mode=config.blockchain.effective_filecoin_network_mode,
+            debug=debug_mode,
+        )
         
         with Progress(
             SpinnerColumn(),

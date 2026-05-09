@@ -237,7 +237,7 @@ async def _decrypt_file(
     if not metadata.chain:
         raise ValueError(
             "Encryption metadata is missing chain. "
-            "Cannot decrypt without explicit Haven-AOL chain."
+            "Cannot decrypt without the access-control asset chain (EVM)."
         )
 
     decrypted_data = decrypt_bytes(

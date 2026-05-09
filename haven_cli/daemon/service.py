@@ -87,12 +87,12 @@ class HavenDaemon:
         
         config = get_config()
         debug_mode = getattr(config, 'debug', False) or os.environ.get('DEBUG') == '1' or os.environ.get('LOG_LEVEL', '').lower() == 'debug'
-        network_mode = getattr(config.blockchain, 'network_mode', 'testnet')
+        filecoin_mode = config.blockchain.effective_filecoin_network_mode
         
-        # Configure JS bridge with network mode for correct Filecoin RPC endpoint
+        # Configure JS bridge with Filecoin network for correct Synapse RPC endpoint
         JSBridgeManager.get_instance().configure(
             debug=debug_mode,
-            network_mode=network_mode,
+            network_mode=filecoin_mode,
         )
         
         if debug_mode:

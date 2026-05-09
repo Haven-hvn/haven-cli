@@ -10,6 +10,7 @@ import pytest
 from haven_cli.config import (
     CONFIG_DIR,
     CONFIG_FILE,
+    BlockchainConfig,
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_FILE,
     DEFAULT_DATA_DIR,
@@ -75,6 +76,52 @@ class TestValidationError:
             severity="error"
         )
         assert str(error) == "[ERROR] test.field: test message"
+
+
+class TestBlockchainConfigNetwork:
+    """Per-chain network resolution on BlockchainConfig."""
+
+    def test_effective_modes_inherit_network_mode(self) -> None:
+        bc = BlockchainConfig(
+            network_mode="mainnet",
+            filecoin_network_mode="",
+            arkiv_network_mode="",
+        )
+        assert bc.effective_filecoin_network_mode == "mainnet"
+        assert bc.effective_arkiv_network_mode == "mainnet"
+
+    def test_effective_modes_per_chain_override(self) -> None:
+        bc = BlockchainConfig(
+            network_mode="testnet",
+            filecoin_network_mode="mainnet",
+            arkiv_network_mode="testnet",
+        )
+        assert bc.effective_filecoin_network_mode == "mainnet"
+        assert bc.effective_arkiv_network_mode == "testnet"
+
+    def test_get_filecoin_rpc_follows_filecoin_mode(self) -> None:
+        bc = BlockchainConfig(
+            network_mode="mainnet",
+            filecoin_network_mode="testnet",
+            arkiv_network_mode="mainnet",
+        )
+        assert "calibration" in bc.get_filecoin_rpc_url()
+
+    def test_get_arkiv_rpc_follows_arkiv_mode(self) -> None:
+        bc = BlockchainConfig(
+            network_mode="mainnet",
+            filecoin_network_mode="mainnet",
+            arkiv_network_mode="testnet",
+        )
+        assert "hoodi" in bc.get_arkiv_rpc_url() or "mendoza" in bc.get_arkiv_rpc_url()
+
+    def test_is_mainnet_follows_filecoin_effective_mode(self) -> None:
+        bc = BlockchainConfig(
+            network_mode="testnet",
+            filecoin_network_mode="mainnet",
+            arkiv_network_mode="testnet",
+        )
+        assert bc.is_mainnet is True
 
 
 class TestHavenConfig:
@@ -152,6 +199,8 @@ class TestConfigSaving:
             content = config_path.read_text()
             assert "vlm_model = \"custom-model\"" in content
             assert "max_concurrent_videos = 8" in content
+            assert "filecoin_network_mode = \"\"" in content
+            assert "arkiv_network_mode = \"\"" in content
     
     def test_save_and_load_roundtrip(self):
         """Test saving and loading config preserves values."""
@@ -367,6 +416,8 @@ class TestConfigExport:
         data = json.loads(json_output)
         
         assert data["pipeline"]["vlm_model"] == "test-model"
+        assert "effective_filecoin_network_mode" in data["blockchain"]
+        assert "effective_arkiv_network_mode" in data["blockchain"]
         assert "scheduler" in data
         assert "logging" in data
     
@@ -442,6 +493,15 @@ class TestEnvironmentVariables:
         monkeypatch.setenv("HAVEN_EVM_CHAIN", "ArbitrumOne")
         config = load_config()
         assert config.pipeline.evm_chain == "ArbitrumOne"
+
+    def test_env_per_chain_network_modes(self, monkeypatch):
+        """Test HAVEN_FILECOIN_NETWORK_MODE and HAVEN_ARKIV_NETWORK_MODE."""
+        monkeypatch.setenv("HAVEN_NETWORK_MODE", "mainnet")
+        monkeypatch.setenv("HAVEN_FILECOIN_NETWORK_MODE", "testnet")
+        monkeypatch.setenv("HAVEN_ARKIV_NETWORK_MODE", "mainnet")
+        config = load_config()
+        assert config.blockchain.effective_filecoin_network_mode == "testnet"
+        assert config.blockchain.effective_arkiv_network_mode == "mainnet"
 
 
 class TestEnsureDirectories:

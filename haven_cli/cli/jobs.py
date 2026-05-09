@@ -1,5 +1,6 @@
 """Haven jobs command - Manage scheduled jobs."""
 
+import os
 from typing import Optional
 
 import typer
@@ -217,6 +218,14 @@ def run_job(
     async def execute() -> None:
         # Initialize JS Bridge for blockchain operations
         try:
+            debug_mode = (
+                os.environ.get("DEBUG") == "1"
+                or os.environ.get("LOG_LEVEL", "").lower() == "debug"
+            )
+            JSBridgeManager.get_instance().configure(
+                network_mode=config.blockchain.effective_filecoin_network_mode,
+                debug=debug_mode,
+            )
             await JSBridgeManager.get_instance().get_bridge()
         except Exception as e:
             console.print(f"[yellow]Warning: JS Bridge initialization failed: {e}[/yellow]")

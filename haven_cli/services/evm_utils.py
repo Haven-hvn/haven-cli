@@ -35,7 +35,9 @@ class InsufficientGasError(Exception):
 
 _EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
-# Supported Haven-AOL canister chain variants.
+# Chains where Haven-AOL access-control conditions are enforced (token/NFT balances).
+# Haven-AOL itself runs on Internet Computer mainnet; this list is only the EVM
+# network that holds the gated asset referenced in encryption metadata.
 SUPPORTED_HAVEN_AOL_CHAINS: tuple[str, ...] = (
     "EthMainnet",
     "EthSepolia",
@@ -64,11 +66,14 @@ _HAVEN_AOL_CHAIN_ALIASES: dict[str, str] = {
 
 
 def normalize_haven_aol_chain(chain: str) -> str:
-    """Normalize user/config chain string to a supported Haven-AOL chain variant."""
+    """Normalize config/CLI input to a supported access-control asset chain name."""
     normalized = _HAVEN_AOL_CHAIN_ALIASES.get(chain.strip().lower())
     if normalized is None:
         valid = ", ".join(SUPPORTED_HAVEN_AOL_CHAINS)
-        raise ValueError(f"Unsupported EVM chain {chain!r}. Supported values: {valid}")
+        raise ValueError(
+            f"Unsupported access-control asset chain {chain!r}. "
+            f"Supported values: {valid}"
+        )
     return normalized
 
 

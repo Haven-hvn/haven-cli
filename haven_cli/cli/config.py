@@ -1,15 +1,176 @@
 """Haven config command - Configuration management."""
 
+from __future__ import annotations
+
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 from rich.syntax import Syntax
 
+from haven_cli.access_pattern import parse_access_pattern_choice
+from haven_cli.services.evm_utils import SUPPORTED_HAVEN_AOL_CHAINS
+
 app = typer.Typer(help="Manage Haven configuration.")
 console = Console()
+
+
+def _prompt_mainnet_or_testnet(*, title: str, blurb: str) -> str:
+    """Return ``mainnet`` or ``testnet`` after interactive prompts."""
+    console.print(f"  [bold]{title}[/bold]")
+    console.print(f"  [dim]{blurb}[/dim]")
+    console.print("  [1] Testnet (recommended for development)")
+    console.print("  [2] Mainnet (production; real tokens)")
+    choice = typer.prompt("  Select option", default="1", show_choices=False)
+    if choice == "2":
+        if typer.confirm(
+            "  [red]Mainnet uses real tokens. Confirm?[/red]",
+            default=False,
+        ):
+            return "mainnet"
+        return "testnet"
+    return "testnet"
+
+
+_ACCESS_CONTROL_CHAIN_BLURB: dict[str, str] = {
+    "EthMainnet": "Ethereum mainnet",
+    "EthSepolia": "Ethereum Sepolia (testnet)",
+    "ArbitrumOne": "Arbitrum One",
+    "BaseMainnet": "Base",
+    "OptimismMainnet": "Optimism",
+}
+
+
+def _prompt_access_control_asset_chain() -> str:
+    """Interactive menu for ``pipeline.evm_chain`` (gate asset chain)."""
+    console.print("  [bold]Access-control asset chain (EVM)[/bold]")
+    console.print(
+        "  [dim]Haven-AOL runs on Internet Computer mainnet. Choose the EVM chain where[/dim]"
+    )
+    console.print(
+        "  [dim]your token/NFT lives—access rules are enforced against that chain.[/dim]"
+    )
+    for idx, chain in enumerate(SUPPORTED_HAVEN_AOL_CHAINS, start=1):
+        blurb = _ACCESS_CONTROL_CHAIN_BLURB.get(chain, chain)
+        console.print(f"  [{idx}] {chain} — {blurb}")
+    default_n = "2" if "EthSepolia" in SUPPORTED_HAVEN_AOL_CHAINS else "1"
+    while True:
+        choice = typer.prompt(
+            "  Select access-control chain",
+            default=default_n,
+            show_choices=False,
+        )
+        try:
+            n = int(choice.strip())
+        except ValueError:
+            console.print("  [red]Enter a number from the list.[/red]")
+            continue
+        if 1 <= n <= len(SUPPORTED_HAVEN_AOL_CHAINS):
+            return SUPPORTED_HAVEN_AOL_CHAINS[n - 1]
+        console.print("  [red]Enter a number from the list.[/red]")
+
+
+_EVM_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+
+
+def _prompt_nonempty_evm_address(label: str, *, default: str = "") -> str:
+    """Prompt until the user enters a valid 20-byte hex EVM address."""
+    while True:
+        raw = typer.prompt(
+            label,
+            default=default,
+            show_default=bool(default),
+        ).strip()
+        if _EVM_ADDR_RE.match(raw):
+            return raw
+        console.print("  [red]Enter a 0x-prefixed 40-hex-character address.[/red]")
+
+
+def _prompt_token_standard() -> str:
+    console.print("  [1] ERC20 (fungible — threshold is smallest units, e.g. wei)")
+    console.print("  [2] ERC721 (NFT — threshold is minimum count, usually 1)")
+    while True:
+        choice = typer.prompt("  Token standard", default="1", show_choices=False).strip()
+        if choice == "1" or choice.upper() == "ERC20":
+            return "ERC20"
+        if choice == "2" or choice.upper() == "ERC721":
+            return "ERC721"
+        console.print("  [red]Enter 1, 2, ERC20, or ERC721.[/red]")
+
+
+def _prompt_encryption_access_gate(config: Any) -> None:
+    """Collect ``access_pattern`` and gate fields for ``config.pipeline``."""
+    console.print()
+    console.print("  [bold]Access pattern[/bold]")
+    console.print(
+        "  [dim]Who may decrypt: pick the rule and the on-chain asset used to enforce it.[/dim]"
+    )
+    console.print("  [1] public — policy does not require a token/NFT balance")
+    console.print("  [2] token_gated — require at least a minimum balance of a token")
+    console.print("  [3] nft_gated — require holding an NFT from a collection")
+    console.print("  [4] owner_only — only a specific wallet, using a token contract gate")
+    while True:
+        raw = typer.prompt("  Select pattern", default="2", show_choices=False)
+        try:
+            pattern = parse_access_pattern_choice(raw)
+            break
+        except ValueError:
+            console.print(
+                "  [red]Enter 1–4, or one of: public, token_gated, nft_gated, owner_only.[/red]"
+            )
+
+    config.pipeline.access_pattern = pattern
+    # Clear fields that may have been set in a prior partial run (init uses fresh config)
+    config.pipeline.token_contract = None
+    config.pipeline.min_balance = None
+    config.pipeline.token_standard = None
+    config.pipeline.owner_wallet = None
+    config.pipeline.nft_contract = None
+
+    if pattern == "public":
+        console.print(
+            "  [dim]public: no token contract stored. "
+            "Haven-AOL encryption still expects gate details when you run uploads; "
+            "use token_gated or set pipeline fields before encrypting if uploads fail.[/dim]"
+        )
+        console.print(f"  [green]✓[/green] access_pattern = {pattern}")
+        return
+
+    if pattern == "token_gated":
+        config.pipeline.token_contract = _prompt_nonempty_evm_address(
+            "  ERC-20/721 contract address (the asset balances are checked against)",
+        )
+        config.pipeline.min_balance = typer.prompt(
+            "  Minimum balance (integer in smallest units, e.g. wei for ERC-20, or count for ERC-721)",
+            default="1",
+        ).strip()
+        config.pipeline.token_standard = _prompt_token_standard()
+    elif pattern == "nft_gated":
+        config.pipeline.nft_contract = _prompt_nonempty_evm_address(
+            "  NFT collection contract address",
+        )
+    elif pattern == "owner_only":
+        config.pipeline.token_contract = _prompt_nonempty_evm_address(
+            "  Token contract address (used for the gate)",
+        )
+        config.pipeline.owner_wallet = _prompt_nonempty_evm_address(
+            "  Owner wallet address (only this wallet satisfies the gate)",
+        )
+
+    console.print(f"  [green]✓[/green] access_pattern = {pattern}")
+    if config.pipeline.token_contract:
+        console.print(f"  [dim]token_contract[/dim] {config.pipeline.token_contract}")
+    if config.pipeline.min_balance:
+        console.print(f"  [dim]min_balance[/dim] {config.pipeline.min_balance}")
+    if config.pipeline.token_standard:
+        console.print(f"  [dim]token_standard[/dim] {config.pipeline.token_standard}")
+    if config.pipeline.owner_wallet:
+        console.print(f"  [dim]owner_wallet[/dim] {config.pipeline.owner_wallet}")
+    if config.pipeline.nft_contract:
+        console.print(f"  [dim]nft_contract[/dim] {config.pipeline.nft_contract}")
 
 
 @app.command("show")
@@ -71,6 +232,10 @@ def show_config(
     sections = {
         "blockchain": [
             ("network_mode", config.blockchain.network_mode, False),
+            ("filecoin_network_mode", config.blockchain.filecoin_network_mode or "(inherit)", False),
+            ("arkiv_network_mode", config.blockchain.arkiv_network_mode or "(inherit)", False),
+            ("effective_filecoin_network", config.blockchain.effective_filecoin_network_mode, False),
+            ("effective_arkiv_network", config.blockchain.effective_arkiv_network_mode, False),
             ("is_mainnet", str(config.blockchain.is_mainnet), False),
             ("filecoin_rpc_url", config.blockchain.get_filecoin_rpc_url(), False),
             ("arkiv_rpc_url", config.blockchain.get_arkiv_rpc_url(), False),
@@ -83,6 +248,17 @@ def show_config(
             ("vlm_api_key", mask(config.pipeline.vlm_api_key or "", True), True),
             ("vlm_timeout", str(config.pipeline.vlm_timeout), False),
             ("encryption_enabled", str(config.pipeline.encryption_enabled), False),
+            (
+                "evm_chain (access-control asset)",
+                config.pipeline.evm_chain or "",
+                False,
+            ),
+            ("access_pattern", config.pipeline.access_pattern or "", False),
+            ("token_contract", config.pipeline.token_contract or "", False),
+            ("min_balance", config.pipeline.min_balance or "", False),
+            ("token_standard", config.pipeline.token_standard or "", False),
+            ("owner_wallet", config.pipeline.owner_wallet or "", False),
+            ("nft_contract", config.pipeline.nft_contract or "", False),
             ("upload_enabled", str(config.pipeline.upload_enabled), False),
             ("sync_enabled", str(config.pipeline.sync_enabled), False),
             ("arkiv_contract", config.pipeline.arkiv_contract or "", False),
@@ -248,51 +424,45 @@ def init_config(
     config.data_dir = Path(os.environ.get("HAVEN_DATA_DIR", config_dir.parent.parent / ".local" / "share" / "haven"))
     
     if interactive:
-        # Interactive wizard
-        console.print("[bold cyan]Blockchain Network Configuration[/bold cyan]")
-        console.print("  [dim]This setting controls the network for all blockchain integrations[/dim]")
-        console.print("  [dim](Haven-AOL, Filecoin, Arkiv)[/dim]")
-        
-        network_choices = ["testnet", "mainnet"]
-        network_default = config.blockchain.network_mode
-        console.print(f"  [1] Testnet (safe for development)")
-        console.print(f"  [2] Mainnet (uses real tokens)")
-        
-        network_choice = typer.prompt(
-            "  Select network",
-            default="1",
-            show_choices=False,
+        # Interactive wizard — Filecoin / Arkiv networks vs EVM chain for gate assets
+        console.print("[bold cyan]Filecoin (storage) network[/bold cyan]")
+        filecoin_mode = _prompt_mainnet_or_testnet(
+            title="Filecoin network",
+            blurb="Synapse uploads use this network (mainnet vs calibration testnet).",
         )
-        
-        if network_choice == "2":
-            confirm = typer.confirm(
-                "  [red]⚠️  WARNING: Mainnet uses real tokens. Are you sure?[/red]",
-                default=False
-            )
-            if confirm:
-                config.blockchain.network_mode = "mainnet"
-            else:
-                config.blockchain.network_mode = "testnet"
-        else:
-            config.blockchain.network_mode = "testnet"
-        
-        console.print(f"  [green]✓[/green] Network set to: {config.blockchain.network_mode}")
+        config.blockchain.filecoin_network_mode = filecoin_mode
+        config.blockchain.network_mode = filecoin_mode
+        console.print(f"  [dim]Filecoin RPC: {config.blockchain.get_filecoin_rpc_url()}[/dim]")
+        filecoin_endpoint = typer.prompt(
+            "  Filecoin RPC URL override (Enter to use default)",
+            default="",
+        )
+        if filecoin_endpoint.strip():
+            config.blockchain.filecoin_rpc_override = filecoin_endpoint.strip()
+        console.print(f"  [green]✓[/green] Filecoin: {config.blockchain.effective_filecoin_network_mode}")
         console.print()
         
-        console.print("[bold cyan]Arkiv Configuration[/bold cyan]")
+        console.print("[bold cyan]Arkiv (sync) network[/bold cyan]")
         arkiv_enabled = typer.confirm("  Enable Arkiv sync?", default=config.pipeline.sync_enabled)
         config.pipeline.sync_enabled = arkiv_enabled
         if arkiv_enabled:
-            # Show the auto-configured endpoint
+            arkiv_mode = _prompt_mainnet_or_testnet(
+                title="Arkiv network",
+                blurb="Can differ from Filecoin (e.g. testnet Arkiv with mainnet token gates).",
+            )
+            config.blockchain.arkiv_network_mode = arkiv_mode
             console.print(f"  [dim]Arkiv RPC: {config.blockchain.get_arkiv_rpc_url()}[/dim]")
             arkiv_endpoint = typer.prompt(
-                "  Arkiv RPC URL (press Enter to use default)",
+                "  Arkiv RPC URL (Enter to use default)",
                 default="",
             )
-            if arkiv_endpoint:
-                config.blockchain.arkiv_rpc_override = arkiv_endpoint
-        
+            if arkiv_endpoint.strip():
+                config.blockchain.arkiv_rpc_override = arkiv_endpoint.strip()
+            console.print(f"  [green]✓[/green] Arkiv: {config.blockchain.effective_arkiv_network_mode}")
+        else:
+            console.print("  [dim]Arkiv network skipped (sync disabled).[/dim]")
         console.print()
+        
         console.print("[bold cyan]VLM Configuration[/bold cyan]")
         vlm_enabled = typer.confirm("  Enable VLM analysis?", default=config.pipeline.vlm_enabled)
         config.pipeline.vlm_enabled = vlm_enabled
@@ -310,12 +480,29 @@ def init_config(
             config.pipeline.vlm_api_key = vlm_api_key if vlm_api_key else None
         
         console.print()
-        console.print("[bold cyan]Encryption Configuration[/bold cyan]")
+        console.print("[bold cyan]Encryption (Haven-AOL) Configuration[/bold cyan]")
+        console.print(
+            "  [dim]Haven-AOL is deployed on Internet Computer mainnet. If you enable encryption,[/dim]"
+        )
+        console.print(
+            "  [dim]you must pick the EVM chain where your access-control asset (token/NFT) lives.[/dim]"
+        )
         encryption_enabled = typer.confirm(
             "  Enable Haven-AOL encryption?",
             default=config.pipeline.encryption_enabled
         )
         config.pipeline.encryption_enabled = encryption_enabled
+        if encryption_enabled:
+            chosen_chain = _prompt_access_control_asset_chain()
+            config.pipeline.evm_chain = chosen_chain
+            console.print(
+                f"  [green]✓[/green] Access-control asset chain: {chosen_chain} (saved as pipeline.evm_chain)"
+            )
+            _prompt_encryption_access_gate(config)
+        else:
+            console.print(
+                "  [dim]Access-control chain not set (configure pipeline.evm_chain when enabling encryption).[/dim]"
+            )
         
         console.print()
         console.print("[bold cyan]Pipeline Configuration[/bold cyan]")
@@ -479,20 +666,31 @@ def set_network(
         help="Network mode: 'mainnet' or 'testnet'. If not provided, shows current network.",
     ),
 ) -> None:
-    """Set or show the blockchain network mode.
+    """Set or show blockchain network modes (Filecoin, Arkiv, and legacy ``network_mode``).
     
-    This single setting controls the network for all blockchain integrations:
-    - Haven-AOL (encryption)
-    - Filecoin (storage)
-    - Arkiv (blockchain sync)
+    ``haven config network mainnet`` sets Filecoin, Arkiv, and ``network_mode`` together.
+    Use ``haven config set`` for independent values, e.g. ``blockchain.filecoin_network_mode``.
+    Encryption gates use ``pipeline.evm_chain`` for the EVM network where access
+    conditions are enforced (Haven-AOL itself is on Internet Computer mainnet).
     
     Examples:
         haven config network              # Show current network
-        haven config network testnet      # Switch to testnet
-        haven config network mainnet      # Switch to mainnet
+        haven config network testnet      # Switch all chain modes to testnet
+        haven config network mainnet      # Switch all chain modes to mainnet
     """
-    from haven_cli.config import get_config, set_config_value, clear_config_cache
+    import os
+    from haven_cli.config import (
+        CONFIG_DIR,
+        CONFIG_FILE,
+        clear_config_cache,
+        get_config,
+        load_config,
+        save_config,
+    )
     from haven_cli.services.blockchain_network import validate_network_mode
+    
+    config_dir = Path(os.environ.get("HAVEN_CONFIG_DIR", CONFIG_DIR))
+    config_path = config_dir / CONFIG_FILE
     
     config = get_config()
     
@@ -505,11 +703,17 @@ def set_network(
         table.add_column("Setting", style="cyan")
         table.add_column("Value", style="green")
         
-        network_color = "red" if config.blockchain.is_mainnet else "yellow"
+        fc_main = config.blockchain.effective_filecoin_network_mode == "mainnet"
+        network_color = "red" if fc_main else "yellow"
         
-        table.add_row("Network Mode", f"[{network_color}]{config.blockchain.network_mode}[/{network_color}]")
-        table.add_row("Is Mainnet", str(config.blockchain.is_mainnet))
-        table.add_row("Is Testnet", str(config.blockchain.is_testnet))
+        table.add_row("network_mode (legacy)", f"[{network_color}]{config.blockchain.network_mode}[/{network_color}]")
+        table.add_row("Filecoin mode", config.blockchain.effective_filecoin_network_mode)
+        table.add_row("Arkiv mode", config.blockchain.effective_arkiv_network_mode)
+        table.add_row("Haven-AOL deployment", "Internet Computer (mainnet)")
+        table.add_row(
+            "Access-control asset chain (evm_chain)",
+            config.pipeline.evm_chain or "(not set)",
+        )
         table.add_row("", "")
         table.add_row("Filecoin RPC", config.blockchain.get_filecoin_rpc_url())
         table.add_row("Arkiv RPC", config.blockchain.get_arkiv_rpc_url())
@@ -522,42 +726,52 @@ def set_network(
         
         console.print(table)
         
-        if config.blockchain.is_mainnet:
+        if config.blockchain.is_mainnet or (
+            config.blockchain.effective_arkiv_network_mode == "mainnet"
+        ):
             console.print()
-            console.print("[yellow]⚠️  WARNING: You are configured for MAINNET.[/yellow]")
-            console.print("[yellow]   Real tokens will be used for transactions.[/yellow]")
+            console.print("[yellow]⚠️  WARNING: Mainnet is in use for one or more services.[/yellow]")
+            console.print("[yellow]   Real tokens can be spent on those networks.[/yellow]")
     else:
-        # Validate and set network mode
+        # Validate and set network mode (all three fields together)
         is_valid, error_msg = validate_network_mode(mode)
         if not is_valid:
             console.print(f"[red]Error: {error_msg}[/red]")
             raise typer.Exit(code=1)
         
-        # Set the network mode
         try:
-            set_config_value("blockchain", "network_mode", mode.lower())
+            merged = load_config(config_path)
+            m = mode.lower()
+            merged.blockchain.network_mode = m
+            merged.blockchain.filecoin_network_mode = m
+            merged.blockchain.arkiv_network_mode = m
+            save_config(merged, config_path)
             clear_config_cache()
             
-            # Show what changed
-            console.print(f"[green]✓[/green] Network mode set to: [bold]{mode.lower()}[/bold]")
+            console.print(f"[green]✓[/green] All blockchain network modes set to: [bold]{m}[/bold]")
             console.print()
             
-            # Reload to show updated values
             config = get_config()
             
             table = Table(title="Updated Network Configuration")
             table.add_column("Service", style="cyan")
-            table.add_column("Network/Endpoint", style="green")
+            table.add_column("Mode / endpoint", style="green")
             
-            table.add_row("Haven-AOL", "Local implementation")
-            table.add_row("Filecoin", config.blockchain.get_filecoin_rpc_url())
-            table.add_row("Arkiv", config.blockchain.get_arkiv_rpc_url())
+            table.add_row("Filecoin", config.blockchain.effective_filecoin_network_mode)
+            table.add_row("Filecoin RPC", config.blockchain.get_filecoin_rpc_url())
+            table.add_row("Arkiv", config.blockchain.effective_arkiv_network_mode)
+            table.add_row("Arkiv RPC", config.blockchain.get_arkiv_rpc_url())
+            table.add_row("Haven-AOL (ICP)", "mainnet (fixed)")
+            table.add_row(
+                "Gate asset chain (unchanged)",
+                config.pipeline.evm_chain or "(pipeline.evm_chain)",
+            )
             
             console.print(table)
             
-            if config.blockchain.is_mainnet:
+            if m == "mainnet":
                 console.print()
-                console.print("[red]⚠️  WARNING: You are now on MAINNET. Real tokens will be used![/red]")
+                console.print("[red]⚠️  WARNING: Filecoin and Arkiv are on MAINNET. Real tokens will be used![/red]")
         
         except ValueError as e:
             console.print(f"[red]Error: {e}[/red]")

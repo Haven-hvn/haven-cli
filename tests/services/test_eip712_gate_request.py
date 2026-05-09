@@ -65,6 +65,6 @@ def test_normalize_haven_aol_chain_accepts_supported_aliases() -> None:
 
 
 def test_normalize_haven_aol_chain_rejects_unsupported_chain() -> None:
-    with pytest.raises(ValueError, match="Unsupported EVM chain"):
+    with pytest.raises(ValueError, match="Unsupported access-control asset chain"):
         normalize_haven_aol_chain("polygon")
 

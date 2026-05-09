@@ -213,7 +213,8 @@ class EncryptStep(ConditionalStep):
         configured_chain = context.options.get("evm_chain") or config_chain
         if not configured_chain:
             raise ValueError(
-                "evm_chain is required for Haven-AOL encryption. "
+                "evm_chain is required for Haven-AOL encryption "
+                "(EVM chain where access-control assets live). "
                 "Set --evm-chain or pipeline.evm_chain."
             )
         chain = normalize_haven_aol_chain(str(configured_chain))

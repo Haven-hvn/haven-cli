@@ -64,52 +64,68 @@ class ValidationError:
 class BlockchainConfig:
     """Configuration for blockchain network settings.
     
-    Provides unified mainnet/testnet configuration across all
-    blockchain integrations (Lit, Filecoin, Arkiv).
+    Filecoin storage and Arkiv sync can use different mainnet/testnet modes.
+    Leave ``filecoin_network_mode`` / ``arkiv_network_mode`` empty to inherit
+    ``network_mode`` (backward compatible default).
     
-    When network_mode is set, it automatically configures:
-    - Filecoin RPC endpoint (mainnet or calibration testnet)
-    - Arkiv RPC endpoint (mainnet or hoodi testnet)
-    
-    Individual endpoint settings can still override the defaults.
+    ``network_mode`` remains the legacy primary knob; it should match Filecoin
+    for older tooling that only reads that field.
     """
     
-    # Network mode - 'mainnet' or 'testnet'
-    # This single setting propagates to all blockchain integrations
+    # Legacy default used when per-chain fields are empty; keep aligned with Filecoin.
     network_mode: str = "testnet"
+    # Per-chain modes: "mainnet", "testnet", or "" to use network_mode
+    filecoin_network_mode: str = ""
+    arkiv_network_mode: str = ""
     
-    # Optional: Override specific endpoints (if not set, uses network_mode defaults)
+    # Optional: Override RPC endpoints (if not set, derived from effective per-chain mode)
     filecoin_rpc_override: Optional[str] = None
     arkiv_rpc_override: Optional[str] = None
     
     @property
+    def effective_filecoin_network_mode(self) -> str:
+        """Resolved Filecoin network (mainnet or testnet)."""
+        raw = (self.filecoin_network_mode or "").strip()
+        base = raw if raw else self.network_mode
+        return base.lower()
+    
+    @property
+    def effective_arkiv_network_mode(self) -> str:
+        """Resolved Arkiv network (mainnet or testnet)."""
+        raw = (self.arkiv_network_mode or "").strip()
+        base = raw if raw else self.network_mode
+        return base.lower()
+    
+    @property
     def is_mainnet(self) -> bool:
-        """Check if configured for mainnet."""
-        return self.network_mode.lower() == "mainnet"
+        """True when Filecoin is configured for mainnet."""
+        return self.effective_filecoin_network_mode == "mainnet"
     
     @property
     def is_testnet(self) -> bool:
-        """Check if configured for testnet."""
-        return self.network_mode.lower() in ("testnet", "test", "dev")
+        """True when Filecoin is configured for a non-mainnet preset."""
+        return self.effective_filecoin_network_mode in ("testnet", "test", "dev")
     
     def get_filecoin_rpc_url(self) -> str:
         """Get Filecoin RPC URL based on configuration."""
         if self.filecoin_rpc_override:
             return self.filecoin_rpc_override
+        main = self.effective_filecoin_network_mode == "mainnet"
         return (
-            "https://api.node.glif.io/rpc/v1"  # Mainnet
-            if self.is_mainnet
-            else "https://api.calibration.node.glif.io/rpc/v1"  # Testnet
+            "https://api.node.glif.io/rpc/v1"
+            if main
+            else "https://api.calibration.node.glif.io/rpc/v1"
         )
     
     def get_arkiv_rpc_url(self) -> str:
         """Get Arkiv RPC URL based on configuration."""
         if self.arkiv_rpc_override:
             return self.arkiv_rpc_override
+        main = self.effective_arkiv_network_mode == "mainnet"
         return (
-            "https://mainnet.arkiv.network/rpc"  # Mainnet
-            if self.is_mainnet
-            else "https://mendoza.hoodi.arkiv.network/rpc"  # Hoodi testnet
+            "https://mainnet.arkiv.network/rpc"
+            if main
+            else "https://mendoza.hoodi.arkiv.network/rpc"
         )
 
 
@@ -148,10 +164,10 @@ class PipelineConfig:
         {"base_url": "http://localhost:1234/v1", "name": "local-llm", "weight": 1, "max_concurrent": 5}
     ])
     
-    # Encryption (Haven-AOL)
+    # Encryption (Haven-AOL on Internet Computer mainnet)
     encryption_enabled: bool = True
-    # Required chain for Haven-AOL gate metadata and decryption checks.
-    # Must map to one of: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet.
+    # EVM chain where access-control conditions are enforced (token/NFT contract lives here).
+    # Canonical names: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet.
     evm_chain: Optional[str] = None
     access_pattern: Optional[str] = None
     token_contract: Optional[str] = None
@@ -161,13 +177,13 @@ class PipelineConfig:
     nft_contract: Optional[str] = None
     
     # Upload (Filecoin via Synapse)
-    # Note: Synapse endpoint is derived from blockchain.network_mode
+    # Note: Synapse RPC is derived from blockchain.filecoin_network_mode (or network_mode)
     # Set blockchain.filecoin_rpc_override to override
     # Note: Authentication via HAVEN_PRIVATE_KEY environment variable ONLY
     upload_enabled: bool = True
     
     # Blockchain Sync (Arkiv)
-    # Note: Arkiv endpoint is derived from blockchain.network_mode
+    # Note: Arkiv RPC is derived from blockchain.arkiv_network_mode (or network_mode)
     # Set blockchain.arkiv_rpc_override to override
     sync_enabled: bool = True
     arkiv_contract: Optional[str] = None
@@ -402,9 +418,13 @@ def _load_from_file(path: Path, config: HavenConfig) -> HavenConfig:
 def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     """Load configuration from environment variables."""
     
-    # Blockchain network mode - this is the primary network setting
+    # Blockchain network mode - legacy primary setting; also default for per-chain modes
     if env_val := os.environ.get(f"{prefix}NETWORK_MODE"):
         config.blockchain.network_mode = env_val
+    if env_val := os.environ.get(f"{prefix}FILECOIN_NETWORK_MODE"):
+        config.blockchain.filecoin_network_mode = env_val
+    if env_val := os.environ.get(f"{prefix}ARKIV_NETWORK_MODE"):
+        config.blockchain.arkiv_network_mode = env_val
     # Blockchain endpoint overrides
     if env_val := os.environ.get(f"{prefix}FILECOIN_RPC_OVERRIDE"):
         config.blockchain.filecoin_rpc_override = env_val
@@ -547,9 +567,11 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f'database_url = "{_toml_escape(config.database_url)}"',
         "",
         "# Blockchain Network Configuration",
-        "# Set network_mode to 'mainnet' or 'testnet' to configure all blockchain integrations",
+        "# network_mode: legacy default; used when filecoin_network_mode / arkiv_network_mode are empty",
         "[blockchain]",
         f'network_mode = "{config.blockchain.network_mode}"',
+        f'filecoin_network_mode = "{config.blockchain.filecoin_network_mode}"',
+        f'arkiv_network_mode = "{config.blockchain.arkiv_network_mode}"',
         f'filecoin_rpc_override = "{config.blockchain.filecoin_rpc_override or ""}"',
         f'arkiv_rpc_override = "{config.blockchain.arkiv_rpc_override or ""}"',
         "",
@@ -839,13 +861,14 @@ def validate_config(config: Optional[HavenConfig] = None) -> List[ValidationErro
             ))
     
     # Sync validation (if enabled)
-    # Haven-AOL chain validation (required when encryption is enabled)
+    # Access-control asset chain (pipeline.evm_chain) when encryption is enabled
     if config.pipeline.encryption_enabled:
         if not config.pipeline.evm_chain:
             errors.append(ValidationError(
                 field="pipeline.evm_chain",
                 message=(
-                    "pipeline.evm_chain is required when encryption is enabled. "
+                    "pipeline.evm_chain is required when encryption is enabled "
+                    "(EVM chain where access-control assets live). "
                     "Use one of: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet."
                 ),
                 severity="error"
@@ -1010,6 +1033,10 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
         "database_url": mask_value("database_url", config.database_url),
         "blockchain": {
             "network_mode": config.blockchain.network_mode,
+            "filecoin_network_mode": config.blockchain.filecoin_network_mode,
+            "arkiv_network_mode": config.blockchain.arkiv_network_mode,
+            "effective_filecoin_network_mode": config.blockchain.effective_filecoin_network_mode,
+            "effective_arkiv_network_mode": config.blockchain.effective_arkiv_network_mode,
             "is_mainnet": config.blockchain.is_mainnet,
             "is_testnet": config.blockchain.is_testnet,
             "filecoin_rpc_url": config.blockchain.get_filecoin_rpc_url(),

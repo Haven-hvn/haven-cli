@@ -1,16 +1,15 @@
 """Blockchain Network Configuration.
 
-Provides unified mainnet/testnet configuration for blockchain integrations:
-- Filecoin (storage via Synapse)
-- Arkiv (blockchain sync)
+Mainnet/testnet presets for Filecoin (Synapse) and Arkiv RPC defaults.
+Per-chain modes live on ``HavenConfig.blockchain``; this module maps a
+single mode string to RPC URLs and chain metadata for one network at a time.
 
 Usage:
-    # Get network configuration based on user setting
     from haven_cli.config import get_config
     from haven_cli.services.blockchain_network import get_network_config
     
     config = get_config()
-    network_config = get_network_config(config.blockchain.network_mode)
+    network_config = get_network_config(config.blockchain.effective_filecoin_network_mode)
     
     # Use Filecoin RPC
     filecoin_rpc = network_config.filecoin_rpc_url
@@ -27,7 +26,7 @@ from typing import Optional
 
 
 class NetworkMode(str, Enum):
-    """Blockchain network mode - unified across all integrations."""
+    """Filecoin / Arkiv preset selector (mainnet vs testnet)."""
     
     MAINNET = "mainnet"
     TESTNET = "testnet"
@@ -86,7 +85,7 @@ _NETWORK_PRESETS: dict[NetworkMode, NetworkConfig] = {
         filecoin_chain_id=314,  # Filecoin mainnet
         arkiv_rpc_url="https://mainnet.arkiv.network/rpc",  # Arkiv mainnet
         arkiv_chain_name="Arkiv Mainnet",
-        chain_for_access_control="ethereum",  # Lit uses ethereum for mainnet
+        chain_for_access_control="ethereum",
     ),
     NetworkMode.TESTNET: NetworkConfig(
         mode=NetworkMode.TESTNET,
@@ -94,7 +93,7 @@ _NETWORK_PRESETS: dict[NetworkMode, NetworkConfig] = {
         filecoin_chain_id=314159,  # Filecoin Calibration testnet
         arkiv_rpc_url="https://mendoza.hoodi.arkiv.network/rpc",  # Arkiv on Hoodi testnet
         arkiv_chain_name="Arkiv Hoodi Testnet",
-        chain_for_access_control="ethereum",  # Lit uses ethereum for testnet too
+        chain_for_access_control="ethereum",
     ),
 }
 
@@ -192,12 +191,12 @@ def get_arkiv_rpc_url(mode: str | NetworkMode = "testnet") -> str:
 
 
 def get_chain_for_access_control(mode: str | NetworkMode = "testnet") -> str:
-    """Get chain name for Lit access control conditions.
+    """Get default chain label for access-control metadata for a Filecoin/Arkiv mode.
     
     Args:
         mode: Network mode ('mainnet' or 'testnet')
         
     Returns:
-        Chain name for access control conditions
+        Chain name string from the network preset
     """
     return get_network_config(mode).chain_for_access_control
