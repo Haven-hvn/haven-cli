@@ -26,12 +26,14 @@ import {
   type CarBuildResult,
   type CreateCarOptions,
 } from 'filecoin-pin/core/unixfs';
+import { initializeSynapse as initSynapse } from 'filecoin-pin/core/synapse';
 import {
-  initializeSynapse as initSynapse,
-  createStorageContext,
-  cleanupSynapseService,
-} from 'filecoin-pin/core/synapse';
-import { executeUpload, checkUploadReadiness } from 'filecoin-pin/core/upload';
+  executeUpload,
+  checkUploadReadiness,
+  type UploadExecutionResult,
+} from 'filecoin-pin/core/upload';
+import type { Synapse } from '@filoz/synapse-sdk';
+import { CID } from 'multiformats/cid';
 
 import { carFileByteLength, openCarReadableStream } from './car_stream.ts';
 
@@ -343,15 +345,8 @@ class SynapseWrapperImpl implements SynapseWrapper {
     this._isConnected = false;
     this._endpoint = '';
     
-    // Cleanup Synapse service if initialized
-    if (this._synapse) {
-      try {
-        await cleanupSynapseService();
-      } catch (error) {
-        this._logger.warn(`Error during cleanup: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      this._synapse = null;
-    }
+    // Synapse SDK has no explicit teardown in current versions; drop our reference.
+    this._synapse = null;
   }
 
   /**
@@ -519,17 +514,13 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 5,
       });
 
-      const initConfig = {
-        privateKey: normalizedPrivateKey,
-        rpcUrl,
-        telemetry: {
-          sentryInitOptions: {
-            enabled: false,
-          },
+      const synapse = await initSynapse(
+        {
+          privateKey: normalizedPrivateKey as `0x${string}`,
+          rpcUrl,
         },
-      };
-
-      const synapse = await initSynapse(initConfig, this._logger);
+        this._logger,
+      );
       this._synapse = synapse;
 
       onProgress?.({
@@ -576,7 +567,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
       const readiness = await this._withTimeout(
         'checkUploadReadiness',
         checkUploadReadiness({
-          synapse: synapse as any,
+          synapse,
           fileSize: carFileSize,
           autoConfigureAllowances: true,
         }),
@@ -594,41 +585,21 @@ class SynapseWrapperImpl implements SynapseWrapper {
         throw new Error(errorMessage);
       }
 
-      onProgress?.({
-        bytesUploaded: 0,
-        totalBytes: carFileSize,
-        percentage: 30,
-      });
-
-      // Create storage context
-      console.error('[synapse-wrapper] Starting createStorageContext...');
-      
-      // Wrap createStorageContext with timeout to prevent indefinite hanging
-      const { storage, providerInfo } = await this._withTimeout(
-        'createStorageContext',
-        (createStorageContext as any)(synapse, this._logger),
-        60000 // 60 second timeout for storage context creation
-      );
-
-      console.error('[synapse-wrapper] Storage context created, provider:', providerInfo?.address || 'unknown');
-      const synapseService = { synapse, storage, providerInfo };
-
+      // filecoin-pin 0.21+: executeUpload takes Synapse directly (uploadToSynapse → synapse.storage.upload).
       onProgress?.({
         bytesUploaded: 0,
         totalBytes: carFileSize,
         percentage: 35,
       });
 
-      // Execute upload with progress tracking and timeout
-      // Parse the root CID string to a CID object
       const rootCidString = carBuildResult.rootCid.toString();
-      
-      // Upload with timeout and retry logic (fresh ReadableStream per attempt on retry)
+      const rootCid = CID.parse(rootCidString);
+
       const uploadResult = await this._executeUploadWithTimeout(
-        synapseService as any,
+        synapse,
         carBuildResult.carPath,
         carFileSize,
-        rootCidString,
+        rootCid,
         filePath,
         onProgress
       );
@@ -650,16 +621,9 @@ class SynapseWrapperImpl implements SynapseWrapper {
         cid: rootCidString,
         size: carFileSize,
         uploadedAt: new Date().toISOString(),
-        dealId: uploadResult.pieceId?.toString(),
+        dealId: uploadResult.pieceCid,
       };
     } catch (error) {
-      // Cleanup on error
-      try {
-        await cleanupSynapseService();
-      } catch {
-        // Ignore cleanup errors
-      }
-      
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`Upload failed: ${errorMessage}`);
     }
@@ -715,15 +679,15 @@ class SynapseWrapperImpl implements SynapseWrapper {
    * - Fail-fast on insufficient balance errors (non-retryable)
    */
   private async _executeUploadWithTimeout(
-    synapseService: any,
+    synapse: Synapse,
     carPath: string,
     carByteLength: number,
-    rootCidString: string,
+    rootCid: CID,
     filePath: string,
     onProgress?: ProgressCallback,
     maxRetries: number = 3,
     timeoutMs: number = 1800000 // 30 minutes per attempt
-  ): Promise<any> {
+  ): Promise<UploadExecutionResult> {
     let lastError: Error | null = null;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -744,7 +708,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
         });
         
         // Execute upload with race against timeout
-        const uploadPromise = executeUpload(synapseService, stream, rootCidString as any, {
+        const uploadPromise = executeUpload(synapse, stream, rootCid, {
           logger: this._logger,
           contextId: filePath.split('/').pop() || 'upload',
           onProgress: (event: { type: string }) => {

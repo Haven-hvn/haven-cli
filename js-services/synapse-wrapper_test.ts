@@ -2,12 +2,19 @@
  * Tests for the Synapse SDK wrapper
  */
 import { assertEquals, assertRejects } from 'https://deno.land/std@0.200.0/testing/asserts.ts';
+import { CID } from 'multiformats/cid';
 import { createSynapseWrapper, isValidCid, formatBytes } from './synapse-wrapper.ts';
 
 Deno.test('createSynapseWrapper creates a wrapper instance', () => {
   const wrapper = createSynapseWrapper();
   assertEquals(typeof wrapper, 'object');
   assertEquals(wrapper.isConnected, false);
+});
+
+Deno.test('CID.parse roundtrips v1 CIDs used as upload root', () => {
+  const s =
+    'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
+  assertEquals(CID.parse(s).toString(), s);
 });
 
 Deno.test('isValidCid validates CID formats correctly', () => {
