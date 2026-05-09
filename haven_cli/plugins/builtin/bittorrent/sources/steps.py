@@ -203,7 +203,7 @@ class RegexStep(ExtractionStep):
     
     Example:
         RegexStep(pattern=r"btih:([a-fA-F0-9]{40})", input_key="magnet_uri", output_key="infohash")
-        RegexStep(pattern=r"Size: ([\d.]+) (GB|MB)", input_key="size_text", output_key="size")
+        RegexStep(pattern=r"Size: ([0-9.]+) (GB|MB)", input_key="size_text", output_key="size")
     """
     
     pattern: str

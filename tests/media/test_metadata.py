@@ -102,7 +102,7 @@ class TestMimeTypeDetection:
             path = Path(f.name)
         try:
             mime = detect_mime_type(path, use_magic=False)
-            assert mime == "video/x-matroska"
+            assert mime == "video/matroska"
         finally:
             path.unlink()
     

@@ -22,7 +22,6 @@ def mock_vlm_config():
     """Create a mock VLM configuration."""
     config = VLMConfig(
         engine=VLMEngineConfig(
-            model_type="openai",
             model_name="gpt-4-vision-preview",
             api_key="test-key",
         ),

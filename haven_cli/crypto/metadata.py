@@ -112,7 +112,7 @@ def _parse_encryption_metadata(data: Dict[str, Any]) -> EncryptionMetadata:
     ciphertext = data.get("ciphertext", "")
     data_to_encrypt_hash = data.get("data_to_encrypt_hash") or data.get("dataToEncryptHash", "")
     access_control_conditions = data.get("access_control_conditions") or data.get("accessControlConditions", [])
-    chain = data.get("chain", "")
+    chain = data.get("chain", "ethereum")
     encrypted_key = data.get("encrypted_key") or data.get("encryptedKey", "")
     key_hash = data.get("key_hash") or data.get("keyHash", "")
     iv = data.get("iv", "")

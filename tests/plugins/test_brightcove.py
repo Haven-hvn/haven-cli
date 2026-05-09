@@ -14,6 +14,7 @@ import json
 import os
 import pytest
 from pathlib import Path
+import httpx
 from unittest.mock import AsyncMock, MagicMock, Mock, patch, call
 
 from haven_cli.plugins.builtin.brightcove import (

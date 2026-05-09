@@ -124,6 +124,41 @@ class ASCIIBarChart(Static):
         
         self.update("\n".join(lines))
     
+    def render(self) -> str:
+        """Render the chart to a string."""
+        if not self.data:
+            return self._render_empty()
+
+        lines = []
+
+        # Title
+        if self.chart_title:
+            lines.append(f"[bold]{self.chart_title}[/bold]")
+            lines.append("")
+
+        # Calculate scale
+        max_value = max(self.data.values()) if self.data else 1
+        if max_value == 0:
+            max_value = 1
+
+        # Find longest label for alignment
+        max_label_len = max(len(str(k)) for k in self.data.keys()) if self.data else 0
+
+        # Render bars
+        for label, value in self.data.items():
+            bar_len = int((value / max_value) * self.max_bar_width)
+            bar = "█" * bar_len
+
+            label_str = str(label).ljust(max_label_len)
+
+            if self.show_values:
+                value_str = f" {value}{self.unit}"
+                lines.append(f"  {label_str} │{bar}{value_str}")
+            else:
+                lines.append(f"  {label_str} │{bar}")
+
+        return "\n".join(lines)
+
     def _render_empty(self) -> str:
         """Render empty state."""
         if self.chart_title:
@@ -215,6 +250,41 @@ class HorizontalBarChart(Static):
         if self.chart_title:
             return f"[bold]{self.chart_title}[/bold]\n\n  [No data available]"
         return "[No data available]"
+
+    def render(self) -> str:
+        """Render the chart to a string."""
+        if not self.data:
+            return self._render_empty()
+
+        lines = []
+
+        # Title
+        if self.chart_title:
+            lines.append(f"[bold]{self.chart_title}[/bold]")
+            lines.append("")
+
+        # Convert to list and reverse to show oldest first
+        items = list(self.data.items())
+
+        # Group into rows
+        for i in range(0, len(items), self.items_per_row):
+            row_items = items[i:i + self.items_per_row]
+
+            # Calculate bar lengths for this row
+            max_value = max(v for _, v in row_items) if row_items else 1
+            if max_value == 0:
+                max_value = 1
+
+            # Build row lines
+            row_lines = []
+            for label, value in row_items:
+                bar_len = max(1, int((value / max_value) * 12))  # Scale to ~12 chars
+                bar = "█" * bar_len
+                row_lines.append(f"{label} {bar} {value}")
+
+            lines.append("   ".join(row_lines))
+
+        return "\n".join(lines)
 
 
 class StageTimingChart(Static):
@@ -324,6 +394,48 @@ class StageTimingChart(Static):
             return f"[bold]{self.chart_title}[/bold]\n\n  [No timing data available]"
         return "[No timing data available]"
 
+    def render(self) -> str:
+        """Render the chart to a string."""
+        if not self.data:
+            return self._render_empty()
+
+        lines = []
+
+        # Title
+        if self.chart_title:
+            lines.append(f"[bold]{self.chart_title}[/bold]")
+            lines.append("")
+
+        # Calculate scale
+        max_value = max(self.data.values()) if self.data else 1
+        if max_value == 0:
+            max_value = 1
+
+        # Stage name mapping for display
+        stage_names = {
+            "download": "Download",
+            "encrypt": "Encrypt",
+            "upload": "Upload",
+            "analyze": "Analyze",
+            "sync": "Sync",
+            "ingest": "Ingest",
+        }
+
+        # Render bars
+        max_label_len = 10
+        max_bar_width = 25
+
+        for stage, seconds in self.data.items():
+            bar_len = int((seconds / max_value) * max_bar_width)
+            bar = "█" * bar_len
+
+            label = stage_names.get(stage, stage.title()).ljust(max_label_len)
+            time_str = self._format_duration(seconds)
+
+            lines.append(f"  {label} \u2502{bar} {time_str}")
+
+        return "\n".join(lines)
+
 
 class SuccessRateChart(Static):
     """Chart showing success/failure rates by stage."""
@@ -415,6 +527,52 @@ class SuccessRateChart(Static):
             return f"[bold]{self.chart_title}[/bold]\n\n  [No rate data available]"
         return "[No rate data available]"
 
+    def render(self) -> str:
+        """Render the chart to a string."""
+        if not self.data:
+            return self._render_empty()
+
+        lines = []
+
+        # Title
+        if self.chart_title:
+            lines.append(f"[bold]{self.chart_title}[/bold]")
+            lines.append("")
+
+        # Stage name mapping for display
+        stage_names = {
+            "download": "Download",
+            "encrypt": "Encrypt",
+            "upload": "Upload",
+            "analyze": "Analyze",
+            "sync": "Sync",
+            "ingest": "Ingest",
+        }
+
+        # Render bars (max 100%)
+        max_label_len = 10
+        max_bar_width = 20
+
+        for stage, info in self.data.items():
+            success_rate = info.get("success_rate", 0) if isinstance(info, dict) else info
+
+            bar_len = int((success_rate / 100) * max_bar_width)
+            bar = "█" * bar_len
+
+            # Color based on rate
+            if success_rate >= 95:
+                bar_style = "[success]"
+            elif success_rate >= 80:
+                bar_style = "[warning]"
+            else:
+                bar_style = "[error]"
+
+            label = stage_names.get(stage, stage.title()).ljust(max_label_len)
+
+            lines.append(f"  {label} \u2502{bar_style}{bar}[/] {success_rate:.0f}%")
+
+        return "\n".join(lines)
+
 
 class PluginUsageChart(Static):
     """Chart showing plugin usage distribution."""
@@ -485,6 +643,32 @@ class PluginUsageChart(Static):
         if self.chart_title:
             return f"[bold]{self.chart_title}[/bold]\n\n  [No plugin usage data available]"
         return "[No plugin usage data available]"
+
+    def render(self) -> str:
+        """Render the chart to a string."""
+        if not self.data:
+            return self._render_empty()
+
+        lines = []
+
+        # Title
+        if self.chart_title:
+            lines.append(f"[bold]{self.chart_title}[/bold]")
+            lines.append("")
+
+        # Render bars (max 100%)
+        max_label_len = 12
+        max_bar_width = 30
+
+        for plugin, percentage in self.data.items():
+            bar_len = int((percentage / 100) * max_bar_width)
+            bar = "█" * bar_len
+
+            label = (plugin or "unknown").title().ljust(max_label_len)
+
+            lines.append(f"  {label} \u2502{bar} {percentage:.0f}%")
+
+        return "\n".join(lines)
 
 
 class AnalyticsDashboardWidget(Container):
