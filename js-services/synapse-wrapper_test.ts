@@ -2,7 +2,7 @@
  * Tests for the Synapse SDK wrapper
  */
 import { assertEquals, assertRejects } from 'https://deno.land/std@0.200.0/testing/asserts.ts';
-import { CID } from 'multiformats/cid';
+import { CID } from 'npm:multiformats@13.4.2/cid';
 import { createSynapseWrapper, isValidCid, formatBytes } from './synapse-wrapper.ts';
 
 Deno.test('createSynapseWrapper creates a wrapper instance', () => {

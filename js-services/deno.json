@@ -15,7 +15,6 @@
     "@filoz/synapse-sdk": "npm:@filoz/synapse-sdk@0.41.0",
     "ethers": "npm:ethers@6.16.0",
     "filecoin-pin": "npm:filecoin-pin@0.21.0",
-    "multiformats/": "npm:multiformats@13.4.2/",
     "viem": "npm:viem@2.45.1"
   },
   "lint": {

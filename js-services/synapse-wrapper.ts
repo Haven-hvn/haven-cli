@@ -33,7 +33,7 @@ import {
   type UploadExecutionResult,
 } from 'filecoin-pin/core/upload';
 import type { Synapse } from '@filoz/synapse-sdk';
-import { CID } from 'multiformats/cid';
+import { CID } from 'npm:multiformats@13.4.2/cid';
 
 import { carFileByteLength, openCarReadableStream } from './car_stream.ts';
 
