@@ -13,11 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from haven_cli.database.connection import get_db_session
 from haven_cli.database.models import Download, TorrentDownload
 
 logger = logging.getLogger(__name__)
-from haven_cli.database.repositories import VideoRepository
 from haven_cli.media import detect_mime_type, extract_video_metadata
 from haven_cli.media.exceptions import VideoMetadataError
 from haven_cli.media.phash import calculate_video_phash, VideoHashError
@@ -237,6 +235,9 @@ class IngestStep(PipelineStep):
             True if a similar video exists in the database
         """
         try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import VideoRepository
+
             with get_db_session() as session:
                 repo = VideoRepository(session)
                 return repo.is_duplicate(phash)
@@ -267,8 +268,11 @@ class IngestStep(PipelineStep):
         """
         import logging
         logger = logging.getLogger(__name__)
-        
+
         try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import VideoRepository
+
             with get_db_session() as session:
                 repo = VideoRepository(session)
                 

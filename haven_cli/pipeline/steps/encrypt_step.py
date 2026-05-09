@@ -6,6 +6,7 @@ The step is conditional and can be skipped via the encrypt option.
 
 import hashlib
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -30,79 +31,108 @@ class EncryptStep(ConditionalStep):
     - token_gated: Only token holders can decrypt
     - public: Anyone can decrypt (for public content)
     - custom: Explicit access conditions provided in context
-    
+
     Emits:
         - ENCRYPT_REQUESTED event when starting
         - ENCRYPT_PROGRESS events during encryption
         - ENCRYPT_COMPLETE event on success
-    
+
     Output data:
         - ciphertext_hash: Hash of the encrypted content
         - access_conditions: Access control conditions used
         - chain: Blockchain used for access control
         - encrypted_path: Path to the encrypted file
-    
+
     Task 12: Creates/updates EncryptionJob and PipelineSnapshot records.
     """
-    
+
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the encrypt step.
-        
+
         Args:
             config: Step configuration (passed to base class)
         """
         super().__init__(config=config)
         self._job_id: Optional[int] = None
         self._start_time: Optional[float] = None
-    
+
     @property
     def name(self) -> str:
         """Step identifier."""
         return "encrypt"
-    
+
     @property
     def enabled_option(self) -> str:
         """Context option that enables this step."""
         return "encrypt"
-    
+
     @property
     def default_enabled(self) -> bool:
         """Encryption is disabled by default."""
         return False
-    
+
     @property
     def max_retries(self) -> int:
         """Maximum retry attempts for transient errors."""
         return 3
-    
+
+    def _get_chain(self, context: PipelineContext) -> str:
+        """Resolve the EVM chain from context options or config.
+
+        Checks context options first (e.g., CLI --evm-chain flag),
+        then falls back to step config.
+
+        Args:
+            context: Pipeline context with options
+
+        Returns:
+            Normalized chain name
+
+        Raises:
+            ValueError: If no chain is configured
+        """
+        pipeline_cfg = self._config.get("pipeline")
+        config_chain = (
+            getattr(pipeline_cfg, "evm_chain", None)
+            if pipeline_cfg is not None
+            else self._config.get("evm_chain")
+        )
+        configured_chain = context.options.get("evm_chain") or config_chain
+        if not configured_chain:
+            raise ValueError(
+                "evm_chain is required for Haven-AOL encryption. "
+                "Set --evm-chain or pipeline.evm_chain."
+            )
+        return normalize_haven_aol_chain(str(configured_chain))
+
     async def process(self, context: PipelineContext) -> StepResult:
         """Process Haven-AOL encryption.
-        
+
         Args:
             context: Pipeline context with video path
-            
+
         Returns:
             StepResult with encryption metadata
         """
         video_path = context.video_path
         self._start_time = time.time()
-        
+
         # Create EncryptionJob record for tracking
         if context.video_id:
             file_size = context.video_metadata.file_size if context.video_metadata else 0
             self._job_id = await self._create_encryption_job(context.video_id, file_size)
             await self._update_pipeline_snapshot(context.video_id, "encrypt", 0)
-        
+
         # Emit encrypt requested event
         await self._emit_event(EventType.ENCRYPT_REQUESTED, context, {
             "video_path": video_path,
         })
-        
+
         try:
             # Get access conditions from config or context
             access_conditions = self._get_access_conditions(context)
             logger.info(f"Using access pattern: {context.options.get('access_pattern', 'owner_only')}")
-            
+
             # Encrypt via standalone Haven-AOL implementation
             # Uses _js_call_with_retry internally for resilience
             encryption_result = await self._encrypt_with_haven_aol(
@@ -110,7 +140,7 @@ class EncryptStep(ConditionalStep):
                 access_conditions,
                 context,
             )
-            
+
             # Create encryption metadata
             encryption_metadata = EncryptionMetadata(
                 ciphertext=encryption_result.get("ciphertext_path", ""),
@@ -121,31 +151,31 @@ class EncryptStep(ConditionalStep):
                 access_control_conditions=access_conditions,
                 chain=encryption_result["chain"],
             )
-            
+
             # Store in context
             context.encryption_metadata = encryption_metadata
             context.encrypted_video_path = encryption_result.get("ciphertext_path")
-            
+
             # Store metadata path for cleanup step
             if encryption_result.get("metadata_path"):
                 context.set_step_data("encrypt", "metadata_path", encryption_result.get("metadata_path"))
-            
+
             # Store original hash for encryption_metadata
             if encryption_result.get("original_hash"):
                 context.set_step_data("encrypt", "original_hash", encryption_result.get("original_hash"))
-            
+
             # Save encryption metadata to database
             if context.video_id:
                 await self._save_encryption_metadata(
                     context.video_id,
                     encryption_metadata,
                 )
-            
+
             # Mark job as completed
             if self._job_id and context.video_id:
                 await self._complete_encryption_job(self._job_id, encryption_metadata.data_to_encrypt_hash)
                 await self._update_pipeline_snapshot(context.video_id, "encrypt", 100, status="completed")
-            
+
             # Emit encrypt complete event
             await self._emit_event(EventType.ENCRYPT_COMPLETE, context, {
                 "video_path": video_path,
@@ -153,7 +183,7 @@ class EncryptStep(ConditionalStep):
                 "data_to_encrypt_hash": encryption_metadata.data_to_encrypt_hash,
                 "chain": encryption_metadata.chain,
             })
-            
+
             return StepResult.ok(
                 self.name,
                 ciphertext_hash=encryption_metadata.data_to_encrypt_hash,
@@ -161,10 +191,10 @@ class EncryptStep(ConditionalStep):
                 chain=encryption_metadata.chain,
                 encrypted_path=encryption_result.get("ciphertext_path"),
             )
-            
+
         except Exception as e:
             logger.error(f"Encryption failed: {e}")
-            
+
             # Mark job as failed
             error_msg = str(e)
             if self._job_id and context.video_id:
@@ -172,12 +202,12 @@ class EncryptStep(ConditionalStep):
                 await self._update_pipeline_snapshot(
                     context.video_id, "encrypt", 0, status="failed", error=error_msg
                 )
-            
+
             return StepResult.fail(
                 self.name,
                 StepError.from_exception(e, code="ENCRYPT_ERROR"),
             )
-    
+
     async def _encrypt_with_haven_aol(
         self,
         video_path: str,
@@ -206,18 +236,14 @@ class EncryptStep(ConditionalStep):
             )
 
         threshold_raw = gate_condition.get("returnValueTest", {}).get("value", "1")
-        threshold = int(str(threshold_raw))
+        try:
+            threshold = int(str(threshold_raw))
+        except ValueError:
+            # For comparator-based conditions (e.g., owner_wallet comparison),
+            # the value may be an address string, not a number. Default to 1.
+            threshold = 1
 
-        pipeline_cfg = self._config.get("pipeline")
-        config_chain = getattr(pipeline_cfg, "evm_chain", None) if pipeline_cfg is not None else self._config.get("evm_chain")
-        configured_chain = context.options.get("evm_chain") or config_chain
-        if not configured_chain:
-            raise ValueError(
-                "evm_chain is required for Haven-AOL encryption "
-                "(EVM chain where access-control assets live). "
-                "Set --evm-chain or pipeline.evm_chain."
-            )
-        chain = normalize_haven_aol_chain(str(configured_chain))
+        chain = self._get_chain(context)
 
         with open(video_path, "rb") as f:
             plaintext = f.read()
@@ -261,7 +287,7 @@ class EncryptStep(ConditionalStep):
         context: PipelineContext,
     ) -> List[Dict[str, Any]]:
         """Get access control conditions for encryption.
-        
+
         Access conditions define who can decrypt the content.
         They can be based on:
         - Wallet address ownership (owner_only)
@@ -269,20 +295,20 @@ class EncryptStep(ConditionalStep):
         - Token balance (token_gated)
         - Public access (public)
         - Custom conditions provided in context
-        
+
         Args:
             context: Pipeline context with options
-            
+
         Returns:
             List of access control condition dictionaries
-            
+
         Raises:
             ValueError: If unknown access pattern or missing required options
         """
         # Check for explicit conditions in context options
         if "access_conditions" in context.options:
             return context.options["access_conditions"]
-        
+
         # Check for preset patterns
         pipeline_cfg = self._config.get("pipeline")
         config_pattern = getattr(pipeline_cfg, "access_pattern", None) if pipeline_cfg is not None else self._config.get("access_pattern")
@@ -292,7 +318,7 @@ class EncryptStep(ConditionalStep):
                 "access_pattern is required for Haven-AOL encryption. "
                 "Set --access-pattern or pipeline.access_pattern."
             )
-        
+
         if pattern == "owner_only":
             return self._owner_only_conditions(context)
         elif pattern == "nft_gated":
@@ -300,74 +326,79 @@ class EncryptStep(ConditionalStep):
         elif pattern == "token_gated":
             return self._token_gated_conditions(context)
         elif pattern == "public":
-            return self._public_conditions()
+            return self._public_conditions(context)
         else:
             raise ValueError(f"Unknown access pattern: {pattern}")
-    
+
     def _owner_only_conditions(self, context: PipelineContext) -> List[Dict[str, Any]]:
         """Access restricted to wallet owner.
-        
+
+        Uses wallet signature as the access gate, consistent with the
+        Haven-AOL owner_only specification.
+
         Args:
-            context: Pipeline context
-            
+            context: Pipeline context with owner_wallet option and evm_chain
+
         Returns:
             Access control conditions for owner-only access
-            
+
         Raises:
             ValueError: If owner_wallet not configured and cannot be derived
         """
         pipeline_cfg = self._config.get("pipeline")
-        config_owner_wallet = getattr(pipeline_cfg, "owner_wallet", None) if pipeline_cfg is not None else self._config.get("owner_wallet")
-        config_token_contract = getattr(pipeline_cfg, "token_contract", None) if pipeline_cfg is not None else self._config.get("token_contract")
+        config_owner_wallet = (
+            getattr(pipeline_cfg, "owner_wallet", None)
+            if pipeline_cfg is not None
+            else self._config.get("owner_wallet")
+        )
         wallet_address = context.options.get("owner_wallet") or config_owner_wallet
-        token_contract = context.options.get("token_contract") or config_token_contract
-        
+
         if not wallet_address:
             raise ValueError(
                 "owner_wallet required for owner_only pattern. "
                 "Set it in config or context options."
             )
-        if not token_contract:
-            raise ValueError(
-                "token_contract required for owner_only pattern in Haven-AOL mode."
-            )
-        
-        chain = self._config.get("chain", "ethereum")
-        
+
+        chain = self._get_chain(context)
+
         return [{
-            "contractAddress": token_contract,
+            "contractAddress": wallet_address,
             "standardContractType": "",
             "chain": chain,
             "method": "",
-            "parameters": [":userAddress"],
+            "parameters": [],
             "returnValueTest": {
-                "comparator": ">=",
-                "value": "1",
+                "comparator": "=",
+                "value": wallet_address,
             },
             "ownerWallet": wallet_address,
         }]
-    
+
     def _nft_gated_conditions(self, context: PipelineContext) -> List[Dict[str, Any]]:
         """Access restricted to NFT holders.
-        
+
         Args:
             context: Pipeline context with nft_contract option
-            
+
         Returns:
             Access control conditions for NFT-gated access
-            
+
         Raises:
             ValueError: If nft_contract not provided
         """
         pipeline_cfg = self._config.get("pipeline")
-        config_nft_contract = getattr(pipeline_cfg, "nft_contract", None) if pipeline_cfg is not None else self._config.get("nft_contract")
+        config_nft_contract = (
+            getattr(pipeline_cfg, "nft_contract", None)
+            if pipeline_cfg is not None
+            else self._config.get("nft_contract")
+        )
         contract = context.options.get("nft_contract") or config_nft_contract
         if not contract:
             raise ValueError("nft_contract required for nft_gated pattern. "
                            "Set it in context options or config.")
-        
-        chain = self._config.get("chain", "ethereum")
-        
+
+        chain = self._get_chain(context)
+
         return [{
             "contractAddress": contract,
             "standardContractType": "ERC721",
@@ -379,39 +410,51 @@ class EncryptStep(ConditionalStep):
                 "value": "0",
             },
         }]
-    
+
     def _token_gated_conditions(self, context: PipelineContext) -> List[Dict[str, Any]]:
         """Access restricted to token holders.
-        
+
         Requires a minimum token balance to decrypt.
-        
+
         Args:
             context: Pipeline context with token_contract and min_balance options
-            
+
         Returns:
             Access control conditions for token-gated access
-            
+
         Raises:
             ValueError: If token_contract or min_balance not provided
         """
         pipeline_cfg = self._config.get("pipeline")
-        config_token_contract = getattr(pipeline_cfg, "token_contract", None) if pipeline_cfg is not None else self._config.get("token_contract")
+        config_token_contract = (
+            getattr(pipeline_cfg, "token_contract", None)
+            if pipeline_cfg is not None
+            else self._config.get("token_contract")
+        )
         contract = context.options.get("token_contract") or config_token_contract
         if not contract:
             raise ValueError("token_contract required for token_gated pattern")
-        
-        config_min_balance = getattr(pipeline_cfg, "min_balance", None) if pipeline_cfg is not None else self._config.get("min_balance")
+
+        config_min_balance = (
+            getattr(pipeline_cfg, "min_balance", None)
+            if pipeline_cfg is not None
+            else self._config.get("min_balance")
+        )
         min_balance = context.options.get("min_balance") or config_min_balance
         if min_balance is None:
             raise ValueError("min_balance required for token_gated pattern")
-        chain = self._config.get("chain", "ethereum")
-        
+        chain = self._get_chain(context)
+
         # Determine token standard
-        config_token_standard = getattr(pipeline_cfg, "token_standard", None) if pipeline_cfg is not None else self._config.get("token_standard")
+        config_token_standard = (
+            getattr(pipeline_cfg, "token_standard", None)
+            if pipeline_cfg is not None
+            else self._config.get("token_standard")
+        )
         token_standard = context.options.get("token_standard") or config_token_standard
         if token_standard is None:
             raise ValueError("token_standard required for token_gated pattern")
-        
+
         if token_standard == "ERC20":
             return [{
                 "contractAddress": contract,
@@ -439,19 +482,22 @@ class EncryptStep(ConditionalStep):
             }]
         else:
             raise ValueError(f"Unsupported token standard: {token_standard}")
-    
-    def _public_conditions(self) -> List[Dict[str, Any]]:
+
+    def _public_conditions(self, context: PipelineContext) -> List[Dict[str, Any]]:
         """Public access conditions - anyone can decrypt.
-        
+
         This creates a condition that always returns true.
         Note: In practice, this may still require a valid wallet signature
         but doesn't restrict based on ownership.
-        
+
+        Args:
+            context: Pipeline context with evm_chain option
+
         Returns:
             Access control conditions allowing public access
         """
-        chain = self._config.get("chain", "ethereum")
-        
+        chain = self._get_chain(context)
+
         return [{
             "contractAddress": "",
             "standardContractType": "",
@@ -463,14 +509,14 @@ class EncryptStep(ConditionalStep):
                 "value": "true",
             },
         }]
-    
+
     async def _save_encryption_metadata(
         self,
         video_id: int,
         metadata: EncryptionMetadata,
     ) -> None:
         """Save encryption metadata to database.
-        
+
         Args:
             video_id: ID of the video record
             metadata: Encryption metadata to save
@@ -478,11 +524,11 @@ class EncryptStep(ConditionalStep):
         try:
             from haven_cli.database.connection import get_db_session
             from haven_cli.database.repositories import VideoRepository
-            
+
             with get_db_session() as session:
                 repo = VideoRepository(session)
                 video = repo.get_by_id(video_id)
-                
+
                 if video:
                     repo.update(
                         video,
@@ -492,17 +538,17 @@ class EncryptStep(ConditionalStep):
                     logger.info(f"Saved encryption metadata for video {video_id}")
                 else:
                     logger.warning(f"Video {video_id} not found, cannot save encryption metadata")
-                    
+
         except Exception as e:
             # Log error but don't fail the step - encryption succeeded
             logger.error(f"Failed to save encryption metadata to database: {e}")
-    
+
     def _metadata_to_json(self, metadata: EncryptionMetadata) -> str:
         """Convert encryption metadata to JSON string.
-        
+
         Args:
             metadata: Encryption metadata
-            
+
         Returns:
             JSON string representation
         """
@@ -520,15 +566,15 @@ class EncryptStep(ConditionalStep):
             "accessControlConditions": metadata.access_control_conditions,  # camelCase
             "chain": metadata.chain,
         })
-    
+
     async def on_skip(self, context: PipelineContext, reason: str) -> None:
         """Handle step skip - encryption not requested."""
         logger.debug(f"Encrypt step skipped: {reason}")
-        
+
         # Create a skipped EncryptionJob record so TUI shows correct status
         if context.video_id:
             await self._create_skipped_encryption_job(context.video_id, reason)
-    
+
     async def on_error(
         self,
         context: PipelineContext,
@@ -536,29 +582,29 @@ class EncryptStep(ConditionalStep):
     ) -> None:
         """Handle encryption error."""
         logger.error(f"Encryption step failed: {error.message if error else 'Unknown error'}")
-    
+
     # =========================================================================
     # Task 12: Job tracking helper methods
     # =========================================================================
-    
+
     async def _create_encryption_job(
         self,
         video_id: int,
         bytes_total: int,
     ) -> Optional[int]:
         """Create an EncryptionJob record for tracking.
-        
+
         Args:
             video_id: Video ID
             bytes_total: Total bytes to encrypt
-            
+
         Returns:
             Job ID or None if creation failed
         """
         try:
             from haven_cli.database.connection import get_db_session
             from haven_cli.database.repositories import EncryptionJobRepository
-            
+
             with get_db_session() as session:
                 repo = EncryptionJobRepository(session)
                 job = repo.create(
@@ -571,29 +617,29 @@ class EncryptStep(ConditionalStep):
         except Exception as e:
             logger.warning(f"Failed to create EncryptionJob: {e}")
             return None
-    
+
     async def _create_skipped_encryption_job(
         self,
         video_id: int,
         reason: str,
     ) -> Optional[int]:
         """Create an EncryptionJob record marked as skipped.
-        
+
         This is called when encryption is skipped due to configuration
         (encrypt=false) so the TUI correctly shows encryption as skipped
         rather than pending.
-        
+
         Args:
             video_id: Video ID
-            reason: Reason for skipping (e.g., "encrypt is disabled")
-            
+            reason: Reason for skipping (e.g., "encryption disabled")
+
         Returns:
             Job ID or None if creation failed
         """
         try:
             from haven_cli.database.connection import get_db_session
             from haven_cli.database.repositories import EncryptionJobRepository
-            
+
             with get_db_session() as session:
                 repo = EncryptionJobRepository(session)
                 job = repo.create(
@@ -609,7 +655,7 @@ class EncryptStep(ConditionalStep):
         except Exception as e:
             logger.warning(f"Failed to create skipped EncryptionJob: {e}")
             return None
-    
+
     async def _update_job_progress(
         self,
         video_id: int,
@@ -619,7 +665,7 @@ class EncryptStep(ConditionalStep):
         encrypt_speed: int = 0,
     ) -> None:
         """Update EncryptionJob progress.
-        
+
         Args:
             video_id: Video ID
             bytes_processed: Bytes encrypted so far
@@ -630,12 +676,12 @@ class EncryptStep(ConditionalStep):
         try:
             from haven_cli.database.connection import get_db_session
             from haven_cli.database.repositories import EncryptionJobRepository, PipelineSnapshotRepository
-            
+
             with get_db_session() as session:
                 job_repo = EncryptionJobRepository(session)
                 if self._job_id:
                     job_repo.update_progress(self._job_id, bytes_processed, encrypt_speed)
-                
+
                 # Also update pipeline snapshot
                 snapshot_repo = PipelineSnapshotRepository(session)
                 snapshot_repo.update_stage(
@@ -651,14 +697,14 @@ class EncryptStep(ConditionalStep):
                 )
         except Exception as e:
             logger.debug(f"Failed to update EncryptionJob progress: {e}")
-    
+
     async def _complete_encryption_job(
         self,
         job_id: int,
         encrypted_ref: Optional[str] = None,
     ) -> None:
         """Mark EncryptionJob as completed.
-        
+
         Args:
             job_id: Job ID
             encrypted_ref: Optional encrypted reference/hash
@@ -666,17 +712,17 @@ class EncryptStep(ConditionalStep):
         try:
             from haven_cli.database.connection import get_db_session
             from haven_cli.database.repositories import EncryptionJobRepository
-            
+
             with get_db_session() as session:
                 repo = EncryptionJobRepository(session)
                 repo.update_status(job_id, "completed", encrypted_ref=encrypted_ref)
                 logger.debug(f"Completed EncryptionJob {job_id}")
         except Exception as e:
             logger.warning(f"Failed to complete EncryptionJob: {e}")
-    
+
     async def _fail_encryption_job(self, job_id: int, error_message: str) -> None:
         """Mark EncryptionJob as failed.
-        
+
         Args:
             job_id: Job ID
             error_message: Error description
@@ -684,14 +730,14 @@ class EncryptStep(ConditionalStep):
         try:
             from haven_cli.database.connection import get_db_session
             from haven_cli.database.repositories import EncryptionJobRepository
-            
+
             with get_db_session() as session:
                 repo = EncryptionJobRepository(session)
                 repo.update_status(job_id, "failed", error_message=error_message)
                 logger.debug(f"Failed EncryptionJob {job_id}: {error_message}")
         except Exception as e:
             logger.warning(f"Failed to mark EncryptionJob as failed: {e}")
-    
+
     async def _update_pipeline_snapshot(
         self,
         video_id: int,
@@ -701,7 +747,7 @@ class EncryptStep(ConditionalStep):
         error: Optional[str] = None,
     ) -> None:
         """Update PipelineSnapshot for TUI dashboard.
-        
+
         Args:
             video_id: Video ID
             stage: Current stage name
@@ -712,10 +758,10 @@ class EncryptStep(ConditionalStep):
         try:
             from haven_cli.database.connection import get_db_session
             from haven_cli.database.repositories import PipelineSnapshotRepository
-            
+
             with get_db_session() as session:
                 repo = PipelineSnapshotRepository(session)
-                
+
                 if status == "failed" and error:
                     repo.mark_error(video_id, stage, error)
                 elif status == "completed":

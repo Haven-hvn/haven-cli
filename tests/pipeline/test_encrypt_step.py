@@ -2,39 +2,45 @@
 
 Tests the Haven-AOL encryption step including:
 - Access condition generation for different patterns
-- JS bridge integration
+- Real encryption via encrypt_bytes (no JS bridge mock)
 - Error handling
 - Database persistence
 """
 
+import hashlib
 import json
+import os
 import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from haven_cli.crypto.haven_aol_local import GateParams, encrypt_bytes, decrypt_bytes
 from haven_cli.pipeline.context import EncryptionMetadata, PipelineContext
 from haven_cli.pipeline.results import StepResult
 from haven_cli.pipeline.steps.encrypt_step import EncryptStep
 
+# Valid 40-hex address used in tests (matches the contract address used in encryption tests)
+TEST_ADDRESS = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+
 
 class TestEncryptStepBasics:
     """Basic tests for EncryptStep."""
-    
+
     def test_step_name(self):
         """Test step name is correct."""
         step = EncryptStep()
         assert step.name == "encrypt"
-    
+
     def test_enabled_option(self):
         """Test enabled option is 'encrypt'."""
         step = EncryptStep()
         assert step.enabled_option == "encrypt"
-    
+
     def test_default_enabled(self):
         """Test encryption is disabled by default."""
         step = EncryptStep()
         assert step.default_enabled is False
-    
+
     def test_max_retries(self):
         """Test max retries is set correctly."""
         step = EncryptStep()
@@ -43,543 +49,515 @@ class TestEncryptStepBasics:
 
 class TestEncryptStepAccessConditions:
     """Tests for access condition generation."""
-    
+
     def test_owner_only_conditions(self):
         """Test owner-only access conditions."""
-        step = EncryptStep(config={"owner_wallet": "0x1234567890abcdef", "chain": "ethereum"})
-        context = PipelineContext(source_path=Path("/tmp/test.mp4"), options={})
-        
+        step = EncryptStep(config={"evm_chain": "ethereum", "owner_wallet": TEST_ADDRESS})
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={"evm_chain": "ethereum"},
+        )
+
         conditions = step._owner_only_conditions(context)
-        
+
         assert len(conditions) == 1
-        assert conditions[0]["chain"] == "ethereum"
-        assert conditions[0]["returnValueTest"]["value"] == "0x1234567890abcdef"
-        assert conditions[0]["parameters"] == [":userAddress"]
-    
+        # "ethereum" normalizes to "EthMainnet"
+        assert conditions[0]["chain"] == "EthMainnet"
+        assert conditions[0]["returnValueTest"]["value"] == TEST_ADDRESS
+        assert conditions[0]["parameters"] == []
+        assert conditions[0]["ownerWallet"] == TEST_ADDRESS
+        assert conditions[0]["contractAddress"] == TEST_ADDRESS
+
     def test_owner_only_conditions_from_context(self):
         """Test owner-only conditions from context options."""
-        step = EncryptStep(config={"chain": "ethereum"})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            options={"owner_wallet": "0xabcdef1234567890"}
+            options={
+                "owner_wallet": "0xabcdef1234567890abcdef1234567890abcdef12",
+                "evm_chain": "ethereum",
+            },
         )
-        
+
         conditions = step._owner_only_conditions(context)
-        
-        assert conditions[0]["returnValueTest"]["value"] == "0xabcdef1234567890"
-    
+
+        assert conditions[0]["returnValueTest"]["value"] == "0xabcdef1234567890abcdef1234567890abcdef12"
+
     def test_owner_only_conditions_missing_wallet(self):
         """Test error when owner wallet is missing."""
-        step = EncryptStep(config={})
-        context = PipelineContext(source_path=Path("/tmp/test.mp4"), options={})
-        
-        with pytest.raises(ValueError, match="owner_wallet required"):
-            step._owner_only_conditions(context)
-    
-    def test_nft_gated_conditions(self):
-        """Test NFT-gated access conditions."""
-        step = EncryptStep(config={"chain": "ethereum"})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            options={"nft_contract": "0xNFTContractAddress"}
+            options={"evm_chain": "ethereum"},
         )
-        
+
+        with pytest.raises(ValueError, match="owner_wallet required"):
+            step._owner_only_conditions(context)
+
+    def test_nft_gated_conditions(self):
+        """Test NFT-gated access conditions."""
+        step = EncryptStep(config={"evm_chain": "ethereum"})
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={
+                "nft_contract": "0xNFTContractAddress1234567890abcdef",
+                "evm_chain": "ethereum",
+            },
+        )
+
         conditions = step._nft_gated_conditions(context)
-        
+
         assert len(conditions) == 1
-        assert conditions[0]["contractAddress"] == "0xNFTContractAddress"
+        assert conditions[0]["contractAddress"] == "0xNFTContractAddress1234567890abcdef"
         assert conditions[0]["standardContractType"] == "ERC721"
         assert conditions[0]["method"] == "balanceOf"
         assert conditions[0]["returnValueTest"]["comparator"] == ">"
         assert conditions[0]["returnValueTest"]["value"] == "0"
-    
+
     def test_nft_gated_conditions_missing_contract(self):
         """Test error when NFT contract is missing."""
-        step = EncryptStep(config={})
-        context = PipelineContext(source_path=Path("/tmp/test.mp4"), options={})
-        
+        step = EncryptStep(config={"evm_chain": "ethereum"})
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={"evm_chain": "ethereum"},
+        )
+
         with pytest.raises(ValueError, match="nft_contract required"):
             step._nft_gated_conditions(context)
-    
+
     def test_token_gated_conditions_erc20(self):
         """Test token-gated access conditions for ERC20."""
-        step = EncryptStep(config={"chain": "ethereum"})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={
-                "token_contract": "0xTokenContractAddress",
+                "token_contract": "0xTokenContractAddress1234567890abcdef",
                 "min_balance": "100",
-            }
+                "token_standard": "ERC20",
+                "evm_chain": "ethereum",
+            },
         )
-        
+
         conditions = step._token_gated_conditions(context)
-        
+
         assert len(conditions) == 1
-        assert conditions[0]["contractAddress"] == "0xTokenContractAddress"
+        assert conditions[0]["contractAddress"] == "0xTokenContractAddress1234567890abcdef"
         assert conditions[0]["standardContractType"] == "ERC20"
         assert conditions[0]["returnValueTest"]["comparator"] == ">="
         assert conditions[0]["returnValueTest"]["value"] == "100"
-    
+
     def test_token_gated_conditions_erc721(self):
         """Test token-gated access conditions for ERC721."""
-        step = EncryptStep(config={"chain": "ethereum", "token_standard": "ERC721"})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={
-                "token_contract": "0xTokenContractAddress",
+                "token_contract": "0xTokenContractAddress1234567890abcdef",
                 "min_balance": "5",
-            }
+                "token_standard": "ERC721",
+                "evm_chain": "ethereum",
+            },
         )
-        
+
         conditions = step._token_gated_conditions(context)
-        
+
         assert conditions[0]["standardContractType"] == "ERC721"
         assert conditions[0]["returnValueTest"]["value"] == "5"
-    
+
     def test_token_gated_conditions_missing_contract(self):
         """Test error when token contract is missing."""
-        step = EncryptStep(config={})
-        context = PipelineContext(source_path=Path("/tmp/test.mp4"), options={})
-        
-        with pytest.raises(ValueError, match="token_contract required"):
-            step._token_gated_conditions(context)
-    
-    def test_token_gated_conditions_unsupported_standard(self):
-        """Test error for unsupported token standard."""
-        step = EncryptStep(config={"token_standard": "ERC1155"})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            options={"token_contract": "0xTokenContractAddress"}
+            options={"evm_chain": "ethereum"},
         )
-        
+
+        with pytest.raises(ValueError, match="token_contract required"):
+            step._token_gated_conditions(context)
+
+    def test_token_gated_conditions_unsupported_standard(self):
+        """Test error for unsupported token standard."""
+        step = EncryptStep(config={"evm_chain": "ethereum", "token_standard": "ERC1155"})
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={
+                "token_contract": "0xTokenContractAddress1234567890abcdef",
+                "min_balance": "10",
+                "token_standard": "ERC1155",
+                "evm_chain": "ethereum",
+            },
+        )
+
         with pytest.raises(ValueError, match="Unsupported token standard"):
             step._token_gated_conditions(context)
-    
+
     def test_public_conditions(self):
         """Test public access conditions."""
-        step = EncryptStep(config={"chain": "ethereum"})
-        
-        conditions = step._public_conditions()
-        
+        step = EncryptStep(config={"evm_chain": "ethereum"})
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={"evm_chain": "ethereum"},
+        )
+
+        conditions = step._public_conditions(context)
+
         assert len(conditions) == 1
         assert conditions[0]["returnValueTest"]["value"] == "true"
-    
+
     def test_get_access_conditions_explicit(self):
         """Test getting explicit access conditions from context."""
         step = EncryptStep(config={})
         explicit_conditions = [{"custom": "condition"}]
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            options={"access_conditions": explicit_conditions}
+            options={"access_conditions": explicit_conditions},
         )
-        
+
         conditions = step._get_access_conditions(context)
-        
+
         assert conditions == explicit_conditions
-    
+
     def test_get_access_conditions_owner_only_pattern(self):
         """Test owner_only access pattern."""
-        step = EncryptStep(config={"owner_wallet": "0x123", "chain": "ethereum"})
+        step = EncryptStep(config={"evm_chain": "ethereum", "owner_wallet": TEST_ADDRESS})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            options={"access_pattern": "owner_only"}
+            options={"access_pattern": "owner_only", "evm_chain": "ethereum"},
         )
-        
+
         conditions = step._get_access_conditions(context)
-        
+
         assert len(conditions) == 1
-        assert conditions[0]["returnValueTest"]["value"] == "0x123"
-    
+        assert conditions[0]["returnValueTest"]["value"] == TEST_ADDRESS
+
     def test_get_access_conditions_nft_gated_pattern(self):
         """Test nft_gated access pattern."""
-        step = EncryptStep(config={"chain": "ethereum"})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={
                 "access_pattern": "nft_gated",
                 "nft_contract": "0xNFT",
-            }
+                "evm_chain": "ethereum",
+            },
         )
-        
+
         conditions = step._get_access_conditions(context)
-        
+
         assert len(conditions) == 1
         assert conditions[0]["standardContractType"] == "ERC721"
-    
+
     def test_get_access_conditions_token_gated_pattern(self):
         """Test token_gated access pattern."""
-        step = EncryptStep(config={"chain": "ethereum"})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={
                 "access_pattern": "token_gated",
                 "token_contract": "0xToken",
-            }
+                "min_balance": "100",
+                "token_standard": "ERC20",
+                "evm_chain": "ethereum",
+            },
         )
-        
+
         conditions = step._get_access_conditions(context)
-        
+
         assert len(conditions) == 1
         assert conditions[0]["standardContractType"] == "ERC20"
-    
+
     def test_get_access_conditions_public_pattern(self):
         """Test public access pattern."""
-        step = EncryptStep(config={"chain": "ethereum"})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            options={"access_pattern": "public"}
+            options={"access_pattern": "public", "evm_chain": "ethereum"},
         )
-        
+
         conditions = step._get_access_conditions(context)
-        
+
         assert conditions[0]["returnValueTest"]["value"] == "true"
-    
+
     def test_get_access_conditions_unknown_pattern(self):
         """Test error for unknown access pattern."""
-        step = EncryptStep(config={})
+        step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            options={"access_pattern": "unknown_pattern"}
+            options={"access_pattern": "unknown_pattern", "evm_chain": "ethereum"},
         )
-        
+
         with pytest.raises(ValueError, match="Unknown access pattern"):
             step._get_access_conditions(context)
-    
+
     def test_get_access_conditions_default_pattern(self):
-        """Test default access pattern is owner_only."""
-        step = EncryptStep(config={"owner_wallet": "0x123", "chain": "ethereum"})
-        context = PipelineContext(source_path=Path("/tmp/test.mp4"), options={})
-        
+        """Test default config access_pattern falls through to owner_only."""
+        step = EncryptStep(config={
+            "evm_chain": "ethereum",
+            "owner_wallet": TEST_ADDRESS,
+            "access_pattern": "owner_only",
+        })
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={"evm_chain": "ethereum"},
+        )
+
         conditions = step._get_access_conditions(context)
-        
-        # Should default to owner_only
-        assert conditions[0]["returnValueTest"]["value"] == "0x123"
+
+        assert conditions[0]["returnValueTest"]["value"] == TEST_ADDRESS
+
+    def test_chain_resolved_from_context_options_first(self):
+        """Test that evm_chain in context options takes priority over config."""
+        step = EncryptStep(config={"chain": "ethereum", "owner_wallet": TEST_ADDRESS})
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            options={"evm_chain": "BaseMainnet"},
+        )
+
+        conditions = step._owner_only_conditions(context)
+
+        # Should use BaseMainnet from context, not ethereum from config
+        assert conditions[0]["chain"] == "BaseMainnet"
 
 
 class TestEncryptStepEncryption:
-    """Tests for the encryption process."""
-    
-    @pytest.mark.asyncio
-    async def test_get_js_bridge(self):
-        """Test getting JS bridge from manager."""
-        step = EncryptStep()
-        
-        mock_bridge = MagicMock()
-        mock_bridge.is_ready = True
-        
-        with patch("haven_cli.pipeline.steps.encrypt_step.JSBridgeManager") as mock_mgr:
-            mock_instance = MagicMock()
-            mock_instance.get_bridge = AsyncMock(return_value=mock_bridge)
-            mock_mgr.get_instance.return_value = mock_instance
-            
-            bridge = await step._get_js_bridge()
-            
-            assert bridge is mock_bridge
-            mock_mgr.get_instance.assert_called_once()
-    
+    """Tests for the encryption process using the real encrypt_bytes path."""
+
     @pytest.mark.asyncio
     async def test_encrypt_with_haven_aol_success(self, tmp_path, monkeypatch):
-        """Test successful encryption via Haven-AOL."""
+        """Test successful encryption via Haven-AOL using real encrypt_bytes."""
         # Set a test private key
         monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        
-        step = EncryptStep(config={"chain": "ethereum"})
-        
+
+        step = EncryptStep(config={"evm_chain": "ethereum"})
+
         # Create a test video file
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test video content")
-        
+
         # Create mock context
         context = PipelineContext(
             source_path=video_file,
             video_id=1,
+            options={"evm_chain": "ethereum"},
         )
-        
-        # Mock the bridge
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # bridge connect response
-            {
-                "encryptedFilePath": str(video_file) + ".encrypted",
-                "metadataPath": str(video_file) + ".encrypted.meta.json",
-                "metadata": {
-                    "keyHash": "0xhash123",
-                    "version": "hybrid-v1",
-                },
-                "originalSize": 18,
-                "encryptedSize": 34,
-            },  # encrypt response
-        ])
-        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
-        
-        access_conditions = [{"conditionType": "evmBasic"}]
-        
-        result = await step._encrypt_with_lit(
-            mock_bridge,
+
+        # Access conditions with a valid contract address
+        access_conditions = [{
+            "contractAddress": TEST_ADDRESS,
+            "chain": "EthMainnet",
+            "returnValueTest": {"value": "1"},
+            "cid": "sha256:abc123",
+        }]
+
+        result = await step._encrypt_with_haven_aol(
             str(video_file),
             access_conditions,
             context,
         )
-        
+
         assert result["ciphertext_path"] == str(video_file) + ".encrypted"
-        assert result["data_to_encrypt_hash"] == "0xhash123"
-        assert result["chain"] == "ethereum"
+        assert result["data_to_encrypt_hash"] is not None
+        assert result["chain"] == "EthMainnet"
         assert "original_hash" in result
-        
-        # Verify bridge calls
-        assert mock_bridge.call.call_count == 2
-        
-        # Check connect call
-        connect_call = mock_bridge.call.call_args_list[0]
-        assert connect_call[0][0] == "encrypt.connect"
-        assert connect_call[0][1]["network"] == "datil-dev"
-        
-        # Check encrypt call
-        encrypt_call = mock_bridge.call.call_args_list[1]
-        assert encrypt_call[0][0] == "encrypt.file"
-        assert encrypt_call[0][1]["chain"] == "ethereum"
-        assert encrypt_call[0][1]["onProgress"] == True
-    
+        assert result["encrypted_key"] is not None
+        assert result["key_hash"] is not None
+        assert result["iv"] is not None
+
+        # Verify encrypted file was created
+        assert (video_file.with_suffix(".mp4.encrypted")).exists()
+
     @pytest.mark.asyncio
-    async def test_encrypt_with_haven_aol_connection_failure(self, tmp_path):
-        """Test handling of Lit connection failure."""
-        step = EncryptStep(config={"chain": "ethereum"})
-        
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"test content")
-        
-        # Create mock context
-        context = PipelineContext(
-            source_path=video_file,
-            video_id=1,
-        )
-        
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=RuntimeError("Connection failed"))
-        
-        with pytest.raises(RuntimeError):
-            await step._encrypt_with_lit(
-                mock_bridge,
-                str(video_file),
-                [{}],
-                context,
-            )
-    
-    @pytest.mark.asyncio
-    async def test_encrypt_with_haven_aol_encryption_failure(self, tmp_path, monkeypatch):
-        """Test handling of Lit encryption failure."""
-        # Set a test private key
-        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        
-        step = EncryptStep(config={"chain": "ethereum"})
-        
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"test content")
-        
-        # Create mock context
-        context = PipelineContext(
-            source_path=video_file,
-            video_id=1,
-        )
-        
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # connect succeeds
-            RuntimeError("Encryption failed"),  # encrypt fails
-        ])
-        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
-        
-        with pytest.raises(RuntimeError, match="Encryption failed"):
-            await step._encrypt_with_lit(
-                mock_bridge,
-                str(video_file),
-                [{}],
-                context,
-            )
-    
-    @pytest.mark.asyncio
-    async def test_encrypt_with_haven_aol_file_not_found(self, tmp_path):
+    async def test_encrypt_with_haven_aol_file_not_found(self):
         """Test handling of missing video file."""
-        step = EncryptStep(config={"chain": "ethereum"})
-        
-        # Create mock context with non-existent file
+        step = EncryptStep(config={"evm_chain": "ethereum"})
+
         context = PipelineContext(
-            source_path=tmp_path / "nonexistent.mp4",
+            source_path=Path("/tmp/nonexistent.mp4"),
             video_id=1,
+            options={"evm_chain": "ethereum"},
         )
-        
-        # Use AsyncMock to properly mock async calls
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(return_value=None)
-        
+
+        access_conditions = [{
+            "contractAddress": TEST_ADDRESS,
+            "chain": "EthMainnet",
+            "returnValueTest": {"value": "1"},
+            "cid": "sha256:abc123",
+        }]
+
         with pytest.raises(FileNotFoundError, match="Video file not found"):
-            await step._encrypt_with_lit(
-                mock_bridge,
+            await step._encrypt_with_haven_aol(
                 "/nonexistent/path/video.mp4",
-                [{}],
+                access_conditions,
                 context,
             )
-    
+
     @pytest.mark.asyncio
-    async def test_encrypt_large_file(self, tmp_path, monkeypatch):
-        """Test encryption of large files uses chunked method."""
-        # Set a test private key
-        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        
-        step = EncryptStep(config={"chain": "ethereum"})
-        
-        # Create a large test file (> 10MB)
-        video_file = tmp_path / "large.mp4"
-        video_file.write_bytes(b"x" * (11 * 1024 * 1024))
-        
-        # Create mock context
+    async def test_encrypt_with_haven_aol_missing_private_key(self, tmp_path, monkeypatch):
+        """Test handling of missing private key."""
+        step = EncryptStep(config={"evm_chain": "ethereum"})
+
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"test content")
+
         context = PipelineContext(
             source_path=video_file,
             video_id=1,
+            options={"evm_chain": "ethereum"},
         )
-        
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # connect
-            {
-                "encryptedFilePath": str(video_file) + ".encrypted",
-                "metadataPath": str(video_file) + ".encrypted.meta.json",
-                "metadata": {
-                    "keyHash": "0xlargehash",
-                    "version": "hybrid-v1",
-                },
-                "originalSize": 11 * 1024 * 1024,
-                "encryptedSize": 11 * 1024 * 1024 + 100,
-            },  # encrypt
-        ])
-        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
-        
-        result = await step._encrypt_with_lit(
-            mock_bridge,
-            str(video_file),
-            [{}],
-            context,
+
+        # Ensure no private key is set
+        with patch.dict(os.environ, {}, clear=True):
+            access_conditions = [{
+                "contractAddress": TEST_ADDRESS,
+                "chain": "EthMainnet",
+                "returnValueTest": {"value": "1"},
+                "cid": "sha256:abc123",
+            }]
+
+            with pytest.raises(RuntimeError, match="Private key required"):
+                await step._encrypt_with_haven_aol(
+                    str(video_file),
+                    access_conditions,
+                    context,
+                )
+
+    @pytest.mark.asyncio
+    async def test_encrypt_with_haven_aol_missing_contract(self, tmp_path, monkeypatch):
+        """Test handling of missing token contract."""
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+        step = EncryptStep(config={"evm_chain": "ethereum"})
+
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"test content")
+
+        context = PipelineContext(
+            source_path=video_file,
+            video_id=1,
+            options={"evm_chain": "ethereum"},
         )
-        
-        assert result["data_to_encrypt_hash"] == "0xlargehash"
-        assert result["ciphertext_path"] == str(video_file) + ".encrypted"
+
+        # Empty access conditions (no contract address)
+        access_conditions = [{}]
+
+        with pytest.raises(ValueError, match="token_contract/contractAddress is required"):
+            await step._encrypt_with_haven_aol(
+                str(video_file),
+                access_conditions,
+                context,
+            )
+
+    @pytest.mark.asyncio
+    async def test_encrypt_with_haven_aol_missing_chain(self, tmp_path, monkeypatch):
+        """Test handling of missing evm_chain."""
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+        step = EncryptStep()
+
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"test content")
+
+        context = PipelineContext(
+            source_path=video_file,
+            video_id=1,
+            options={},  # No evm_chain
+        )
+
+        access_conditions = [{
+            "contractAddress": TEST_ADDRESS,
+            "chain": "EthMainnet",
+            "returnValueTest": {"value": "1"},
+            "cid": "sha256:abc123",
+        }]
+
+        with pytest.raises(ValueError, match="evm_chain is required"):
+            await step._encrypt_with_haven_aol(
+                str(video_file),
+                access_conditions,
+                context,
+            )
 
 
 class TestEncryptStepProcess:
     """Tests for the main process method."""
-    
+
     @pytest.mark.asyncio
     async def test_process_success(self, tmp_path, monkeypatch):
         """Test successful encryption process."""
         # Set a test private key
         monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        
+
         step = EncryptStep(config={
-            "owner_wallet": "0x123",
-            "chain": "ethereum",
+            "evm_chain": "ethereum",
+            "access_pattern": "owner_only",
+            "owner_wallet": TEST_ADDRESS,
         })
-        
+
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
-        
+
         context = PipelineContext(
             source_path=video_file,
-            options={"encrypt": True},
+            options={"encrypt": True, "evm_chain": "ethereum", "access_pattern": "owner_only"},
             video_id=42,
         )
-        
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # connect
-            {
-                "encryptedFilePath": str(video_file) + ".encrypted",
-                "metadataPath": str(video_file) + ".encrypted.meta.json",
-                "metadata": {
-                    "keyHash": "0xhash",
-                    "version": "hybrid-v1",
-                },
-                "originalSize": 12,
-                "encryptedSize": 28,
-            },  # encrypt
-        ])
-        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
-        
-        with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
-            with patch.object(step, '_save_encryption_metadata', new_callable=AsyncMock):
-                result = await step.process(context)
-        
+
+        with patch.object(step, '_save_encryption_metadata', new_callable=AsyncMock):
+            result = await step.process(context)
+
         assert result.success is True
-        assert result.data["ciphertext_hash"] == "0xhash"
-        assert result.data["chain"] == "ethereum"
+        assert result.data["chain"] == "EthMainnet"
         assert context.encryption_metadata is not None
         assert context.encrypted_video_path == str(video_file) + ".encrypted"
-    
+
     @pytest.mark.asyncio
     async def test_process_without_video_id(self, tmp_path, monkeypatch):
         """Test encryption without video ID (skips database save)."""
         # Set a test private key
         monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        
+
         step = EncryptStep(config={
-            "owner_wallet": "0x123",
-            "chain": "ethereum",
+            "evm_chain": "ethereum",
+            "access_pattern": "owner_only",
+            "owner_wallet": TEST_ADDRESS,
         })
-        
+
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
-        
+
         context = PipelineContext(
             source_path=video_file,
-            options={"encrypt": True},
+            options={"encrypt": True, "evm_chain": "ethereum", "access_pattern": "owner_only"},
             video_id=None,  # No video ID
         )
-        
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,
-            {
-                "encryptedFilePath": str(video_file) + ".encrypted",
-                "metadataPath": str(video_file) + ".encrypted.meta.json",
-                "metadata": {
-                    "keyHash": "0xhash",
-                    "version": "hybrid-v1",
-                },
-                "originalSize": 12,
-                "encryptedSize": 28,
-            },
-        ])
-        mock_bridge.on_notification = MagicMock(return_value=lambda: None)
-        
-        with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
-            # Should not call save_encryption_metadata
-            with patch.object(step, '_save_encryption_metadata') as mock_save:
-                result = await step.process(context)
-                mock_save.assert_not_called()
-        
+
+        with patch.object(step, '_save_encryption_metadata') as mock_save:
+            result = await step.process(context)
+            mock_save.assert_not_called()
+
         assert result.success is True
-    
+
     @pytest.mark.asyncio
     async def test_process_encryption_failure(self, tmp_path):
-        """Test handling of encryption failure."""
+        """Test handling of encryption failure (missing private key)."""
         step = EncryptStep(config={
-            "owner_wallet": "0x123",
-            "chain": "ethereum",
+            "owner_wallet": TEST_ADDRESS,
+            "evm_chain": "ethereum",
+            "access_pattern": "owner_only",
         })
-        
+
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
-        
+
         context = PipelineContext(
             source_path=video_file,
-            options={"encrypt": True},
+            options={"encrypt": True, "evm_chain": "ethereum", "access_pattern": "owner_only"},
         )
-        
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=RuntimeError("Encryption failed"))
-        
-        with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
+
+        # No private key set - should fail
+        with patch.dict(os.environ, {}, clear=True):
             result = await step.process(context)
-        
+
         assert result.success is False
         assert result.failed is True
         assert result.error is not None
@@ -588,133 +566,133 @@ class TestEncryptStepProcess:
 
 class TestEncryptStepDatabase:
     """Tests for database persistence."""
-    
+
     @pytest.mark.asyncio
     async def test_save_encryption_metadata(self):
         """Test saving encryption metadata to database."""
         step = EncryptStep()
-        
+
         metadata = EncryptionMetadata(
             ciphertext="/path/to/encrypted.enc",
             data_to_encrypt_hash="0xhash123",
             access_control_conditions=[{"conditionType": "evmBasic"}],
             chain="ethereum",
         )
-        
+
         mock_video = MagicMock()
         mock_video.id = 42
-        
+
         mock_repo = MagicMock()
         mock_repo.get_by_id.return_value = mock_video
-        
+
         # Create a proper context manager mock for get_db_session
         mock_session_context = MagicMock()
         mock_session_context.__enter__ = MagicMock(return_value=mock_session_context)
         mock_session_context.__exit__ = MagicMock(return_value=None)
-        
+
         with patch("haven_cli.database.connection.get_db_session") as mock_get_session:
             mock_get_session.return_value = mock_session_context
-            
+
             with patch("haven_cli.database.repositories.VideoRepository") as mock_repo_class:
                 mock_repo_class.return_value = mock_repo
-                
+
                 await step._save_encryption_metadata(42, metadata)
-        
+
         mock_repo.get_by_id.assert_called_once_with(42)
         mock_repo.update.assert_called_once()
-        
+
         # Check the update call
         call_args = mock_repo.update.call_args
         assert call_args[0][0] is mock_video
         assert call_args[1]["encrypted"] is True
         assert "encryption_metadata" in call_args[1]
-    
+
     @pytest.mark.asyncio
     async def test_save_encryption_metadata_video_not_found(self):
         """Test saving metadata when video doesn't exist."""
         step = EncryptStep()
-        
+
         metadata = EncryptionMetadata(
             ciphertext="/path/to/encrypted.enc",
             data_to_encrypt_hash="0xhash123",
             access_control_conditions=[],
             chain="ethereum",
         )
-        
+
         mock_repo = MagicMock()
         mock_repo.get_by_id.return_value = None
-        
+
         # Create a proper context manager mock for get_db_session
         mock_session_context = MagicMock()
         mock_session_context.__enter__ = MagicMock(return_value=mock_session_context)
         mock_session_context.__exit__ = MagicMock(return_value=None)
-        
+
         with patch("haven_cli.database.connection.get_db_session") as mock_get_session:
             mock_get_session.return_value = mock_session_context
             with patch("haven_cli.database.repositories.VideoRepository") as mock_repo_class:
                 mock_repo_class.return_value = mock_repo
-                
+
                 # Should not raise, just log warning
                 await step._save_encryption_metadata(999, metadata)
-        
+
         mock_repo.update.assert_not_called()
-    
+
     @pytest.mark.asyncio
     async def test_save_encryption_metadata_db_error(self):
         """Test handling of database error during save."""
         step = EncryptStep()
-        
+
         metadata = EncryptionMetadata(
             ciphertext="/path/to/encrypted.enc",
             data_to_encrypt_hash="0xhash123",
             access_control_conditions=[],
             chain="ethereum",
         )
-        
+
         with patch("haven_cli.database.connection.get_db_session") as mock_get_session:
             # Create a context manager that raises on __enter__
             mock_session_context = MagicMock()
             mock_session_context.__enter__ = MagicMock(side_effect=Exception("DB connection failed"))
             mock_session_context.__exit__ = MagicMock(return_value=None)
             mock_get_session.return_value = mock_session_context
-            
+
             # Should not raise, just log error
             await step._save_encryption_metadata(1, metadata)
 
 
 class TestEncryptStepHelpers:
     """Tests for helper methods."""
-    
+
     def test_metadata_to_json(self):
         """Test conversion of metadata to JSON."""
         step = EncryptStep()
-        
+
         metadata = EncryptionMetadata(
             ciphertext="/path/to/enc",
             data_to_encrypt_hash="0xhash",
             access_control_conditions=[{"type": "test"}],
             chain="ethereum",
         )
-        
+
         json_str = step._metadata_to_json(metadata)
         data = json.loads(json_str)
-        
+
         assert data["ciphertext"] == "/path/to/enc"
         assert data["data_to_encrypt_hash"] == "0xhash"
         assert data["dataToEncryptHash"] == "0xhash"  # camelCase
         assert data["chain"] == "ethereum"
         assert data["access_control_conditions"] == [{"type": "test"}]
         assert data["accessControlConditions"] == [{"type": "test"}]  # camelCase
-    
+
     @pytest.mark.asyncio
     async def test_on_skip(self):
         """Test on_skip handler."""
         step = EncryptStep()
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
-        
+
         # Should not raise
         await step.on_skip(context, "encryption disabled")
-    
+
     @pytest.mark.asyncio
     async def test_on_error(self):
         """Test on_error handler."""
@@ -722,6 +700,139 @@ class TestEncryptStepHelpers:
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
         from haven_cli.pipeline.results import StepError
         error = StepError.permanent(code="TEST", message="Test error")
-        
+
         # Should not raise
         await step.on_error(context, error)
+
+
+class TestEncryptStepRealCryptoIntegration:
+    """Integration tests using real encrypt_bytes/decrypt_bytes round-trip."""
+
+    @pytest.mark.asyncio
+    async def test_full_encrypt_decrypt_round_trip(self, tmp_path, monkeypatch):
+        """Test that encryption produces decryptable output end-to-end."""
+        private_key = "0x" + ("12" * 32)
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", private_key)
+
+        step = EncryptStep(config={"evm_chain": "EthMainnet"})
+
+        # Create test video
+        video_file = tmp_path / "test.mp4"
+        original_content = b"integration test video content for encryption round-trip"
+        video_file.write_bytes(original_content)
+
+        # Use explicit access conditions with a real contract address
+        access_conditions = [{
+            "contractAddress": TEST_ADDRESS,
+            "chain": "EthMainnet",
+            "returnValueTest": {"value": "1"},
+            "cid": "sha256:" + hashlib.sha256(original_content).hexdigest(),
+        }]
+
+        context = PipelineContext(
+            source_path=video_file,
+            options={"evm_chain": "EthMainnet"},
+            video_id=1,
+        )
+
+        # Encrypt
+        result = await step._encrypt_with_haven_aol(
+            str(video_file),
+            access_conditions,
+            context,
+        )
+
+        # Read the encrypted file
+        encrypted_path = result["ciphertext_path"]
+        assert os.path.exists(encrypted_path), "Encrypted file should exist"
+
+        with open(encrypted_path, "rb") as f:
+            ciphertext_bytes = f.read()
+
+        # Decrypt using the same key and gate params
+        gate = GateParams(
+            chain="EthMainnet",
+            token_address=TEST_ADDRESS,
+            threshold=1,
+            cid=access_conditions[0]["cid"],
+        )
+
+        decrypted = decrypt_bytes(
+            ciphertext_bytes=ciphertext_bytes,
+            private_key=private_key,
+            encrypted_key_b64=result["encrypted_key"],
+            gate=gate,
+        )
+
+        assert decrypted == original_content, "Decrypted content should match original"
+
+    @pytest.mark.asyncio
+    async def test_encrypted_file_different_from_original(self, tmp_path, monkeypatch):
+        """Verify the encrypted file is not the same as the original."""
+        private_key = "0x" + ("12" * 32)
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", private_key)
+
+        step = EncryptStep(config={"evm_chain": "EthMainnet"})
+
+        video_file = tmp_path / "test.mp4"
+        original_content = b"secret video data"
+        video_file.write_bytes(original_content)
+
+        access_conditions = [{
+            "contractAddress": TEST_ADDRESS,
+            "chain": "EthMainnet",
+            "returnValueTest": {"value": "1"},
+        }]
+
+        context = PipelineContext(
+            source_path=video_file,
+            options={"evm_chain": "EthMainnet"},
+        )
+
+        result = await step._encrypt_with_haven_aol(
+            str(video_file),
+            access_conditions,
+            context,
+        )
+
+        with open(result["ciphertext_path"], "rb") as f:
+            encrypted_content = f.read()
+
+        assert encrypted_content != original_content, "Encrypted content should differ from original"
+
+    @pytest.mark.asyncio
+    async def test_encryption_metadata_fields(self, tmp_path, monkeypatch):
+        """Verify all expected metadata fields are populated."""
+        private_key = "0x" + ("12" * 32)
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", private_key)
+
+        step = EncryptStep(config={"evm_chain": "EthMainnet"})
+
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"test metadata fields")
+
+        access_conditions = [{
+            "contractAddress": TEST_ADDRESS,
+            "chain": "EthMainnet",
+            "returnValueTest": {"value": "1"},
+        }]
+
+        context = PipelineContext(
+            source_path=video_file,
+            options={"evm_chain": "EthMainnet"},
+        )
+
+        result = await step._encrypt_with_haven_aol(
+            str(video_file),
+            access_conditions,
+            context,
+        )
+
+        # All expected fields should be present and non-empty
+        assert result["ciphertext_path"].endswith(".encrypted")
+        assert result["data_to_encrypt_hash"].startswith("0x") or len(result["data_to_encrypt_hash"]) > 0
+        assert result["chain"] == "EthMainnet"
+        assert len(result["original_hash"]) == 64  # SHA256 hex digest
+        assert result["encrypted_key"] is not None and len(result["encrypted_key"]) > 0
+        assert result["key_hash"] is not None
+        assert result["iv"] is not None and len(result["iv"]) > 0
