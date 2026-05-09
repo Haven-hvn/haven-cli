@@ -261,7 +261,7 @@ class TestUploadJobModel:
     
     def test_upload_job_targets(self, db_session: Session, sample_video: Video) -> None:
         """Test upload job with different targets."""
-        for target in ["ipfs", "arkiv", "s3"]:
+        for target in ["ipfs", "arkiv"]:
             job = UploadJob(
                 video_id=sample_video.id,
                 status="pending",
@@ -272,9 +272,9 @@ class TestUploadJobModel:
         db_session.commit()
         
         jobs = db_session.query(UploadJob).filter_by(video_id=sample_video.id).all()
-        assert len(jobs) == 3
+        assert len(jobs) == 2
         targets = {j.target for j in jobs}
-        assert targets == {"ipfs", "arkiv", "s3"}
+        assert targets == {"ipfs", "arkiv"}
     
     def test_upload_job_completion(self, db_session: Session, sample_video: Video) -> None:
         """Test upload job completion."""

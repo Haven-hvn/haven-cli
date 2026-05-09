@@ -514,7 +514,7 @@ class UploadJob(Base):
     )
     
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
-    target: Mapped[str] = mapped_column(String, nullable=False)  # "ipfs" | "arkiv" | "s3"
+    target: Mapped[str] = mapped_column(String, nullable=False)  # "ipfs" | "arkiv"
     
     # Upload substage for detailed progress tracking
     # Values: "connecting", "preparing", "uploading", "confirming", "complete"
