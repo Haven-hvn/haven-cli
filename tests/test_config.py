@@ -113,7 +113,7 @@ class TestBlockchainConfigNetwork:
             filecoin_network_mode="mainnet",
             arkiv_network_mode="testnet",
         )
-        assert "hoodi" in bc.get_arkiv_rpc_url() or "mendoza" in bc.get_arkiv_rpc_url()
+        assert "hoodi" in bc.get_arkiv_rpc_url() or "kaolin" in bc.get_arkiv_rpc_url()
 
     def test_is_mainnet_follows_filecoin_effective_mode(self) -> None:
         bc = BlockchainConfig(
@@ -398,8 +398,9 @@ class TestConfigValidation:
         assert len(api_key_warnings) >= 1
         assert api_key_warnings[0].severity == "warning"
 
-    def test_validate_requires_evm_chain_when_encryption_enabled(self):
+    def test_validate_requires_evm_chain_when_encryption_enabled(self, monkeypatch):
         """Test encryption validation requires explicit evm_chain."""
+        monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", "/tmp/id.pem")
         config = HavenConfig()
         config.pipeline.upload_enabled = False
         config.pipeline.encryption_enabled = True
@@ -410,8 +411,9 @@ class TestConfigValidation:
         assert len(evm_chain_errors) == 1
         assert evm_chain_errors[0].severity == "error"
 
-    def test_validate_requires_access_pattern_when_encryption_enabled(self):
+    def test_validate_requires_access_pattern_when_encryption_enabled(self, monkeypatch):
         """Test encryption validation requires explicit access_pattern."""
+        monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", "/tmp/id.pem")
         config = HavenConfig()
         config.pipeline.upload_enabled = False
         config.pipeline.encryption_enabled = True
@@ -423,8 +425,9 @@ class TestConfigValidation:
         assert len(pattern_errors) == 1
         assert pattern_errors[0].severity == "error"
 
-    def test_validate_token_gated_requires_contract_balance_and_standard(self):
+    def test_validate_token_gated_requires_contract_balance_and_standard(self, monkeypatch):
         """Test token_gated validation requires contract, min_balance, token_standard."""
+        monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", "/tmp/id.pem")
         config = HavenConfig()
         config.pipeline.upload_enabled = False
         config.pipeline.encryption_enabled = True

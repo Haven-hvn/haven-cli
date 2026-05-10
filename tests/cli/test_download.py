@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch, AsyncMock, MagicMock
 
 from typer.testing import CliRunner
 
-from haven_cli.cli.download import app, _format_file_size, verify_cid_format
+from haven_cli.cli.download import app, _decrypt_file, _format_file_size, verify_cid_format
 from haven_cli.pipeline.context import EncryptionMetadata
 
 
@@ -250,6 +250,63 @@ class TestDecryptFileCommand:
         ])
         
         assert result.exit_code != 0  # Typer validation should fail
+
+    @pytest.mark.asyncio
+    async def test_decrypt_file_disabled_for_icp_only_mode(self, tmp_path, monkeypatch):
+        """Local file decrypt is blocked in ICP-only mode."""
+        monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(tmp_path / "identity.pem"))
+        encrypted_path = tmp_path / "encrypted.out"
+        encrypted_path.write_bytes(b"cipher")
+
+        metadata = EncryptionMetadata(
+            ciphertext=str(encrypted_path),
+            data_to_encrypt_hash="hash",
+            encrypted_key="d3JhcHBlZA==",
+            key_hash="abc",
+            iv="abc",
+            access_control_conditions=[
+                {
+                    "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                    "returnValueTest": {"value": "1"},
+                    "cid": "QmDecryptCid",
+                }
+            ],
+            chain="EthMainnet",
+        )
+
+        with patch(
+            "haven_cli.cli.download.load_encryption_metadata_by_cid",
+            new=AsyncMock(return_value=metadata),
+        ):
+            with pytest.raises(RuntimeError, match="disabled for ICP-only Haven-AOL mode"):
+                await _decrypt_file(
+                    input_path=encrypted_path,
+                    output_path=encrypted_path,
+                    cid="QmDecryptCid",
+                )
+
+    @pytest.mark.asyncio
+    async def test_decrypt_file_requires_token_address(self, tmp_path, monkeypatch):
+        """Missing token address should fail before decryption."""
+        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x" + ("34" * 32))
+        encrypted_path = tmp_path / "encrypted.out"
+        encrypted_path.write_bytes(b"not-used")
+        metadata = EncryptionMetadata(
+            encrypted_key="abc",
+            access_control_conditions=[{}],
+            chain="EthMainnet",
+        )
+
+        with patch(
+            "haven_cli.cli.download.load_encryption_metadata_by_cid",
+            new=AsyncMock(return_value=metadata),
+        ):
+            with pytest.raises(ValueError, match="missing token contract address"):
+                await _decrypt_file(
+                    input_path=encrypted_path,
+                    output_path=tmp_path / "decrypted.bin",
+                    cid="bafy-test",
+                )
 
 
 class TestPrintStatusTable:

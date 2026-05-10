@@ -11,10 +11,13 @@ import hashlib
 import json
 import os
 import re
+import struct
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from haven_cli.services.haven_aol_icp import get_vetkd_public_key_b64, request_decryption_key
 
 VALID_CHAINS = frozenset(
     {
@@ -94,14 +97,17 @@ def _unwrap_aes_key(wrapped_key: bytes, private_key: str, derivation_input: byte
 
 
 def encrypt_bytes(plaintext: bytes, private_key: str, gate: GateParams) -> dict[str, Any]:
-    """Encrypt payload and return standalone Haven-AOL metadata."""
+    """Encrypt payload and return Haven-AOL metadata.
+
+    Encryption uses Haven-AOL IBE (ICP-compatible) key wrapping only.
+    """
     aes_key = os.urandom(32)
     iv = os.urandom(12)
     derivation_input = compute_derivation_input(gate)
 
     aesgcm = AESGCM(aes_key)
     encrypted_payload = iv + aesgcm.encrypt(iv, plaintext, None)
-    wrapped_key = _wrap_aes_key(aes_key, private_key, derivation_input)
+    wrapped_key = _ibe_encrypt_aes_key(aes_key, derivation_input)
 
     return {
         "ciphertext_bytes": encrypted_payload,
@@ -125,18 +131,137 @@ def decrypt_bytes(
     encrypted_key_b64: str,
     gate: GateParams,
 ) -> bytes:
-    """Decrypt payload from Haven-AOL metadata."""
-    if len(ciphertext_bytes) < 13:
-        raise ValueError("Ciphertext payload too short")
-    derivation_input = compute_derivation_input(gate)
-    wrapped_key = base64.b64decode(encrypted_key_b64)
-    aes_key = _unwrap_aes_key(wrapped_key, private_key, derivation_input)
-    iv = ciphertext_bytes[:12]
-    ct = ciphertext_bytes[12:]
-    aesgcm = AESGCM(aes_key)
-    return aesgcm.decrypt(iv, ct, None)
+    """Decrypt payload from Haven-AOL metadata.
+
+    Runtime decryption for IBE-wrapped keys requires canister key retrieval and
+    transport-key unwrapping. This path is intentionally disabled in haven-cli.
+    """
+    _ = get_vetkd_public_key_b64()
+    _ = request_decryption_key(
+        chain=gate.chain,
+        token_address=gate.token_address,
+        threshold=gate.threshold,
+        cid=gate.cid,
+    )
+    raise RuntimeError(
+        "decrypt_bytes is disabled for ICP-only Haven-AOL mode. "
+        "Derived-key transport unwrapping is not yet wired."
+    )
 
 
 def serialize_gate_metadata(gate: dict[str, Any]) -> str:
     """Serialize gate metadata as compact JSON."""
     return json.dumps(gate, separators=(",", ":"))
+
+
+def _derive_chunk_iv(base_iv: bytes, chunk_index: int) -> bytes:
+    """Derive a unique per-chunk IV from a base IV and chunk index."""
+    if len(base_iv) != 12:
+        raise ValueError("Base IV must be 12 bytes")
+    per_iv = bytearray(base_iv)
+    idx_bytes = struct.pack(">Q", chunk_index)
+    for i, idx_byte in enumerate(idx_bytes):
+        per_iv[i + 4] ^= idx_byte
+    return bytes(per_iv)
+
+
+def encrypt_file_streaming(
+    input_path: str | Path,
+    output_path: str | Path,
+    private_key: str,
+    gate: GateParams,
+    chunk_size: int = 1024 * 1024,
+) -> dict[str, Any]:
+    """Encrypt a file using chunked streaming to avoid OOM on large files."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be > 0")
+
+    src_path = Path(input_path)
+    dst_path = Path(output_path)
+
+    aes_key = os.urandom(32)
+    base_iv = os.urandom(12)
+    derivation_input = compute_derivation_input(gate)
+    wrapped_key = _ibe_encrypt_aes_key(aes_key, derivation_input)
+    aesgcm = AESGCM(aes_key)
+
+    with src_path.open("rb") as src, dst_path.open("wb") as dst:
+        dst.write(base_iv)
+        chunk_index = 0
+        while True:
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            per_iv = _derive_chunk_iv(base_iv, chunk_index)
+            encrypted_chunk = aesgcm.encrypt(per_iv, chunk, None)
+            dst.write(struct.pack("<I", chunk_index))
+            dst.write(struct.pack("<I", len(encrypted_chunk)))
+            dst.write(encrypted_chunk)
+            chunk_index += 1
+
+    return {
+        "data_to_encrypt_hash": derivation_input.hex(),
+        "encrypted_key_b64": base64.b64encode(wrapped_key).decode("ascii"),
+        "key_hash": hashlib.sha256(aes_key).hexdigest(),
+        "iv_b64": base64.b64encode(base_iv).decode("ascii"),
+        "gate": {
+            "version": 1,
+            "cid": gate.cid,
+            "chain": gate.chain,
+            "tokenAddress": gate.token_address,
+            "threshold": str(gate.threshold),
+        },
+    }
+
+
+def decrypt_file_streaming(
+    input_path: str | Path,
+    output_path: str | Path,
+    private_key: str,
+    encrypted_key_b64: str,
+    gate: GateParams,
+    chunk_size: int = 1024 * 1024,
+) -> None:
+    """Decrypt a file encrypted by encrypt_file_streaming.
+
+    Runtime decryption for IBE-wrapped keys requires canister key retrieval and
+    transport-key unwrapping. This path is intentionally disabled in haven-cli.
+    """
+    _ = get_vetkd_public_key_b64()
+    _ = request_decryption_key(
+        chain=gate.chain,
+        token_address=gate.token_address,
+        threshold=gate.threshold,
+        cid=gate.cid,
+    )
+    raise RuntimeError(
+        "decrypt_file_streaming is disabled for ICP-only Haven-AOL mode. "
+        "Derived-key transport unwrapping is not yet wired."
+    )
+
+
+def _ibe_encrypt_aes_key(aes_key: bytes, derivation_input: bytes) -> bytes:
+    """Encrypt AES key using Haven-AOL IBE verification key."""
+    try:
+        from haven_aol.core import derive_verification_key, ibe_encrypt_aes_key
+    except ImportError as exc:
+        raise RuntimeError(
+            "haven_aol package is required for ICP-only Haven-AOL encryption."
+        ) from exc
+
+    key_name = os.environ.get("HAVEN_AOL_VETKD_KEY_NAME", "key_1").strip() or "key_1"
+    context = os.environ.get("HAVEN_AOL_VETKD_CONTEXT", "accessol_v1").encode("utf-8")
+    verification_key_b64 = get_vetkd_public_key_b64()
+    verification_key_bytes: bytes | None = base64.b64decode(verification_key_b64)
+
+    derived_public_key = derive_verification_key(
+        canister_id="bkyz2-fmaaa-aaaaa-qaaaq-cai",
+        context=context,
+        key_name=key_name,
+        verification_key_bytes=verification_key_bytes,
+    )
+    return ibe_encrypt_aes_key(
+        aes_key=aes_key,
+        derived_public_key=derived_public_key,
+        derivation_input=derivation_input,
+    )

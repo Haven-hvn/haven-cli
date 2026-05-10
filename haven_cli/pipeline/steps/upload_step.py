@@ -484,8 +484,7 @@ class UploadStep(ConditionalStep):
                     )
                     logger.info(f"CID encrypted for Arkiv sync")
                 except Exception as e:
-                    # Log but don't fail - upload succeeded
-                    logger.warning(f"Failed to encrypt CID for Arkiv sync: {e}")
+                    raise RuntimeError(f"Failed to encrypt CID for Arkiv sync: {e}") from e
             
             # Create upload result
             result = UploadResult(
@@ -805,10 +804,6 @@ class UploadStep(ConditionalStep):
         """Encrypt the CID with local Haven-AOL logic for Arkiv sync."""
         logger.info(f"Encrypting CID for Arkiv sync: {cid[:30]}...")
 
-        private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
-        if not private_key:
-            raise RuntimeError("HAVEN_PRIVATE_KEY is required for CID encryption")
-
         gate_condition = access_control_conditions[0] if access_control_conditions else {}
         token_address = str(gate_condition.get("contractAddress", "")).strip()
         if not token_address:
@@ -829,7 +824,7 @@ class UploadStep(ConditionalStep):
         try:
             encrypted = encrypt_bytes(
                 plaintext=cid.encode("utf-8"),
-                private_key=private_key,
+                private_key="",
                 gate=GateParams(
                     chain=chain,
                     token_address=token_address,

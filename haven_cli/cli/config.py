@@ -1098,6 +1098,8 @@ def show_env_vars() -> None:
         ("HAVEN_VLM_MULTIPLEXER_ENABLED", "Enable VLM multiplexer", "true/false"),
         ("HAVEN_PRIVATE_KEY", "Private key for Filecoin blockchain auth (REQUIRED)", "0x..."),
         ("HAVEN_ENCRYPTION_ENABLED", "Enable/disable Haven-AOL encryption", "true/false"),
+        ("HAVEN_ICP_IDENTITY_PEM_PATH", "ICP user identity PEM path for Haven-AOL requests (REQUIRED for encryption/decryption)", "/path/to/identity.pem"),
+        ("HAVEN_ICP_HOST", "ICP API host for Haven-AOL calls", "https://icp-api.io"),
         ("HAVEN_UPLOAD_ENABLED", "Enable/disable Filecoin upload", "true/false"),
         ("HAVEN_SYNC_ENABLED", "Enable/disable Arkiv sync", "true/false"),
         ("HAVEN_ARKIV_ENDPOINT", "Arkiv RPC endpoint URL", "https://..."),

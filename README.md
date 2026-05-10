@@ -258,6 +258,6 @@ Contributions are welcome! Please see our [Contributing Guide](CONTRIBUTING.md) 
 
 - https://beryx.io/faucet
 - https://forest-explorer.chainsafe.dev/faucet/calibnet_usdfc
-- https://mendoza.hoodi.arkiv.network/faucet/
+- https://kaolin.hoodi.arkiv.network/faucet/
 - https://stg.usdfc.net/#/
 - https://pay.filecoin.cloud/console

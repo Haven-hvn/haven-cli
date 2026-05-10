@@ -125,7 +125,7 @@ class BlockchainConfig:
         return (
             "https://mainnet.arkiv.network/rpc"
             if main
-            else "https://mendoza.hoodi.arkiv.network/rpc"
+            else "https://kaolin.hoodi.arkiv.network/rpc"
         )
 
 
@@ -915,6 +915,15 @@ def validate_config(config: Optional[HavenConfig] = None) -> List[ValidationErro
     # Sync validation (if enabled)
     # Access-control asset chain (pipeline.evm_chain) when encryption is enabled
     if config.pipeline.encryption_enabled:
+        if not os.environ.get("HAVEN_ICP_IDENTITY_PEM_PATH"):
+            errors.append(ValidationError(
+                field="HAVEN_ICP_IDENTITY_PEM_PATH",
+                message=(
+                    "HAVEN_ICP_IDENTITY_PEM_PATH environment variable is required when encryption is enabled. "
+                    "Haven-AOL ICP uses authenticated user identity only."
+                ),
+                severity="error"
+            ))
         if not config.pipeline.evm_chain:
             errors.append(ValidationError(
                 field="pipeline.evm_chain",

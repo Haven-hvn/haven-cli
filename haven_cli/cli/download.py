@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import tempfile
 from typing import Optional
 
 import typer
@@ -16,7 +17,7 @@ from rich.table import Table
 from haven_cli.config import load_config
 from haven_cli.js_runtime.manager import JSBridgeManager, js_call
 from haven_cli.js_runtime.protocol import JSRuntimeMethods
-from haven_cli.crypto.haven_aol_local import GateParams, decrypt_bytes
+from haven_cli.crypto.haven_aol_local import GateParams, decrypt_file_streaming
 from haven_cli.services.evm_utils import normalize_haven_aol_chain
 from haven_cli.crypto import (
     EncryptionMetadata,
@@ -214,11 +215,9 @@ async def _decrypt_file(
             "Ensure the file was encrypted during upload or provide a sidecar .encmeta file."
         )
     
-    private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
-    if not private_key:
-        raise ValueError("HAVEN_PRIVATE_KEY is required for decryption")
-
-    encrypted_data = input_path.read_bytes()
+    icp_identity_path = os.environ.get("HAVEN_ICP_IDENTITY_PEM_PATH", "").strip()
+    if not icp_identity_path:
+        raise ValueError("HAVEN_ICP_IDENTITY_PEM_PATH is required for Haven-AOL ICP decryption")
 
     gate_source = metadata.access_control_conditions[0] if metadata.access_control_conditions else {}
     token_address = str(gate_source.get("contractAddress", "")).strip()
@@ -240,19 +239,40 @@ async def _decrypt_file(
             "Cannot decrypt without the access-control asset chain (EVM)."
         )
 
-    decrypted_data = decrypt_bytes(
-        ciphertext_bytes=encrypted_data,
-        private_key=private_key,
-        encrypted_key_b64=metadata.encrypted_key,
-        gate=GateParams(
-            chain=normalize_haven_aol_chain(str(metadata.chain)),
-            token_address=token_address,
-            threshold=threshold,
-            cid=cid_value,
-        ),
+    gate = GateParams(
+        chain=normalize_haven_aol_chain(str(metadata.chain)),
+        token_address=token_address,
+        threshold=threshold,
+        cid=cid_value,
     )
 
-    output_path.write_bytes(decrypted_data)
+    if input_path.resolve() == output_path.resolve():
+        with tempfile.NamedTemporaryFile(
+            suffix=output_path.suffix or ".tmp",
+            dir=str(output_path.parent),
+            delete=False,
+        ) as tmp_file:
+            temp_output_path = Path(tmp_file.name)
+        try:
+            decrypt_file_streaming(
+                input_path=input_path,
+                output_path=temp_output_path,
+                private_key="",
+                encrypted_key_b64=metadata.encrypted_key,
+                gate=gate,
+            )
+            temp_output_path.replace(output_path)
+        finally:
+            if temp_output_path.exists():
+                temp_output_path.unlink()
+    else:
+        decrypt_file_streaming(
+            input_path=input_path,
+            output_path=output_path,
+            private_key="",
+            encrypted_key_b64=metadata.encrypted_key,
+            gate=gate,
+        )
 
 
 def _format_file_size(size_bytes: int) -> str:

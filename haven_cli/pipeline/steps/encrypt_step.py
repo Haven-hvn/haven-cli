@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from haven_cli.crypto.haven_aol_local import GateParams, encrypt_bytes
+from haven_cli.crypto.haven_aol_local import GateParams, encrypt_file_streaming
 from haven_cli.pipeline.context import EncryptionMetadata, PipelineContext
 from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import StepError, StepResult
@@ -222,12 +222,6 @@ class EncryptStep(ConditionalStep):
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
 
-        private_key = os.environ.get("HAVEN_PRIVATE_KEY") or os.environ.get("PRIVATE_KEY")
-        if not private_key:
-            raise RuntimeError(
-                "Private key required for encryption. Set HAVEN_PRIVATE_KEY environment variable."
-            )
-
         gate_condition = access_conditions[0] if access_conditions else {}
         token_address = str(gate_condition.get("contractAddress", "")).strip()
         if not token_address:
@@ -244,31 +238,41 @@ class EncryptStep(ConditionalStep):
             threshold = 1
 
         chain = self._get_chain(context)
-
+        hasher = hashlib.sha256()
         with open(video_path, "rb") as f:
-            plaintext = f.read()
-
-        original_hash = hashlib.sha256(plaintext).hexdigest()
+            while True:
+                block = f.read(1024 * 1024)
+                if not block:
+                    break
+                hasher.update(block)
+        original_hash = hasher.hexdigest()
         cid_value = str(context.options.get("cid", "")).strip()
         if not cid_value:
             # Upload CID is unknown pre-upload; derive a deterministic local CID key.
             cid_value = f"sha256:{original_hash}"
         gate_condition["cid"] = cid_value
 
-        encrypted = encrypt_bytes(
-            plaintext=plaintext,
-            private_key=private_key,
+        chunk_size_raw = context.options.get("encrypt_chunk_size") or self._config.get(
+            "encrypt_chunk_size",
+            1024 * 1024,
+        )
+        chunk_size = int(chunk_size_raw)
+        if chunk_size <= 0:
+            raise ValueError("encrypt_chunk_size must be > 0")
+
+        encrypted_path = f"{video_path}.encrypted"
+        encrypted = encrypt_file_streaming(
+            input_path=video_path,
+            output_path=encrypted_path,
+            private_key="",
             gate=GateParams(
                 chain=chain,
                 token_address=token_address,
                 threshold=threshold,
                 cid=cid_value,
             ),
+            chunk_size=chunk_size,
         )
-
-        encrypted_path = f"{video_path}.encrypted"
-        with open(encrypted_path, "wb") as f:
-            f.write(encrypted["ciphertext_bytes"])
 
         return {
             "ciphertext_path": encrypted_path,

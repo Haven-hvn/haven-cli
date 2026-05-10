@@ -153,9 +153,11 @@ oom-kill: task=python3, pid=18239, anon-rss:1622304kB
 
 ---
 
-## 5. Recommended Fix
+## 5. Required Fix (Single Supported Path)
 
-Replace the in-memory `encrypt_bytes()` / `decrypt_bytes()` in the pipeline's `_encrypt_with_haven_aol()` with a **streaming chunked implementation** that:
+Use **only streaming chunked file encryption** in the pipeline, and enforce Haven-AOL ICP as the only key path. Local env-key wrapping/unwrapping fallback is not allowed.
+
+The required streaming implementation:
 
 1. Reads the input file in fixed-size chunks (e.g., 1 MB)
 2. Encrypts each chunk with AES-GCM using a per-chunk IV derived from `base_iv XOR chunk_index`
@@ -174,12 +176,14 @@ Per chunk:
 
 **Proof of concept implemented** in `test_encrypt_streaming.py` — verified correct on 920MB file with 3.3 MB peak memory.
 
+**Policy:** Streaming encryption is the only supported file-encryption path for the pipeline.
+
 ### Integration Path
 
 The `EncryptStep._encrypt_with_haven_aol()` method in `haven_cli/pipeline/steps/encrypt_step.py` (lines 211-283) should be modified to:
 - Accept a `chunk_size` parameter (default 1 MB)
-- Use streaming encryption instead of `encrypt_bytes(plaintext=full_file_read, ...)`
-- Use streaming decryption instead of `decrypt_bytes(ciphertext_bytes=full_file_read, ...)`
+- Use streaming file encryption only (do not call `encrypt_bytes(plaintext=full_file_read, ...)` for pipeline file processing)
+- Keep non-file payload handling (`encrypt_bytes`) for CID metadata only, and enforce the same Haven-AOL ICP key policy
 - Keep the same return dict format for downstream compatibility
 
 ---
@@ -212,7 +216,7 @@ The old `hybrid-crypto.ts` format and the new `haven_aol_local.py` format are **
 - Old: Lit Protocol encrypted key, `hybrid-v1` metadata with `accessControlConditions`
 - New: XOR-wrapped key, `gate` metadata with `chain/tokenAddress/threshold/cid`
 
-The streaming test uses a custom chunked format that is also incompatible with both. If backward compatibility is needed, a migration path or format negotiation would be required.
+The streaming format is now the only supported pipeline path. No backward-compatibility or migration strategy is required.
 
 ---
 
@@ -228,4 +232,4 @@ The streaming test uses a custom chunked format that is also incompatible with b
 
 ## 8. Conclusion
 
-The new Haven-AOL encryption mechanism (`haven_aol_local.py`) is **cryptographically sound** — all unit tests pass, wrong keys are detected, and all supported chains work. However, the current `encrypt_bytes()` implementation is **fundamentally unsuitable for large files** because it requires the entire file in memory. A streaming implementation has been proven to work correctly at 677 MB/s with only 3.3 MB peak memory, and should be integrated into the pipeline's `EncryptStep` to resolve the OOM issue.
+The new Haven-AOL encryption mechanism (`haven_aol_local.py`) is **cryptographically sound** — all unit tests pass, wrong keys are detected, and all supported chains work. However, the current in-memory `encrypt_bytes()` implementation is **fundamentally unsuitable for large files** because it requires the entire file in memory and can trigger OOM termination. Streaming encryption has been proven to work correctly at 677 MB/s with only 3.3 MB peak memory, and must be the pipeline's only file-encryption/decryption path to avoid OOM faults.

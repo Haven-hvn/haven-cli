@@ -212,6 +212,12 @@ def upload(
     configured_owner_wallet = owner_wallet or get_config_value("owner_wallet", None)
     configured_nft_contract = nft_contract or get_config_value("nft_contract", None)
     if encryption_enabled:
+        icp_identity_path = os.environ.get("HAVEN_ICP_IDENTITY_PEM_PATH", "").strip()
+        if not icp_identity_path:
+            console.print(
+                "[red]✗[/red] HAVEN_ICP_IDENTITY_PEM_PATH is required for Haven-AOL ICP encryption."
+            )
+            raise typer.Exit(code=1)
         if configured_chain is None:
             choices = ", ".join(SUPPORTED_HAVEN_AOL_CHAINS)
             console.print(

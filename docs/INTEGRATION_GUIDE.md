@@ -474,7 +474,7 @@ async def upload_video_to_haven(
     )
     
     # Create Arkiv client
-    rpc_url = os.getenv("ARKIV_RPC_URL", "https://mendoza.hoodi.arkiv.network/rpc")
+    rpc_url = os.getenv("ARKIV_RPC_URL", "https://kaolin.hoodi.arkiv.network/rpc")
     provider = ProviderBuilder().custom(rpc_url).build()
     account = NamedAccount.from_private_key("haven-upload", private_key)
     client = Arkiv(provider=provider, account=account)

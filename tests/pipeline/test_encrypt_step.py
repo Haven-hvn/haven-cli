@@ -2,7 +2,7 @@
 
 Tests the Haven-AOL encryption step including:
 - Access condition generation for different patterns
-- Real encryption via encrypt_bytes (no JS bridge mock)
+- Real streaming encryption (no JS bridge mock)
 - Error handling
 - Database persistence
 """
@@ -14,13 +14,20 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from haven_cli.crypto.haven_aol_local import GateParams, encrypt_bytes, decrypt_bytes
+from haven_cli.crypto.haven_aol_local import GateParams, decrypt_file_streaming
+import haven_cli.crypto.haven_aol_local as haven_aol_local
 from haven_cli.pipeline.context import EncryptionMetadata, PipelineContext
 from haven_cli.pipeline.results import StepResult
 from haven_cli.pipeline.steps.encrypt_step import EncryptStep
 
 # Valid 40-hex address used in tests (matches the contract address used in encryption tests)
 TEST_ADDRESS = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+
+
+@pytest.fixture(autouse=True)
+def _mock_haven_aol_ibe(monkeypatch) -> None:
+    """Mock IBE key wrapping for deterministic unit tests."""
+    monkeypatch.setattr(haven_aol_local, "_ibe_encrypt_aes_key", lambda aes_key, derivation_input: b"wrapped")
 
 
 class TestEncryptStepBasics:
@@ -320,11 +327,11 @@ class TestEncryptStepAccessConditions:
 
 
 class TestEncryptStepEncryption:
-    """Tests for the encryption process using the real encrypt_bytes path."""
+    """Tests for the encryption process using the real streaming path."""
 
     @pytest.mark.asyncio
     async def test_encrypt_with_haven_aol_success(self, tmp_path, monkeypatch):
-        """Test successful encryption via Haven-AOL using real encrypt_bytes."""
+        """Test successful encryption via Haven-AOL streaming."""
         # Set a test private key
         monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 
@@ -392,8 +399,8 @@ class TestEncryptStepEncryption:
             )
 
     @pytest.mark.asyncio
-    async def test_encrypt_with_haven_aol_missing_private_key(self, tmp_path, monkeypatch):
-        """Test handling of missing private key."""
+    async def test_encrypt_with_haven_aol_no_private_key_required(self, tmp_path, monkeypatch):
+        """Encryption no longer requires local private key env."""
         step = EncryptStep(config={"evm_chain": "ethereum"})
 
         video_file = tmp_path / "test.mp4"
@@ -405,7 +412,6 @@ class TestEncryptStepEncryption:
             options={"evm_chain": "ethereum"},
         )
 
-        # Ensure no private key is set
         with patch.dict(os.environ, {}, clear=True):
             access_conditions = [{
                 "contractAddress": TEST_ADDRESS,
@@ -414,12 +420,12 @@ class TestEncryptStepEncryption:
                 "cid": "sha256:abc123",
             }]
 
-            with pytest.raises(RuntimeError, match="Private key required"):
-                await step._encrypt_with_haven_aol(
-                    str(video_file),
-                    access_conditions,
-                    context,
-                )
+            result = await step._encrypt_with_haven_aol(
+                str(video_file),
+                access_conditions,
+                context,
+            )
+        assert result["encrypted_key"] == "d3JhcHBlZA=="
 
     @pytest.mark.asyncio
     async def test_encrypt_with_haven_aol_missing_contract(self, tmp_path, monkeypatch):
@@ -706,11 +712,11 @@ class TestEncryptStepHelpers:
 
 
 class TestEncryptStepRealCryptoIntegration:
-    """Integration tests using real encrypt_bytes/decrypt_bytes round-trip."""
+    """Integration tests using real streaming encrypt/decrypt round-trip."""
 
     @pytest.mark.asyncio
     async def test_full_encrypt_decrypt_round_trip(self, tmp_path, monkeypatch):
-        """Test that encryption produces decryptable output end-to-end."""
+        """Decrypt path is disabled in ICP-only mode."""
         private_key = "0x" + ("12" * 32)
         monkeypatch.setenv("HAVEN_PRIVATE_KEY", private_key)
 
@@ -742,29 +748,24 @@ class TestEncryptStepRealCryptoIntegration:
             context,
         )
 
-        # Read the encrypted file
+        # Decrypt the encrypted file via streaming API
         encrypted_path = result["ciphertext_path"]
         assert os.path.exists(encrypted_path), "Encrypted file should exist"
 
-        with open(encrypted_path, "rb") as f:
-            ciphertext_bytes = f.read()
-
-        # Decrypt using the same key and gate params
         gate = GateParams(
             chain="EthMainnet",
             token_address=TEST_ADDRESS,
             threshold=1,
             cid=access_conditions[0]["cid"],
         )
-
-        decrypted = decrypt_bytes(
-            ciphertext_bytes=ciphertext_bytes,
-            private_key=private_key,
-            encrypted_key_b64=result["encrypted_key"],
-            gate=gate,
-        )
-
-        assert decrypted == original_content, "Decrypted content should match original"
+        with pytest.raises(RuntimeError, match="disabled for ICP-only Haven-AOL mode"):
+            decrypt_file_streaming(
+                input_path=encrypted_path,
+                output_path=tmp_path / "decrypted.mp4",
+                private_key=private_key,
+                encrypted_key_b64=result["encrypted_key"],
+                gate=gate,
+            )
 
     @pytest.mark.asyncio
     async def test_encrypted_file_different_from_original(self, tmp_path, monkeypatch):
