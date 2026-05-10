@@ -697,9 +697,10 @@ const isEncrypted = Boolean(
 
 **Checklist:**
 1. Verify `encryption_metadata` exists in payload
-2. Check that `accessControlConditions` are valid
-3. Ensure user meets access conditions (e.g., owns required NFT)
-4. Verify Lit network connection (datil-dev vs datil)
+2. Check that `accessControlConditions` are valid (chain, contractAddress, threshold, cid)
+3. Ensure user meets access conditions (e.g., holds required token balance)
+4. Verify Haven-AOL ICP canister connectivity and transport key configuration (`HAVEN_AOL_TRANSPORT_SECRET_KEY_B64`, `HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64`)
+5. Install the `vetkd_py` package (`pip install haven-cli[icp]`)
 
 #### Issue: VLM analysis not loading
 

@@ -29,8 +29,12 @@ class EncryptStep(ConditionalStep):
     - owner_only: Only the wallet owner can decrypt
     - nft_gated: Only NFT holders can decrypt
     - token_gated: Only token holders can decrypt
-    - public: Anyone can decrypt (for public content)
     - custom: Explicit access conditions provided in context
+
+    Note: The ``public`` pattern is NOT supported. The Haven-AOL canister
+    requires ``threshold > 0`` and performs a real token balance check, so
+    there is no way to create a universally-decryptable gate without a
+    canister-level protocol change.
 
     Emits:
         - ENCRYPT_REQUESTED event when starting
@@ -337,8 +341,10 @@ class EncryptStep(ConditionalStep):
     def _owner_only_conditions(self, context: PipelineContext) -> List[Dict[str, Any]]:
         """Access restricted to wallet owner.
 
-        Uses wallet signature as the access gate, consistent with the
-        Haven-AOL owner_only specification.
+        Uses a token contract with threshold=1 to create a valid derivation
+        input, while recording the owner wallet for downstream reference.
+        The token_contract field provides a real ERC-20/721 address for the
+        Haven-AOL derivation preimage (which requires a valid 0x address).
 
         Args:
             context: Pipeline context with owner_wallet option and evm_chain
@@ -347,7 +353,7 @@ class EncryptStep(ConditionalStep):
             Access control conditions for owner-only access
 
         Raises:
-            ValueError: If owner_wallet not configured and cannot be derived
+            ValueError: If owner_wallet or token_contract not configured
         """
         pipeline_cfg = self._config.get("pipeline")
         config_owner_wallet = (
@@ -363,17 +369,30 @@ class EncryptStep(ConditionalStep):
                 "Set it in config or context options."
             )
 
+        # token_contract provides the valid 0x address for derivation input
+        config_token_contract = (
+            getattr(pipeline_cfg, "token_contract", None)
+            if pipeline_cfg is not None
+            else self._config.get("token_contract")
+        )
+        contract = context.options.get("token_contract") or config_token_contract
+        if not contract:
+            raise ValueError(
+                "token_contract required for owner_only pattern "
+                "(provides the contract address for Haven-AOL derivation)."
+            )
+
         chain = self._get_chain(context)
 
         return [{
-            "contractAddress": wallet_address,
-            "standardContractType": "",
+            "contractAddress": contract,
+            "standardContractType": "ERC20",
             "chain": chain,
-            "method": "",
-            "parameters": [],
+            "method": "balanceOf",
+            "parameters": [":userAddress"],
             "returnValueTest": {
-                "comparator": "=",
-                "value": wallet_address,
+                "comparator": ">=",
+                "value": "1",
             },
             "ownerWallet": wallet_address,
         }]
@@ -490,29 +509,26 @@ class EncryptStep(ConditionalStep):
     def _public_conditions(self, context: PipelineContext) -> List[Dict[str, Any]]:
         """Public access conditions - anyone can decrypt.
 
-        This creates a condition that always returns true.
-        Note: In practice, this may still require a valid wallet signature
-        but doesn't restrict based on ownership.
+        NOT SUPPORTED: The Haven-AOL canister requires threshold > 0 and
+        performs a real ERC-20/721 balanceOf check against the token contract.
+        There is no "public" mode in the canister — threshold=0 is rejected
+        with #InvalidThreshold, and any non-zero threshold against the zero
+        address will fail the balance check with #InsufficientBalance.
 
-        Args:
-            context: Pipeline context with evm_chain option
+        This pattern requires a canister-level protocol change to support
+        truly public access (e.g., a dedicated public gate flow that skips
+        the balance check).
 
-        Returns:
-            Access control conditions allowing public access
+        Raises:
+            ValueError: Always — public pattern is not supported by the canister.
         """
-        chain = self._get_chain(context)
-
-        return [{
-            "contractAddress": "",
-            "standardContractType": "",
-            "chain": chain,
-            "method": "",
-            "parameters": [],
-            "returnValueTest": {
-                "comparator": "=",
-                "value": "true",
-            },
-        }]
+        raise ValueError(
+            "The 'public' access pattern is not supported by the Haven-AOL canister. "
+            "The canister requires threshold > 0 and performs a real token balance check, "
+            "so there is no way to create a universally-decryptable gate. "
+            "Use 'token_gated' with a widely-held token and threshold=1 as an alternative, "
+            "or request a canister protocol change to add a public-access mode."
+        )
 
     async def _save_encryption_metadata(
         self,

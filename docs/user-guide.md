@@ -50,7 +50,7 @@ This creates `~/.config/haven/config.toml` with default settings.
 | Section | Key | Description | Default |
 |---------|-----|-------------|---------|
 | pipeline | vlm_enabled | Enable AI analysis | true |
-| pipeline | encryption_enabled | Enable Lit encryption | true |
+| pipeline | encryption_enabled | Enable Haven-AOL encryption | true |
 | pipeline | upload_enabled | Enable Filecoin upload | true |
 | pipeline | sync_enabled | Enable Arkiv sync | true |
 | scheduler | enabled | Enable job scheduler | true |

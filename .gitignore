@@ -1,4 +1,4 @@
-# Documentation
+# Documentation (generated)
 CONFIGURATION.md
 TEST_REPORT.md
 
@@ -7,6 +7,41 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Testing / Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checking / Linting
+.mypy_cache/
+.ruff_cache/
+
+# Rust / Cargo
+vetkd_py/target/
 
 # JS Services
 js-services/deno.lock
+node_modules/
+
+# macOS
+.DS_Store
+
+# Logs
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.*

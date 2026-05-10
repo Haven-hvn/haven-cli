@@ -198,18 +198,16 @@ class TestEncryptStepAccessConditions:
         with pytest.raises(ValueError, match="Unsupported token standard"):
             step._token_gated_conditions(context)
 
-    def test_public_conditions(self):
-        """Test public access conditions."""
+    def test_public_conditions_raises(self):
+        """Test public access conditions raises — canister does not support public mode."""
         step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={"evm_chain": "ethereum"},
         )
 
-        conditions = step._public_conditions(context)
-
-        assert len(conditions) == 1
-        assert conditions[0]["returnValueTest"]["value"] == "true"
+        with pytest.raises(ValueError, match="not supported by the Haven-AOL canister"):
+            step._public_conditions(context)
 
     def test_get_access_conditions_explicit(self):
         """Test getting explicit access conditions from context."""
@@ -273,17 +271,16 @@ class TestEncryptStepAccessConditions:
         assert len(conditions) == 1
         assert conditions[0]["standardContractType"] == "ERC20"
 
-    def test_get_access_conditions_public_pattern(self):
-        """Test public access pattern."""
+    def test_get_access_conditions_public_pattern_raises(self):
+        """Test public access pattern raises — canister does not support it."""
         step = EncryptStep(config={"evm_chain": "ethereum"})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={"access_pattern": "public", "evm_chain": "ethereum"},
         )
 
-        conditions = step._get_access_conditions(context)
-
-        assert conditions[0]["returnValueTest"]["value"] == "true"
+        with pytest.raises(ValueError, match="not supported by the Haven-AOL canister"):
+            step._get_access_conditions(context)
 
     def test_get_access_conditions_unknown_pattern(self):
         """Test error for unknown access pattern."""

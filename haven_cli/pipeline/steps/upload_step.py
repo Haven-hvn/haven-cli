@@ -809,7 +809,12 @@ class UploadStep(ConditionalStep):
         if not token_address:
             raise RuntimeError("token_contract/contractAddress required for CID encryption")
         threshold_raw = gate_condition.get("returnValueTest", {}).get("value", "1")
-        threshold = int(str(threshold_raw))
+        try:
+            threshold = int(str(threshold_raw))
+        except (ValueError, TypeError):
+            # Non-numeric values (e.g. "true" for public, wallet addresses for
+            # legacy owner_only) default to threshold=1 for derivation purposes.
+            threshold = 1
         pipeline_cfg = self._config.get("pipeline")
         config_chain = getattr(pipeline_cfg, "evm_chain", None) if pipeline_cfg is not None else self._config.get("evm_chain")
         configured_chain = context.options.get("evm_chain") or config_chain

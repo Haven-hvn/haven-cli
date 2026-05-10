@@ -63,39 +63,6 @@ def compute_derivation_input(gate: GateParams) -> bytes:
     return hashlib.sha256(preimage).digest()
 
 
-def _normalize_private_key(private_key: str) -> bytes:
-    key = private_key.strip()
-    if key.startswith("0x"):
-        key = key[2:]
-    if not key:
-        raise ValueError("Private key is empty")
-    if len(key) % 2 != 0:
-        raise ValueError("Private key hex must have even length")
-    return bytes.fromhex(key)
-
-
-def _keystream(private_key_bytes: bytes, derivation_input: bytes, length: int) -> bytes:
-    out = bytearray()
-    counter = 0
-    while len(out) < length:
-        block = hashlib.sha256(
-            private_key_bytes + derivation_input + counter.to_bytes(4, "big")
-        ).digest()
-        out.extend(block)
-        counter += 1
-    return bytes(out[:length])
-
-
-def _wrap_aes_key(aes_key: bytes, private_key: str, derivation_input: bytes) -> bytes:
-    stream = _keystream(_normalize_private_key(private_key), derivation_input, len(aes_key))
-    return bytes(a ^ b for a, b in zip(aes_key, stream))
-
-
-def _unwrap_aes_key(wrapped_key: bytes, private_key: str, derivation_input: bytes) -> bytes:
-    # XOR wrapping is symmetric.
-    return _wrap_aes_key(wrapped_key, private_key, derivation_input)
-
-
 def encrypt_bytes(plaintext: bytes, private_key: str, gate: GateParams) -> dict[str, Any]:
     """Encrypt payload and return Haven-AOL metadata.
 
@@ -125,6 +92,125 @@ def encrypt_bytes(plaintext: bytes, private_key: str, gate: GateParams) -> dict[
     }
 
 
+def _load_transport_secret_key() -> bytearray:
+    """Load and validate the transport secret key from environment.
+
+    Returns the key as a mutable bytearray so callers can zero it after use.
+    CPython does not guarantee immediate collection of ``bytes`` objects, so
+    using ``bytearray`` + explicit zeroing provides best-effort protection
+    against memory-residue attacks.
+
+    Returns:
+        Mutable bytearray containing the transport secret key (32 bytes).
+
+    Raises:
+        RuntimeError: If env var is missing or invalid.
+    """
+    secret_b64 = os.environ.get("HAVEN_AOL_TRANSPORT_SECRET_KEY_B64", "").strip()
+    if not secret_b64:
+        raise RuntimeError(
+            "HAVEN_AOL_TRANSPORT_SECRET_KEY_B64 is required for decryption. "
+            "Generate a transport keypair with vetkd_py and set both "
+            "HAVEN_AOL_TRANSPORT_SECRET_KEY_B64 and HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64."
+        )
+    try:
+        return bytearray(base64.b64decode(secret_b64))
+    except Exception as exc:
+        raise RuntimeError(
+            "HAVEN_AOL_TRANSPORT_SECRET_KEY_B64 is not valid base64"
+        ) from exc
+
+
+def _validate_transport_keypair_consistency() -> None:
+    """Validate that transport public key matches secret key (if both set).
+
+    Raises:
+        RuntimeError: If keys are inconsistent.
+    """
+    secret_b64 = os.environ.get("HAVEN_AOL_TRANSPORT_SECRET_KEY_B64", "").strip()
+    public_b64 = os.environ.get("HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64", "").strip()
+    if not secret_b64 or not public_b64:
+        return  # Validation will fail elsewhere if needed
+
+    try:
+        import vetkd_py
+    except ImportError:
+        return  # Can't validate without vetkd_py; will fail later at use
+
+    secret_bytes = base64.b64decode(secret_b64)
+    public_bytes = base64.b64decode(public_b64)
+    derived_public = vetkd_py.transport_public_key_from_secret(secret_bytes)
+    if derived_public != public_bytes:
+        raise RuntimeError(
+            "HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64 does not match "
+            "HAVEN_AOL_TRANSPORT_SECRET_KEY_B64. The keypair is inconsistent. "
+            "Regenerate with vetkd_py.generate_transport_secret_key() and "
+            "vetkd_py.transport_public_key_from_secret()."
+        )
+
+
+def _vetkd_unwrap_aes_key(
+    encrypted_canister_key: bytes,
+    verification_key_b64: str,
+    derivation_input: bytes,
+    encrypted_aes_key_b64: str,
+) -> bytes:
+    """Perform full VetKD unwrap chain to recover the AES key.
+
+    Chain: EncryptedVetKey -> VetKey -> IBE decrypt -> AES key
+
+    Args:
+        encrypted_canister_key: Raw bytes from requestDecryptionKey canister call.
+        verification_key_b64: Base64-encoded DerivedPublicKey from getVetKDPublicKey.
+        derivation_input: 32-byte SHA-256 derivation hash.
+        encrypted_aes_key_b64: Base64-encoded IBE ciphertext of the AES key.
+
+    Returns:
+        32-byte AES key.
+
+    Raises:
+        RuntimeError: On any cryptographic failure (fail-closed).
+    """
+    try:
+        import vetkd_py
+    except ImportError as exc:
+        raise RuntimeError(
+            "vetkd_py package is required for VetKD transport-key unwrapping. "
+            "Install it from the vetkd_py/ directory: pip install ./vetkd_py"
+        ) from exc
+
+    transport_secret_key = _load_transport_secret_key()
+    _validate_transport_keypair_consistency()
+
+    verification_key_bytes = base64.b64decode(verification_key_b64)
+    ibe_ciphertext_bytes = base64.b64decode(encrypted_aes_key_b64)
+
+    try:
+        aes_key = vetkd_py.unwrap_and_derive(
+            encrypted_key_bytes=encrypted_canister_key,
+            transport_secret_key_bytes=bytes(transport_secret_key),
+            verification_key_bytes=verification_key_bytes,
+            derivation_input=derivation_input,
+            ibe_ciphertext_bytes=ibe_ciphertext_bytes,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            f"VetKD unwrap failed (fail-closed): {exc}"
+        ) from exc
+    finally:
+        # Best-effort zeroing of transport secret key in Python memory
+        for i in range(len(transport_secret_key)):
+            transport_secret_key[i] = 0
+
+    if len(aes_key) != 32:
+        raise RuntimeError(
+            f"VetKD unwrap produced {len(aes_key)}-byte key, expected 32. "
+            "This indicates a protocol mismatch."
+        )
+
+    return bytes(aes_key)
+
+
 def decrypt_bytes(
     ciphertext_bytes: bytes,
     private_key: str,
@@ -133,20 +219,62 @@ def decrypt_bytes(
 ) -> bytes:
     """Decrypt payload from Haven-AOL metadata.
 
-    Runtime decryption for IBE-wrapped keys requires canister key retrieval and
-    transport-key unwrapping. This path is intentionally disabled in haven-cli.
+    Performs the full ICP VetKD decrypt chain:
+      1. Fetch verification key from canister
+      2. Request encrypted derived key from canister (with EVM proof)
+      3. Transport-unwrap the encrypted key using local secret
+      4. IBE-decrypt the AES key
+      5. AES-GCM decrypt the payload
+
+    Args:
+        ciphertext_bytes: Encrypted payload ([12-byte IV][ciphertext+tag]).
+        private_key: Unused (kept for API compat); transport key from env.
+        encrypted_key_b64: Base64-encoded IBE ciphertext of the AES key.
+        gate: Gate parameters for derivation.
+
+    Returns:
+        Decrypted plaintext bytes.
+
+    Raises:
+        RuntimeError: On any failure (fail-closed, no fallback).
     """
-    _ = get_vetkd_public_key_b64()
-    _ = request_decryption_key(
+    derivation_input = compute_derivation_input(gate)
+
+    # Step 1: Fetch verification key
+    verification_key_b64 = get_vetkd_public_key_b64()
+
+    # Step 2: Request encrypted derived key from canister
+    encrypted_canister_key = request_decryption_key(
         chain=gate.chain,
         token_address=gate.token_address,
         threshold=gate.threshold,
         cid=gate.cid,
     )
-    raise RuntimeError(
-        "decrypt_bytes is disabled for ICP-only Haven-AOL mode. "
-        "Derived-key transport unwrapping is not yet wired."
+
+    # Steps 3-4: Transport unwrap + IBE decrypt to get AES key
+    aes_key = _vetkd_unwrap_aes_key(
+        encrypted_canister_key=encrypted_canister_key,
+        verification_key_b64=verification_key_b64,
+        derivation_input=derivation_input,
+        encrypted_aes_key_b64=encrypted_key_b64,
     )
+
+    # Step 5: AES-GCM decrypt
+    if len(ciphertext_bytes) < 12:
+        raise RuntimeError("Ciphertext too short (missing IV)")
+
+    iv = ciphertext_bytes[:12]
+    ct_and_tag = ciphertext_bytes[12:]
+
+    aesgcm = AESGCM(aes_key)
+    try:
+        plaintext = aesgcm.decrypt(iv, ct_and_tag, None)
+    except Exception as exc:
+        raise RuntimeError(
+            "AES-GCM decryption failed. Key mismatch or corrupted ciphertext."
+        ) from exc
+
+    return plaintext
 
 
 def serialize_gate_metadata(gate: dict[str, Any]) -> str:
@@ -224,44 +352,139 @@ def decrypt_file_streaming(
 ) -> None:
     """Decrypt a file encrypted by encrypt_file_streaming.
 
-    Runtime decryption for IBE-wrapped keys requires canister key retrieval and
-    transport-key unwrapping. This path is intentionally disabled in haven-cli.
+    Performs the full ICP VetKD decrypt chain:
+      1. Fetch verification key from canister
+      2. Request encrypted derived key from canister (with EVM proof)
+      3. Transport-unwrap the encrypted key using local secret
+      4. IBE-decrypt the AES key
+      5. AES-GCM decrypt each chunk
+
+    Args:
+        input_path: Path to encrypted file.
+        output_path: Path to write decrypted file.
+        private_key: Unused (kept for API compat); transport key from env.
+        encrypted_key_b64: Base64-encoded IBE ciphertext of the AES key.
+        gate: Gate parameters for derivation.
+        chunk_size: Ignored (chunk sizes are stored in the file).
+
+    Raises:
+        RuntimeError: On any failure (fail-closed, no fallback).
     """
-    _ = get_vetkd_public_key_b64()
-    _ = request_decryption_key(
+    derivation_input = compute_derivation_input(gate)
+
+    # Step 1: Fetch verification key
+    verification_key_b64 = get_vetkd_public_key_b64()
+
+    # Step 2: Request encrypted derived key from canister
+    encrypted_canister_key = request_decryption_key(
         chain=gate.chain,
         token_address=gate.token_address,
         threshold=gate.threshold,
         cid=gate.cid,
     )
-    raise RuntimeError(
-        "decrypt_file_streaming is disabled for ICP-only Haven-AOL mode. "
-        "Derived-key transport unwrapping is not yet wired."
+
+    # Steps 3-4: Transport unwrap + IBE decrypt to get AES key
+    aes_key = _vetkd_unwrap_aes_key(
+        encrypted_canister_key=encrypted_canister_key,
+        verification_key_b64=verification_key_b64,
+        derivation_input=derivation_input,
+        encrypted_aes_key_b64=encrypted_key_b64,
     )
+
+    # Step 5: AES-GCM decrypt chunks
+    src_path = Path(input_path)
+    dst_path = Path(output_path)
+    aesgcm = AESGCM(aes_key)
+
+    with src_path.open("rb") as src, dst_path.open("wb") as dst:
+        # Read base IV (first 12 bytes)
+        base_iv = src.read(12)
+        if len(base_iv) != 12:
+            raise RuntimeError("Encrypted file too short (missing base IV)")
+
+        expected_chunk_index = 0
+
+        while True:
+            # Read chunk index (4 bytes, little-endian)
+            idx_data = src.read(4)
+            if not idx_data:
+                break  # EOF
+            if len(idx_data) != 4:
+                raise RuntimeError("Truncated chunk index in encrypted file")
+            chunk_index = struct.unpack("<I", idx_data)[0]
+
+            # Verify sequential ordering — prevents reordering/duplication attacks
+            if chunk_index != expected_chunk_index:
+                raise RuntimeError(
+                    f"Chunk ordering violation: expected chunk {expected_chunk_index}, "
+                    f"got {chunk_index}. File may have been tampered with."
+                )
+
+            # Read chunk length (4 bytes, little-endian)
+            len_data = src.read(4)
+            if len(len_data) != 4:
+                raise RuntimeError("Truncated chunk length in encrypted file")
+            chunk_len = struct.unpack("<I", len_data)[0]
+
+            # Sanity check chunk length to avoid OOM on malformed files
+            if chunk_len > 64 * 1024 * 1024:  # 64 MiB max per chunk
+                raise RuntimeError(
+                    f"Chunk {chunk_index} claims {chunk_len} bytes — "
+                    "exceeds maximum allowed chunk size (64 MiB). "
+                    "File may be corrupted."
+                )
+
+            # Read encrypted chunk
+            encrypted_chunk = src.read(chunk_len)
+            if len(encrypted_chunk) != chunk_len:
+                raise RuntimeError(
+                    f"Truncated chunk data: expected {chunk_len} bytes, "
+                    f"got {len(encrypted_chunk)}"
+                )
+
+            # Derive per-chunk IV and decrypt
+            per_iv = _derive_chunk_iv(base_iv, chunk_index)
+            try:
+                plaintext_chunk = aesgcm.decrypt(per_iv, encrypted_chunk, None)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"AES-GCM decryption failed on chunk {chunk_index}. "
+                    "Key mismatch or corrupted data."
+                ) from exc
+
+            dst.write(plaintext_chunk)
+            expected_chunk_index += 1
 
 
 def _ibe_encrypt_aes_key(aes_key: bytes, derivation_input: bytes) -> bytes:
-    """Encrypt AES key using Haven-AOL IBE verification key."""
+    """Encrypt AES key using Haven-AOL IBE verification key.
+
+    Uses vetkd_py (unified Rust package) for all VetKD cryptographic operations,
+    replacing the previous dependency on haven_aol + haven_aol_vetkeys.
+
+    The verification key is fetched from the canister via ``getVetKDPublicKey``,
+    which returns the fully-derived DerivedPublicKey. We validate it via
+    deserialization (round-trip check on the BLS12-381 G2 point) and then use
+    it directly for IBE encryption.
+    """
     try:
-        from haven_aol.core import derive_verification_key, ibe_encrypt_aes_key
+        import vetkd_py
     except ImportError as exc:
         raise RuntimeError(
-            "haven_aol package is required for ICP-only Haven-AOL encryption."
+            "vetkd_py package is required for Haven-AOL IBE encryption. "
+            "Install it from the vetkd_py/ directory: pip install ./vetkd_py"
         ) from exc
 
-    key_name = os.environ.get("HAVEN_AOL_VETKD_KEY_NAME", "key_1").strip() or "key_1"
-    context = os.environ.get("HAVEN_AOL_VETKD_CONTEXT", "accessol_v1").encode("utf-8")
     verification_key_b64 = get_vetkd_public_key_b64()
-    verification_key_bytes: bytes | None = base64.b64decode(verification_key_b64)
+    verification_key_bytes = base64.b64decode(verification_key_b64)
 
-    derived_public_key = derive_verification_key(
-        canister_id="bkyz2-fmaaa-aaaaa-qaaaq-cai",
-        context=context,
-        key_name=key_name,
-        verification_key_bytes=verification_key_bytes,
-    )
-    return ibe_encrypt_aes_key(
-        aes_key=aes_key,
-        derived_public_key=derived_public_key,
-        derivation_input=derivation_input,
+    # Validate the verification key from the canister and use it as the
+    # derived public key. This is the normal runtime path — the canister
+    # returns the fully-derived key so we just validate it.
+    derived_public_key = vetkd_py.deserialize_derived_public_key(verification_key_bytes)
+
+    return vetkd_py.ibe_encrypt(
+        derived_public_key_bytes=derived_public_key,
+        identity_bytes=derivation_input,
+        plaintext=aes_key,
     )

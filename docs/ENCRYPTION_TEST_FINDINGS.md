@@ -1,5 +1,12 @@
 # Haven CLI Encryption — Test Findings & Analysis
 
+> **⚠️ Historical Document:** This document records findings from early encryption testing. The encryption system has since been updated:
+> - The old **Lit Protocol** (`hybrid-crypto.ts`) path is no longer used.
+> - The old **XOR key wrap** functions have been removed.
+> - All encryption now uses **Haven-AOL VetKD** via the `vetkd_py` package (IBE + AES-GCM).
+> - Streaming encryption/decryption is the only file-processing path.
+> - See [HAVEN_AOL_VETKD_TRANSPORT_UNWRAP.md](HAVEN_AOL_VETKD_TRANSPORT_UNWRAP.md) for current architecture.
+
 **Date:** 2026-05-10  
 **Test file:** `downloads/video.mp4` (964,838,837 bytes / 920.1 MB)  
 **Environment:** Linux, 1.9 GB RAM, 24 GB disk (9.4 GB free)

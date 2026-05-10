@@ -68,13 +68,16 @@ vlm = [
 blockchain = [
     "web3==7.16.0",
 ]
+icp = [
+    "vetkd_py",
+]
 tui = [
     "textual==8.2.5",
     "plotille==6.0.5",
     "tomli==2.4.1",
 ]
 all = [
-    "haven-cli[media,vlm,blockchain,tui]",
+    "haven-cli[media,vlm,blockchain,icp,tui]",
 ]
 dev = [
     "pytest==9.0.3",

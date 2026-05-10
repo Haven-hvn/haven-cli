@@ -924,6 +924,47 @@ def validate_config(config: Optional[HavenConfig] = None) -> List[ValidationErro
                 ),
                 severity="error"
             ))
+        # Transport key validation for decrypt-capable mode
+        transport_secret = os.environ.get("HAVEN_AOL_TRANSPORT_SECRET_KEY_B64", "").strip()
+        transport_public = os.environ.get("HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64", "").strip()
+        if transport_secret and not transport_public:
+            errors.append(ValidationError(
+                field="HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64",
+                message=(
+                    "HAVEN_AOL_TRANSPORT_SECRET_KEY_B64 is set but HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64 is missing. "
+                    "Both must be set for decrypt-capable mode. "
+                    "Derive public from secret: vetkd_py.transport_public_key_from_secret(secret)"
+                ),
+                severity="error"
+            ))
+        if transport_public and not transport_secret:
+            errors.append(ValidationError(
+                field="HAVEN_AOL_TRANSPORT_SECRET_KEY_B64",
+                message=(
+                    "HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64 is set but HAVEN_AOL_TRANSPORT_SECRET_KEY_B64 is missing. "
+                    "Both must be set for decrypt-capable mode."
+                ),
+                severity="error"
+            ))
+        if transport_secret and transport_public:
+            # Validate base64 encoding
+            import base64 as _b64
+            try:
+                _b64.b64decode(transport_secret)
+            except Exception:
+                errors.append(ValidationError(
+                    field="HAVEN_AOL_TRANSPORT_SECRET_KEY_B64",
+                    message="Value is not valid base64.",
+                    severity="error"
+                ))
+            try:
+                _b64.b64decode(transport_public)
+            except Exception:
+                errors.append(ValidationError(
+                    field="HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64",
+                    message="Value is not valid base64.",
+                    severity="error"
+                ))
         if not config.pipeline.evm_chain:
             errors.append(ValidationError(
                 field="pipeline.evm_chain",

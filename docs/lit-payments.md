@@ -1,8 +1,12 @@
 # Lit Protocol Payment Handling
 
+> **⚠️ DEPRECATED:** Haven CLI no longer uses Lit Protocol for encryption. All encryption is now handled by **Haven-AOL VetKD** (ICP-native, using the `vetkd_py` package). This document is retained for historical reference only.
+>
+> For the current encryption architecture, see [HAVEN_AOL_VETKD_TRANSPORT_UNWRAP.md](HAVEN_AOL_VETKD_TRANSPORT_UNWRAP.md).
+
 ## Overview
 
-This document explains how Lit Protocol payments work in Haven CLI and compares it to Synapse (Filecoin) payment handling.
+This document explains how Lit Protocol payments **previously** worked in Haven CLI and compares it to Synapse (Filecoin) payment handling.
 
 ## Quick Summary
 

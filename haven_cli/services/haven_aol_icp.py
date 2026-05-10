@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import os
+import secrets
 import time
 from dataclasses import dataclass
 
@@ -111,7 +112,9 @@ def request_decryption_key(
     if not transport_public_key_b64:
         raise RuntimeError("HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64 is required")
     transport_public_key = base64.b64decode(transport_public_key_b64)
-    nonce = int(time.time_ns())
+    # Combine time_ns with 8 random bytes to avoid collisions on clock
+    # skew, low-resolution clocks, or rapid successive calls.
+    nonce = (int(time.time_ns()) << 64) | int.from_bytes(secrets.token_bytes(8), "big")
     proof = sign_gate_request_typed_data(
         private_key=evm_private_key,
         transport_public_key=transport_public_key,
@@ -140,18 +143,22 @@ def request_decryption_key(
     agent = Agent(identity, client)
     canister = Canister(agent=agent, canister_id=HAVEN_AOL_CANISTER_ID, candid=HAVEN_AOL_DID)
     chain_variant = {chain: None}
-    response = canister.requestDecryptionKey(
-        chain_variant,
-        token_address,
-        threshold,
-        cid,
-        proof.evm_address,
-        transport_public_key,
-        nonce,
-        bytes.fromhex(proof.signature_hex.removeprefix("0x")),
-        proof.eip712_chain_id,
-        proof.eip712_verifying_contract,
-    )
+    # Pass a single dict matching the Candid GateRequest record type.
+    # ic-py encodes named record fields from a Python dict; positional args
+    # are not reliably supported for record types across ic-py versions.
+    gate_request = {
+        "chain": chain_variant,
+        "tokenAddress": token_address,
+        "threshold": threshold,
+        "cid": cid,
+        "evmAddress": proof.evm_address,
+        "transportPublicKey": transport_public_key,
+        "nonce": nonce,
+        "signature": bytes.fromhex(proof.signature_hex.removeprefix("0x")),
+        "eip712ChainId": proof.eip712_chain_id,
+        "eip712VerifyingContract": proof.eip712_verifying_contract,
+    }
+    response = canister.requestDecryptionKey(gate_request)
     if not isinstance(response, list) or len(response) != 1:
         raise RuntimeError("Unexpected requestDecryptionKey response shape")
     gate_result = response[0]

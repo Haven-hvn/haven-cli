@@ -4,19 +4,19 @@ overview: Implement VetKD transport-key unwrap end-to-end in Haven CLI, plus fix
 todos:
   - id: create-vetkd-py
     content: Create standalone Rust+PyO3 `vetkd_py` package with unwrap/derive APIs and typed Python surface.
-    status: pending
+    status: done
   - id: wire-decrypt-path
     content: Replace decrypt placeholders in haven_aol_local with full ICP unwrap + IBE decrypt + AES decrypt chain.
-    status: pending
+    status: done
   - id: transport-config-validation
     content: Add transport secret/public env validation and consistency checks in service/config layers.
-    status: pending
+    status: done
   - id: fix-access-cid-flows
     content: Fix owner/public/CID threshold parsing mismatches in encrypt/upload/download flows.
-    status: pending
+    status: done
   - id: tests-and-docs
     content: Update/add tests for happy/failure decrypt paths and refresh docs/config references.
-    status: pending
+    status: done
 isProject: false
 ---
 

@@ -224,8 +224,10 @@ async def _decrypt_file(
     threshold_raw = gate_source.get("returnValueTest", {}).get("value", "1")
     try:
         threshold = int(str(threshold_raw))
-    except ValueError as exc:
-        raise ValueError("Invalid threshold value in encryption metadata") from exc
+    except (ValueError, TypeError):
+        # Non-numeric values (e.g. "true" for public pattern, wallet addresses
+        # for legacy owner_only) default to threshold=1 for derivation purposes.
+        threshold = 1
     cid_value = str(gate_source.get("cid") or cid or "").strip()
     if not cid_value:
         cid_value = f"local-{input_path.name}"
