@@ -247,3 +247,65 @@ fn vetkd_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(unwrap_and_derive, m)?)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ic_cdk::management_canister::{VetKDCurve, VetKDKeyId};
+
+    #[test]
+    fn master_public_key_for_mainnet_key_1() {
+        let key_id = VetKDKeyId {
+            curve: VetKDCurve::Bls12_381_G2,
+            name: "key_1".into(),
+        };
+        assert!(MasterPublicKey::for_mainnet_key(&key_id).is_some());
+    }
+
+    #[test]
+    fn master_public_key_for_mainnet_test_key_1() {
+        let key_id = VetKDKeyId {
+            curve: VetKDCurve::Bls12_381_G2,
+            name: "test_key_1".into(),
+        };
+        assert!(MasterPublicKey::for_mainnet_key(&key_id).is_some());
+    }
+
+    #[test]
+    fn master_public_key_unknown_name_is_none() {
+        let key_id = VetKDKeyId {
+            curve: VetKDCurve::Bls12_381_G2,
+            name: "unknown_key".into(),
+        };
+        assert!(MasterPublicKey::for_mainnet_key(&key_id).is_none());
+    }
+
+    #[test]
+    fn transport_secret_key_from_random_seed_round_trips() {
+        let seed: [u8; 32] = rand::thread_rng().gen();
+        let tsk = TransportSecretKey::from_seed(seed.to_vec()).expect("valid seed");
+        let bytes = tsk.serialize();
+        let again = TransportSecretKey::deserialize(&bytes).expect("deserialize");
+        assert_eq!(again.serialize(), bytes);
+        assert_eq!(bytes.len(), 32);
+        assert_eq!(again.public_key().len(), 48);
+    }
+
+    #[test]
+    fn derived_public_key_round_trip() {
+        let key_id = VetKDKeyId {
+            curve: VetKDCurve::Bls12_381_G2,
+            name: "key_1".into(),
+        };
+        let master = MasterPublicKey::for_mainnet_key(&key_id).expect("key_1");
+        let canister_id = [1u8; 29];
+        let context = b"ctx";
+        let derived = master
+            .derive_canister_key(&canister_id)
+            .derive_sub_key(context);
+        let raw = derived.serialize();
+        let dpk = DerivedPublicKey::deserialize(&raw).expect("deserialize DPK");
+        assert_eq!(dpk.serialize(), raw);
+        assert_eq!(raw.len(), 96);
+    }
+}

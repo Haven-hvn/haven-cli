@@ -2,6 +2,7 @@
 name = "vetkd_py"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 description = "VetKD transport-key unwrap and IBE decrypt for Haven-AOL (Python bindings via PyO3)"
 license = "MIT"
 
@@ -10,7 +11,8 @@ name = "vetkd_py"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.24", features = ["extension-module"] }
+pyo3 = { version = "0.28", features = ["extension-module"] }
 ic-vetkeys = "0.6"
+# Keep in sync with ic-vetkeys (ic-cdk + rand versions follow that crate).
 ic-cdk = "0.19"
 rand = "0.8"
