@@ -50,6 +50,27 @@ def load_haven_aol_icp_config() -> HavenAolIcpConfig:
     return HavenAolIcpConfig(host=host, identity_pem_path=identity_pem_path)
 
 
+def candid_blob_to_bytes(raw: object, *, context: str) -> bytes:
+    """Convert ic-py Candid ``blob`` values to ``bytes``.
+
+    ic-py often decodes Candid blobs as ``list[int]`` (or ``tuple[int, ...]``)
+    rather than ``bytes``. VetKD and other crypto paths require ``bytes``.
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
+    if isinstance(raw, (list, tuple)):
+        try:
+            return bytes(raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"{context}: Candid blob sequence must contain only integers in 0..255"
+            ) from exc
+    raise RuntimeError(
+        f"{context}: unexpected payload type {type(raw).__name__!r}, "
+        "expected bytes, bytearray, list[int], or tuple[int, ...]"
+    )
+
+
 def get_vetkd_public_key_b64() -> str:
     """Fetch Haven-AOL VetKD public key from fixed canister.
 
@@ -83,10 +104,8 @@ def get_vetkd_public_key_b64() -> str:
     response = canister.getVetKDPublicKey()
     if not isinstance(response, list) or len(response) != 1:
         raise RuntimeError("Unexpected getVetKDPublicKey response shape")
-    key_bytes = response[0]
-    if not isinstance(key_bytes, (bytes, bytearray)):
-        raise RuntimeError("Unexpected getVetKDPublicKey payload type")
-    return base64.b64encode(bytes(key_bytes)).decode("ascii")
+    key_bytes = candid_blob_to_bytes(response[0], context="getVetKDPublicKey")
+    return base64.b64encode(key_bytes).decode("ascii")
 
 
 def request_decryption_key(
@@ -100,6 +119,10 @@ def request_decryption_key(
 
     This performs an authenticated user call and EIP-712 signature proof.
     """
+    if threshold < 1:
+        raise ValueError(
+            "Gate threshold must be >= 1 (Haven-AOL canister rejects 0 as InvalidThreshold)"
+        )
     cfg = load_haven_aol_icp_config()
     evm_private_key = os.environ.get("HAVEN_PRIVATE_KEY", "").strip()
     if not evm_private_key:
@@ -163,7 +186,9 @@ def request_decryption_key(
         raise RuntimeError("Unexpected requestDecryptionKey response shape")
     gate_result = response[0]
     if isinstance(gate_result, dict) and "ok" in gate_result:
-        return gate_result["ok"]
+        return candid_blob_to_bytes(
+            gate_result["ok"], context="requestDecryptionKey ok"
+        )
     if isinstance(gate_result, dict) and "err" in gate_result:
         raise RuntimeError(f"Haven-AOL requestDecryptionKey failed: {gate_result['err']}")
     raise RuntimeError("Unexpected GateResult payload")
