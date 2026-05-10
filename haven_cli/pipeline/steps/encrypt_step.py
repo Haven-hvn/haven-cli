@@ -4,7 +4,12 @@ This step encrypts video content using the in-repo Haven-AOL implementation.
 The step is conditional and can be skipped via the encrypt option.
 """
 
+from __future__ import annotations
+
+import asyncio
+import errno
 import hashlib
+from concurrent.futures import Future
 import logging
 import os
 import time
@@ -14,12 +19,64 @@ from typing import Any, Dict, List, Optional
 from haven_cli.crypto.haven_aol_local import GateParams, encrypt_file_streaming
 from haven_cli.pipeline.context import EncryptionMetadata, PipelineContext
 from haven_cli.pipeline.events import EventType
-from haven_cli.pipeline.results import StepError, StepResult
+from haven_cli.pipeline.results import ErrorCategory, StepError, StepResult
 from haven_cli.pipeline.step import ConditionalStep
 from haven_cli.services.blockchain_network import get_network_config
 from haven_cli.services.evm_utils import normalize_haven_aol_chain
 
 logger = logging.getLogger(__name__)
+
+# Errnos often seen for transient network / I/O issues (retry may help).
+_TRANSIENT_ERRNOS: frozenset[int] = frozenset(
+    e
+    for e in (
+        errno.ECONNABORTED,
+        errno.ECONNRESET,
+        errno.ECONNREFUSED,
+        errno.ETIMEDOUT,
+        errno.EPIPE,
+        errno.EAGAIN,
+        getattr(errno, "WSAETIMEDOUT", -1),
+        getattr(errno, "WSAECONNRESET", -1),
+    )
+    if e >= 0
+)
+
+
+def classify_encrypt_failure(exc: BaseException) -> ErrorCategory:
+    """Classify an exception from the encrypt path for retry / reporting."""
+    if isinstance(exc, (ValueError, FileNotFoundError, KeyError, TypeError)):
+        return ErrorCategory.PERMANENT
+    if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError, BrokenPipeError)):
+        return ErrorCategory.TRANSIENT
+    if isinstance(exc, OSError):
+        err = getattr(exc, "errno", None)
+        if err in _TRANSIENT_ERRNOS:
+            return ErrorCategory.TRANSIENT
+        winerr = getattr(exc, "winerror", None)
+        if winerr in (10060, 10061):  # common Windows socket timeout / refused
+            return ErrorCategory.TRANSIENT
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        if any(
+            s in msg
+            for s in (
+                "timeout",
+                "temporarily unavailable",
+                "connection reset",
+                "connection refused",
+                "econnrefused",
+                "try again",
+            )
+        ):
+            return ErrorCategory.TRANSIENT
+    return ErrorCategory.UNKNOWN
+
+
+def step_error_from_encrypt_exception(exc: BaseException) -> StepError:
+    """Build a StepError for encrypt failures with category-aware retry flags."""
+    category = classify_encrypt_failure(exc)
+    return StepError.from_exception(exc, code="ENCRYPT_ERROR", category=category)
 
 
 class EncryptStep(ConditionalStep):
@@ -135,10 +192,20 @@ class EncryptStep(ConditionalStep):
         try:
             # Get access conditions from config or context
             access_conditions = self._get_access_conditions(context)
-            logger.info(f"Using access pattern: {context.options.get('access_pattern', 'owner_only')}")
+            pattern = context.options.get("access_pattern") or self._config.get(
+                "access_pattern", "owner_only"
+            )
+            chain = self._get_chain(context)
+            logger.info(
+                "Encrypt starting video_id=%s path=%s chain=%s pattern=%s",
+                context.video_id,
+                video_path,
+                chain,
+                pattern,
+            )
 
-            # Encrypt via standalone Haven-AOL implementation
-            # Uses _js_call_with_retry internally for resilience
+            # Encrypt via standalone Haven-AOL implementation (runs in a thread
+            # so progress events can be scheduled from chunk callbacks).
             encryption_result = await self._encrypt_with_haven_aol(
                 video_path,
                 access_conditions,
@@ -197,7 +264,13 @@ class EncryptStep(ConditionalStep):
             )
 
         except Exception as e:
-            logger.error(f"Encryption failed: {e}")
+            logger.error(
+                "Encryption failed video_id=%s path=%s: %s",
+                context.video_id,
+                video_path,
+                e,
+                exc_info=True,
+            )
 
             # Mark job as failed
             error_msg = str(e)
@@ -207,10 +280,7 @@ class EncryptStep(ConditionalStep):
                     context.video_id, "encrypt", 0, status="failed", error=error_msg
                 )
 
-            return StepResult.fail(
-                self.name,
-                StepError.from_exception(e, code="ENCRYPT_ERROR"),
-            )
+            return StepResult.fail(self.name, step_error_from_encrypt_exception(e))
 
     async def _encrypt_with_haven_aol(
         self,
@@ -265,18 +335,44 @@ class EncryptStep(ConditionalStep):
             raise ValueError("encrypt_chunk_size must be > 0")
 
         encrypted_path = f"{video_path}.encrypted"
-        encrypted = encrypt_file_streaming(
-            input_path=video_path,
-            output_path=encrypted_path,
-            private_key="",
-            gate=GateParams(
-                chain=chain,
-                token_address=token_address,
-                threshold=threshold,
-                cid=cid_value,
-            ),
-            chunk_size=chunk_size,
+        gate = GateParams(
+            chain=chain,
+            token_address=token_address,
+            threshold=threshold,
+            cid=cid_value,
         )
+
+        loop = asyncio.get_running_loop()
+        progress_futures: list[Future[None]] = []
+
+        def on_encrypt_progress(chunk_index: int, source_bytes_processed: int) -> None:
+            fut = asyncio.run_coroutine_threadsafe(
+                self._emit_event(
+                    EventType.ENCRYPT_PROGRESS,
+                    context,
+                    {
+                        "video_path": video_path,
+                        "chunk_index": chunk_index,
+                        "source_bytes_processed": source_bytes_processed,
+                    },
+                ),
+                loop,
+            )
+            progress_futures.append(fut)
+
+        def _run_encrypt() -> Dict[str, Any]:
+            return encrypt_file_streaming(
+                input_path=video_path,
+                output_path=encrypted_path,
+                private_key="",
+                gate=gate,
+                chunk_size=chunk_size,
+                progress_callback=on_encrypt_progress,
+            )
+
+        encrypted = await asyncio.to_thread(_run_encrypt)
+        for fut in progress_futures:
+            await asyncio.wrap_future(fut)
 
         return {
             "ciphertext_path": encrypted_path,
@@ -561,7 +657,11 @@ class EncryptStep(ConditionalStep):
 
         except Exception as e:
             # Log error but don't fail the step - encryption succeeded
-            logger.error(f"Failed to save encryption metadata to database: {e}")
+            logger.error(
+                "Failed to save encryption metadata to database: %s",
+                e,
+                exc_info=True,
+            )
 
     def _metadata_to_json(self, metadata: EncryptionMetadata) -> str:
         """Convert encryption metadata to JSON string.
@@ -601,7 +701,12 @@ class EncryptStep(ConditionalStep):
         error: Optional[StepError],
     ) -> None:
         """Handle encryption error."""
-        logger.error(f"Encryption step failed: {error.message if error else 'Unknown error'}")
+        # Failure is already logged with traceback in process(); avoid duplicate ERROR lines.
+        logger.debug(
+            "Encrypt on_error hook video_id=%s: %s",
+            context.video_id,
+            error.message if error else "Unknown error",
+        )
 
     # =========================================================================
     # Task 12: Job tracking helper methods

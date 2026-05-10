@@ -17,8 +17,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from haven_cli.crypto.haven_aol_local import GateParams, decrypt_file_streaming
 import haven_cli.crypto.haven_aol_local as haven_aol_local
 from haven_cli.pipeline.context import EncryptionMetadata, PipelineContext
-from haven_cli.pipeline.results import StepResult
-from haven_cli.pipeline.steps.encrypt_step import EncryptStep
+from haven_cli.pipeline.results import ErrorCategory, StepResult
+from haven_cli.pipeline.events import EventType
+from haven_cli.pipeline.steps import encrypt_step as encrypt_step_module
+from haven_cli.pipeline.steps.encrypt_step import (
+    EncryptStep,
+    classify_encrypt_failure,
+    step_error_from_encrypt_exception,
+)
 
 # Valid 40-hex address used in tests (matches the contract address used in encryption tests)
 TEST_ADDRESS = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
@@ -28,6 +34,33 @@ TEST_ADDRESS = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 def _mock_haven_aol_ibe(monkeypatch) -> None:
     """Mock IBE key wrapping for deterministic unit tests."""
     monkeypatch.setattr(haven_aol_local, "_ibe_encrypt_aes_key", lambda aes_key, derivation_input: b"wrapped")
+
+
+class TestEncryptFailureClassification:
+    """Tests for encrypt error category mapping (retries / reporting)."""
+
+    def test_classify_value_error_permanent(self) -> None:
+        assert classify_encrypt_failure(ValueError("bad")) is ErrorCategory.PERMANENT
+
+    def test_classify_connection_error_transient(self) -> None:
+        assert classify_encrypt_failure(ConnectionError("reset")) is ErrorCategory.TRANSIENT
+
+    def test_classify_oserror_transient_errno(self) -> None:
+        import errno
+
+        exc = OSError(errno.ETIMEDOUT, "timed out")
+        assert classify_encrypt_failure(exc) is ErrorCategory.TRANSIENT
+
+    def test_classify_runtime_error_timeout_message_transient(self) -> None:
+        assert (
+            classify_encrypt_failure(RuntimeError("upstream Connection timeout"))
+            is ErrorCategory.TRANSIENT
+        )
+
+    def test_step_error_from_encrypt_marks_transient_retryable(self) -> None:
+        err = step_error_from_encrypt_exception(TimeoutError("x"))
+        assert err.category is ErrorCategory.TRANSIENT
+        assert err.retryable is True
 
 
 class TestEncryptStepBasics:
@@ -59,7 +92,11 @@ class TestEncryptStepAccessConditions:
 
     def test_owner_only_conditions(self):
         """Test owner-only access conditions."""
-        step = EncryptStep(config={"evm_chain": "ethereum", "owner_wallet": TEST_ADDRESS})
+        step = EncryptStep(config={
+            "evm_chain": "ethereum",
+            "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
+        })
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={"evm_chain": "ethereum"},
@@ -70,14 +107,14 @@ class TestEncryptStepAccessConditions:
         assert len(conditions) == 1
         # "ethereum" normalizes to "EthMainnet"
         assert conditions[0]["chain"] == "EthMainnet"
-        assert conditions[0]["returnValueTest"]["value"] == TEST_ADDRESS
-        assert conditions[0]["parameters"] == []
+        assert conditions[0]["returnValueTest"]["value"] == "1"
+        assert conditions[0]["parameters"] == [":userAddress"]
         assert conditions[0]["ownerWallet"] == TEST_ADDRESS
         assert conditions[0]["contractAddress"] == TEST_ADDRESS
 
     def test_owner_only_conditions_from_context(self):
         """Test owner-only conditions from context options."""
-        step = EncryptStep(config={"evm_chain": "ethereum"})
+        step = EncryptStep(config={"evm_chain": "ethereum", "token_contract": TEST_ADDRESS})
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={
@@ -88,7 +125,8 @@ class TestEncryptStepAccessConditions:
 
         conditions = step._owner_only_conditions(context)
 
-        assert conditions[0]["returnValueTest"]["value"] == "0xabcdef1234567890abcdef1234567890abcdef12"
+        assert conditions[0]["returnValueTest"]["value"] == "1"
+        assert conditions[0]["ownerWallet"] == "0xabcdef1234567890abcdef1234567890abcdef12"
 
     def test_owner_only_conditions_missing_wallet(self):
         """Test error when owner wallet is missing."""
@@ -224,7 +262,11 @@ class TestEncryptStepAccessConditions:
 
     def test_get_access_conditions_owner_only_pattern(self):
         """Test owner_only access pattern."""
-        step = EncryptStep(config={"evm_chain": "ethereum", "owner_wallet": TEST_ADDRESS})
+        step = EncryptStep(config={
+            "evm_chain": "ethereum",
+            "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
+        })
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={"access_pattern": "owner_only", "evm_chain": "ethereum"},
@@ -233,7 +275,7 @@ class TestEncryptStepAccessConditions:
         conditions = step._get_access_conditions(context)
 
         assert len(conditions) == 1
-        assert conditions[0]["returnValueTest"]["value"] == TEST_ADDRESS
+        assert conditions[0]["returnValueTest"]["value"] == "1"
 
     def test_get_access_conditions_nft_gated_pattern(self):
         """Test nft_gated access pattern."""
@@ -298,6 +340,7 @@ class TestEncryptStepAccessConditions:
         step = EncryptStep(config={
             "evm_chain": "ethereum",
             "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
             "access_pattern": "owner_only",
         })
         context = PipelineContext(
@@ -307,11 +350,15 @@ class TestEncryptStepAccessConditions:
 
         conditions = step._get_access_conditions(context)
 
-        assert conditions[0]["returnValueTest"]["value"] == TEST_ADDRESS
+        assert conditions[0]["returnValueTest"]["value"] == "1"
 
     def test_chain_resolved_from_context_options_first(self):
         """Test that evm_chain in context options takes priority over config."""
-        step = EncryptStep(config={"chain": "ethereum", "owner_wallet": TEST_ADDRESS})
+        step = EncryptStep(config={
+            "evm_chain": "ethereum",
+            "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
+        })
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             options={"evm_chain": "BaseMainnet"},
@@ -494,6 +541,7 @@ class TestEncryptStepProcess:
             "evm_chain": "ethereum",
             "access_pattern": "owner_only",
             "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
         })
 
         video_file = tmp_path / "test.mp4"
@@ -514,6 +562,51 @@ class TestEncryptStepProcess:
         assert context.encrypted_video_path == str(video_file) + ".encrypted"
 
     @pytest.mark.asyncio
+    async def test_process_emits_encrypt_progress_events(self, tmp_path, monkeypatch):
+        """Chunked encrypt schedules ENCRYPT_PROGRESS via thread callback."""
+        monkeypatch.setenv(
+            "HAVEN_PRIVATE_KEY",
+            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        step = EncryptStep(config={
+            "evm_chain": "ethereum",
+            "access_pattern": "owner_only",
+            "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
+        })
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"x" * 250)
+        context = PipelineContext(
+            source_path=video_file,
+            options={
+                "encrypt": True,
+                "evm_chain": "ethereum",
+                "access_pattern": "owner_only",
+                "encrypt_chunk_size": 80,
+            },
+            video_id=42,
+        )
+        emitted: list[EventType] = []
+        real_emit = step._emit_event
+
+        async def capture_emit(
+            event_type: EventType,
+            ctx: PipelineContext,
+            payload: dict,
+        ) -> None:
+            emitted.append(event_type)
+            await real_emit(event_type, ctx, payload)
+
+        step._emit_event = capture_emit  # type: ignore[method-assign]
+
+        with patch.object(step, "_save_encryption_metadata", new_callable=AsyncMock):
+            result = await step.process(context)
+
+        assert result.success is True
+        assert EventType.ENCRYPT_PROGRESS in emitted
+        assert emitted.count(EventType.ENCRYPT_PROGRESS) >= 2
+
+    @pytest.mark.asyncio
     async def test_process_without_video_id(self, tmp_path, monkeypatch):
         """Test encryption without video ID (skips database save)."""
         # Set a test private key
@@ -523,6 +616,7 @@ class TestEncryptStepProcess:
             "evm_chain": "ethereum",
             "access_pattern": "owner_only",
             "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
         })
 
         video_file = tmp_path / "test.mp4"
@@ -541,10 +635,11 @@ class TestEncryptStepProcess:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_process_encryption_failure(self, tmp_path):
-        """Test handling of encryption failure (missing private key)."""
+    async def test_process_encryption_failure(self, tmp_path, monkeypatch):
+        """Test handling of encryption failure from the streaming encrypt path."""
         step = EncryptStep(config={
             "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
             "evm_chain": "ethereum",
             "access_pattern": "owner_only",
         })
@@ -557,14 +652,57 @@ class TestEncryptStepProcess:
             options={"encrypt": True, "evm_chain": "ethereum", "access_pattern": "owner_only"},
         )
 
-        # No private key set - should fail
-        with patch.dict(os.environ, {}, clear=True):
-            result = await step.process(context)
+        def boom(**_kwargs: object) -> dict:
+            raise RuntimeError("simulated encrypt failure")
+
+        monkeypatch.setattr(encrypt_step_module, "encrypt_file_streaming", boom)
+
+        result = await step.process(context)
 
         assert result.success is False
         assert result.failed is True
         assert result.error is not None
         assert result.error.code == "ENCRYPT_ERROR"
+        assert "simulated encrypt failure" in result.error.message
+
+    @pytest.mark.asyncio
+    async def test_execute_retries_transient_encrypt_error(self, tmp_path, monkeypatch):
+        """Transient errors from encrypt are retried by the step executor."""
+        monkeypatch.setenv(
+            "HAVEN_PRIVATE_KEY",
+            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        step = EncryptStep(config={
+            "evm_chain": "ethereum",
+            "access_pattern": "owner_only",
+            "owner_wallet": TEST_ADDRESS,
+            "token_contract": TEST_ADDRESS,
+        })
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"hello")
+        context = PipelineContext(
+            source_path=video_file,
+            options={"encrypt": True, "evm_chain": "ethereum", "access_pattern": "owner_only"},
+        )
+
+        attempts = {"n": 0}
+
+        real = encrypt_step_module.encrypt_file_streaming
+
+        def flaky_encrypt(**kwargs: object) -> dict:
+            attempts["n"] += 1
+            if attempts["n"] < 2:
+                raise ConnectionError("transient reset")
+            return real(**kwargs)
+
+        monkeypatch.setattr(encrypt_step_module, "encrypt_file_streaming", flaky_encrypt)
+
+        with patch.object(step, "_save_encryption_metadata", new_callable=AsyncMock):
+            result = await step.execute(context)
+
+        assert result.success is True
+        assert attempts["n"] == 2
+        assert result.attempts == 2
 
 
 class TestEncryptStepDatabase:
@@ -755,7 +893,7 @@ class TestEncryptStepRealCryptoIntegration:
             threshold=1,
             cid=access_conditions[0]["cid"],
         )
-        with pytest.raises(RuntimeError, match="disabled for ICP-only Haven-AOL mode"):
+        with pytest.raises(RuntimeError, match="HAVEN_ICP_IDENTITY_PEM_PATH is required"):
             decrypt_file_streaming(
                 input_path=encrypted_path,
                 output_path=tmp_path / "decrypted.mp4",

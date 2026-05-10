@@ -9,12 +9,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from haven_cli.services.haven_aol_icp import get_vetkd_public_key_b64, request_decryption_key
@@ -299,13 +303,31 @@ def encrypt_file_streaming(
     private_key: str,
     gate: GateParams,
     chunk_size: int = 1024 * 1024,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Encrypt a file using chunked streaming to avoid OOM on large files."""
+    """Encrypt a file using chunked streaming to avoid OOM on large files.
+
+    Args:
+        progress_callback: If set, invoked after each chunk with
+            ``(chunk_index, source_bytes_processed)`` (0-based chunk index,
+            cumulative bytes read from the source file).
+    """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be > 0")
 
     src_path = Path(input_path)
     dst_path = Path(output_path)
+    file_size = src_path.stat().st_size
+    est_chunks = max(1, (file_size + chunk_size - 1) // chunk_size)
+    log_interval = max(1, est_chunks // 10)
+
+    logger.debug(
+        "Streaming encrypt start input=%s output=%s bytes=%s chunk_size=%s",
+        src_path,
+        dst_path,
+        file_size,
+        chunk_size,
+    )
 
     aes_key = os.urandom(32)
     base_iv = os.urandom(12)
@@ -316,6 +338,7 @@ def encrypt_file_streaming(
     with src_path.open("rb") as src, dst_path.open("wb") as dst:
         dst.write(base_iv)
         chunk_index = 0
+        source_bytes_processed = 0
         while True:
             chunk = src.read(chunk_size)
             if not chunk:
@@ -325,7 +348,24 @@ def encrypt_file_streaming(
             dst.write(struct.pack("<I", chunk_index))
             dst.write(struct.pack("<I", len(encrypted_chunk)))
             dst.write(encrypted_chunk)
+            source_bytes_processed += len(chunk)
+            if progress_callback is not None:
+                progress_callback(chunk_index, source_bytes_processed)
+            if logger.isEnabledFor(logging.DEBUG) and (
+                chunk_index == 0
+                or chunk_index == est_chunks - 1
+                or (chunk_index + 1) % log_interval == 0
+            ):
+                logger.debug(
+                    "Streaming encrypt progress chunk=%s/%s bytes=%s/%s",
+                    chunk_index + 1,
+                    est_chunks,
+                    source_bytes_processed,
+                    file_size,
+                )
             chunk_index += 1
+
+    logger.debug("Streaming encrypt done chunks=%s path=%s", chunk_index, dst_path)
 
     return {
         "data_to_encrypt_hash": derivation_input.hex(),

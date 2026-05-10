@@ -95,6 +95,36 @@ def test_streaming_encrypt_writes_output(tmp_path, monkeypatch) -> None:
     assert metadata["encrypted_key_b64"] == "d3JhcHBlZA=="
 
 
+def test_streaming_encrypt_progress_callback(tmp_path, monkeypatch) -> None:
+    gate = GateParams(
+        chain="EthMainnet",
+        token_address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        threshold=1,
+        cid="QmProgressCb",
+    )
+    private_key = "0x" + ("34" * 32)
+    plaintext = b"x" * 500
+    input_path = tmp_path / "in.bin"
+    encrypted_path = tmp_path / "out.bin"
+    input_path.write_bytes(plaintext)
+    monkeypatch.setattr(haven_aol_local, "_ibe_encrypt_aes_key", lambda aes_key, derivation_input: b"wrapped")
+
+    seen: list[tuple[int, int]] = []
+
+    def cb(chunk_index: int, nbytes: int) -> None:
+        seen.append((chunk_index, nbytes))
+
+    encrypt_file_streaming(
+        input_path=input_path,
+        output_path=encrypted_path,
+        private_key=private_key,
+        gate=gate,
+        chunk_size=100,
+        progress_callback=cb,
+    )
+    assert seen == [(0, 100), (1, 200), (2, 300), (3, 400), (4, 500)]
+
+
 def test_streaming_encrypt_requires_positive_chunk_size(tmp_path) -> None:
     gate = GateParams(
         chain="EthMainnet",
