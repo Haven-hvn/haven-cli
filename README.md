@@ -1,4 +1,5 @@
 # Haven CLI
+[![Snyk Vulnerabilities](https://snyk.io/test/github/apha205/haven-player/badge.svg)](https://app.snyk.io/org/apha205/project/58d02508-6260-438f-acc3-944967421edb)
 
 Decentralized video archival with AI-powered analysis and blockchain verification.
 
