@@ -71,7 +71,7 @@ The canister function takes a single `GateRequest` record:
 requestDecryptionKey : (GateRequest) -> (GateResult)
 ```
 
-**Original issue:** The CLI called it with positional arguments, which is fragile and may fail with Candid encoding errors depending on `ic-py` version.
+**Original issue:** The CLI called it with positional arguments, which is fragile and may fail with Candid encoding errors depending on the IC Python SDK.
 
 **Fix applied:** Refactored to pass a single Python dict matching the Candid record field names:
 ```python
@@ -90,16 +90,16 @@ gate_request = {
 response = canister.requestDecryptionKey(gate_request)
 ```
 
-This is the standard way to encode Candid records via `ic-py` and is reliable across versions. See also F7 (same fix).
+This is the standard way to encode Candid records with icp-py-core's ``Canister`` binding and is reliable. See also F7 (same fix).
 
 ---
 
 ## 3. `getVetKDPublicKey` Return Type
 
 **Canister:** Returns `Blob` directly (not wrapped in a record).  
-**CLI:** `response[0]` extracts the first element from the ic-py response list.
+**CLI:** The canister method returns a one-element list (one Candid return slot). icp-py-core may represent that slot as ``{"type": ..., "value": ...}``; ``haven_aol_icp`` unwraps it with ``candid_return_item_to_value`` then normalizes blobs with ``candid_blob_to_bytes``.
 
-This is **correct** — ic-py wraps single return values in a list `[blob_value]`.
+This matches icp-py-core's decoding shape for single-return methods.
 
 ---
 
@@ -276,11 +276,11 @@ This also matches the reference TypeScript implementation (`haven-aol-main/packa
 
 ---
 
-## 9. `ic-py` Candid Record Encoding
+## 9. icp-py-core Candid record encoding
 
-### ~~⚠️ Finding F7: Uncertain `ic-py` Record Encoding Behavior~~ ✅ FIXED
+### ~~⚠️ Finding F7: Uncertain record encoding via positional args~~ ✅ FIXED
 
-**Original issue:** The CLI passed `GateRequest` fields as positional arguments to `canister.requestDecryptionKey(...)`, which is fragile and depends on undocumented `ic-py` behavior for Candid record encoding.
+**Original issue:** The CLI passed `GateRequest` fields as positional arguments to `canister.requestDecryptionKey(...)`, which is fragile and depends on undocumented positional encoding for Candid records.
 
 **Status:** ✅ Fixed (2026-05-10) — same fix as F2. The call now passes a single Python dict with named fields matching the Candid `GateRequest` record. See F2 above for details.
 
@@ -291,12 +291,12 @@ This also matches the reference TypeScript implementation (`haven-aol-main/packa
 | # | Severity | Description | Status |
 |---|----------|-------------|--------|
 | F1 | **HIGH** | Canister rejects `threshold==0` — `public` pattern decrypt fails | ✅ **FIXED** — `_public_conditions()` now raises `ValueError` with clear message |
-| F2 | **HIGH** | `requestDecryptionKey` args may need dict (ic-py record encoding) | ✅ **FIXED** — refactored to pass a single dict matching GateRequest record |
+| F2 | **HIGH** | `requestDecryptionKey` args may need dict (Candid record encoding) | ✅ **FIXED** — refactored to pass a single dict matching GateRequest record |
 | F3 | — | `tokenAddress` vs `contractAddress` naming | ✅ Not a bug (different paths) |
 | F4 | — | CID at encrypt time differs from upload CID | ✅ Intentional design |
 | F5 | — | `derive_verification_key` short-circuits with fetched bytes | ✅ Correct |
 | F6 | ~~Low~~ | `transportPublicKey` hex encoding matches canister | ✅ **VERIFIED** — digest match confirmed |
-| F7 | Medium | ic-py positional args for record type is fragile | ✅ **FIXED** — same as F2 |
+| F7 | Medium | Positional args for a Candid record type are fragile | ✅ **FIXED** — same as F2 |
 
 ---
 
@@ -318,8 +318,8 @@ without a canister-level protocol change.
 Refactored `haven_aol_icp.py` to pass a single Python dict to
 `canister.requestDecryptionKey()` instead of positional arguments. The dict
 keys match the Candid `GateRequest` record field names exactly. This is the
-standard way to encode Candid records via `ic-py` and is reliable across
-versions.
+standard way to encode Candid records with icp-py-core and is reliable across
+releases of that dependency.
 
 ### F6 — `transportPublicKey` hex encoding verified (2026-05-10)
 
