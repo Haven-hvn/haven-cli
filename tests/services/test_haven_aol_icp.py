@@ -1,8 +1,6 @@
 """Tests for Haven-AOL ICP service configuration."""
 
 import base64
-import sys
-import types
 
 import pytest
 
@@ -10,10 +8,12 @@ from haven_cli.services.evm_utils import GateRequestProof, build_gate_request_ty
 from haven_cli.services.haven_aol_icp import (
     HAVEN_AOL_CANISTER_ID,
     candid_blob_to_bytes,
+    candid_return_item_to_value,
     get_vetkd_public_key_b64,
     load_haven_aol_icp_config,
     request_decryption_key,
 )
+from haven_cli.services import haven_aol_icp as haven_aol_icp_module
 
 
 def test_haven_aol_canister_is_fixed() -> None:
@@ -55,6 +55,25 @@ def test_candid_blob_to_bytes_rejects_non_int_element() -> None:
         candid_blob_to_bytes([1, "x"], context="ctx")
 
 
+def test_candid_return_item_to_value_icp_decode_shape() -> None:
+    assert candid_return_item_to_value({"type": "vec", "value": [1, 2]}) == [1, 2]
+
+
+def test_candid_return_item_to_value_passthrough_raw() -> None:
+    assert candid_return_item_to_value(b"raw") == b"raw"
+
+
+def test_candid_return_item_to_value_dict_without_value_key() -> None:
+    assert candid_return_item_to_value({"ok": 1}) == {"ok": 1}
+
+
+def test_icp_verify_certificate_env(monkeypatch) -> None:
+    monkeypatch.delenv("HAVEN_ICP_VERIFY_CERTIFICATE", raising=False)
+    assert haven_aol_icp_module._icp_verify_certificate() is False
+    monkeypatch.setenv("HAVEN_ICP_VERIFY_CERTIFICATE", "true")
+    assert haven_aol_icp_module._icp_verify_certificate() is True
+
+
 def test_load_haven_aol_icp_config_requires_identity_path(monkeypatch) -> None:
     monkeypatch.delenv("HAVEN_ICP_IDENTITY_PEM_PATH", raising=False)
     with pytest.raises(RuntimeError, match="HAVEN_ICP_IDENTITY_PEM_PATH"):
@@ -80,31 +99,31 @@ def _install_fake_ic_stack(monkeypatch, *, vetkd_response: object) -> None:
         anonymous = False
 
         @staticmethod
-        def from_pem(pem: str):
+        def from_pem(pem: str) -> FakeIdentity:
             return FakeIdentity()
 
     class FakeClient:
-        def __init__(self, url: str):
+        def __init__(self, url: str = "") -> None:
             self.url = url
 
     class FakeAgent:
-        def __init__(self, identity, client):
+        def __init__(self, identity: object, client: object) -> None:
             self.identity = identity
             self.client = client
 
     class FakeCanister:
-        def __init__(self, agent, canister_id, candid=None):
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
             self.agent = agent
             self.canister_id = canister_id
-            self.candid = candid
+            self.candid_str = candid_str
 
-        def getVetKDPublicKey(self):
+        def getVetKDPublicKey(self, *, verify_certificate: bool = True) -> object:
             return vetkd_response
 
-    monkeypatch.setitem(sys.modules, "ic.agent", types.SimpleNamespace(Agent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "ic.canister", types.SimpleNamespace(Canister=FakeCanister))
-    monkeypatch.setitem(sys.modules, "ic.client", types.SimpleNamespace(Client=FakeClient))
-    monkeypatch.setitem(sys.modules, "ic.identity", types.SimpleNamespace(Identity=FakeIdentity))
+    def _fake_import() -> tuple[type, type, type, type]:
+        return (FakeAgent, FakeCanister, FakeClient, FakeIdentity)
+
+    monkeypatch.setattr(haven_aol_icp_module, "_import_icp_core", _fake_import)
 
 
 def test_get_vetkd_public_key_calls_canister(monkeypatch, tmp_path) -> None:
@@ -142,6 +161,28 @@ def test_get_vetkd_public_key_bad_response_shape(monkeypatch, tmp_path) -> None:
     _install_fake_ic_stack(monkeypatch, vetkd_response=[])
 
     with pytest.raises(RuntimeError, match="Unexpected getVetKDPublicKey response shape"):
+        get_vetkd_public_key_b64()
+
+
+def test_get_vetkd_public_key_icp_decode_wrapper_shape(monkeypatch, tmp_path) -> None:
+    pem_path = tmp_path / "id.pem"
+    pem_path.write_text("pem")
+    monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
+    _install_fake_ic_stack(monkeypatch, vetkd_response=[{"type": "vec", "value": [1, 2]}])
+
+    assert get_vetkd_public_key_b64() == "AQI="
+
+
+def test_get_vetkd_public_key_missing_icp_dependency(monkeypatch, tmp_path) -> None:
+    pem_path = tmp_path / "id.pem"
+    pem_path.write_text("pem")
+    monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
+
+    def _raise() -> tuple[type, type, type, type]:
+        raise ImportError("simulated")
+
+    monkeypatch.setattr(haven_aol_icp_module, "_import_icp_core", _raise)
+    with pytest.raises(RuntimeError, match="icp-py-core is required"):
         get_vetkd_public_key_b64()
 
 
@@ -202,7 +243,7 @@ def test_request_decryption_key_ok_blob_as_int_list(monkeypatch, tmp_path) -> No
             return FakeIdentity()
 
     class FakeClient:
-        def __init__(self, url: str):
+        def __init__(self, url: str = "") -> None:
             self.url = url
 
     class FakeAgent:
@@ -211,16 +252,17 @@ def test_request_decryption_key_ok_blob_as_int_list(monkeypatch, tmp_path) -> No
             self.client = client
 
     class FakeCanister:
-        def __init__(self, agent, canister_id, candid=None):
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
             pass
 
-        def requestDecryptionKey(self, gate_request):
+        def requestDecryptionKey(self, gate_request: object, *, verify_certificate: bool = True) -> object:
             return [{"ok": [7, 8, 9]}]
 
-    monkeypatch.setitem(sys.modules, "ic.agent", types.SimpleNamespace(Agent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "ic.canister", types.SimpleNamespace(Canister=FakeCanister))
-    monkeypatch.setitem(sys.modules, "ic.client", types.SimpleNamespace(Client=FakeClient))
-    monkeypatch.setitem(sys.modules, "ic.identity", types.SimpleNamespace(Identity=FakeIdentity))
+    monkeypatch.setattr(
+        haven_aol_icp_module,
+        "_import_icp_core",
+        lambda: (FakeAgent, FakeCanister, FakeClient, FakeIdentity),
+    )
 
     out = request_decryption_key(
         chain="EthMainnet",
@@ -254,7 +296,7 @@ def test_request_decryption_key_propagates_canister_err(monkeypatch, tmp_path) -
             return FakeIdentity()
 
     class FakeClient:
-        def __init__(self, url: str):
+        def __init__(self, url: str = "") -> None:
             self.url = url
 
     class FakeAgent:
@@ -263,16 +305,17 @@ def test_request_decryption_key_propagates_canister_err(monkeypatch, tmp_path) -
             self.client = client
 
     class FakeCanister:
-        def __init__(self, agent, canister_id, candid=None):
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
             pass
 
-        def requestDecryptionKey(self, gate_request):
+        def requestDecryptionKey(self, gate_request: object, *, verify_certificate: bool = True) -> object:
             return [{"err": {"InvalidThreshold": None}}]
 
-    monkeypatch.setitem(sys.modules, "ic.agent", types.SimpleNamespace(Agent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "ic.canister", types.SimpleNamespace(Canister=FakeCanister))
-    monkeypatch.setitem(sys.modules, "ic.client", types.SimpleNamespace(Client=FakeClient))
-    monkeypatch.setitem(sys.modules, "ic.identity", types.SimpleNamespace(Identity=FakeIdentity))
+    monkeypatch.setattr(
+        haven_aol_icp_module,
+        "_import_icp_core",
+        lambda: (FakeAgent, FakeCanister, FakeClient, FakeIdentity),
+    )
 
     with pytest.raises(RuntimeError, match="InvalidThreshold"):
         request_decryption_key(
@@ -306,7 +349,7 @@ def test_request_decryption_key_unexpected_gate_result(monkeypatch, tmp_path) ->
             return FakeIdentity()
 
     class FakeClient:
-        def __init__(self, url: str):
+        def __init__(self, url: str = "") -> None:
             self.url = url
 
     class FakeAgent:
@@ -315,16 +358,17 @@ def test_request_decryption_key_unexpected_gate_result(monkeypatch, tmp_path) ->
             self.client = client
 
     class FakeCanister:
-        def __init__(self, agent, canister_id, candid=None):
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
             pass
 
-        def requestDecryptionKey(self, gate_request):
+        def requestDecryptionKey(self, gate_request: object, *, verify_certificate: bool = True) -> object:
             return ["nope"]
 
-    monkeypatch.setitem(sys.modules, "ic.agent", types.SimpleNamespace(Agent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "ic.canister", types.SimpleNamespace(Canister=FakeCanister))
-    monkeypatch.setitem(sys.modules, "ic.client", types.SimpleNamespace(Client=FakeClient))
-    monkeypatch.setitem(sys.modules, "ic.identity", types.SimpleNamespace(Identity=FakeIdentity))
+    monkeypatch.setattr(
+        haven_aol_icp_module,
+        "_import_icp_core",
+        lambda: (FakeAgent, FakeCanister, FakeClient, FakeIdentity),
+    )
 
     with pytest.raises(RuntimeError, match="Unexpected GateResult payload"):
         request_decryption_key(
@@ -358,7 +402,7 @@ def test_request_decryption_key_bad_response_shape(monkeypatch, tmp_path) -> Non
             return FakeIdentity()
 
     class FakeClient:
-        def __init__(self, url: str):
+        def __init__(self, url: str = "") -> None:
             self.url = url
 
     class FakeAgent:
@@ -367,16 +411,17 @@ def test_request_decryption_key_bad_response_shape(monkeypatch, tmp_path) -> Non
             self.client = client
 
     class FakeCanister:
-        def __init__(self, agent, canister_id, candid=None):
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
             pass
 
-        def requestDecryptionKey(self, gate_request):
+        def requestDecryptionKey(self, gate_request: object, *, verify_certificate: bool = True) -> object:
             return []
 
-    monkeypatch.setitem(sys.modules, "ic.agent", types.SimpleNamespace(Agent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "ic.canister", types.SimpleNamespace(Canister=FakeCanister))
-    monkeypatch.setitem(sys.modules, "ic.client", types.SimpleNamespace(Client=FakeClient))
-    monkeypatch.setitem(sys.modules, "ic.identity", types.SimpleNamespace(Identity=FakeIdentity))
+    monkeypatch.setattr(
+        haven_aol_icp_module,
+        "_import_icp_core",
+        lambda: (FakeAgent, FakeCanister, FakeClient, FakeIdentity),
+    )
 
     with pytest.raises(RuntimeError, match="Unexpected requestDecryptionKey response shape"):
         request_decryption_key(
@@ -410,7 +455,7 @@ def test_request_decryption_key_ok_invalid_blob_type(monkeypatch, tmp_path) -> N
             return FakeIdentity()
 
     class FakeClient:
-        def __init__(self, url: str):
+        def __init__(self, url: str = "") -> None:
             self.url = url
 
     class FakeAgent:
@@ -419,16 +464,17 @@ def test_request_decryption_key_ok_invalid_blob_type(monkeypatch, tmp_path) -> N
             self.client = client
 
     class FakeCanister:
-        def __init__(self, agent, canister_id, candid=None):
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
             pass
 
-        def requestDecryptionKey(self, gate_request):
+        def requestDecryptionKey(self, gate_request: object, *, verify_certificate: bool = True) -> object:
             return [{"ok": "broken"}]
 
-    monkeypatch.setitem(sys.modules, "ic.agent", types.SimpleNamespace(Agent=FakeAgent))
-    monkeypatch.setitem(sys.modules, "ic.canister", types.SimpleNamespace(Canister=FakeCanister))
-    monkeypatch.setitem(sys.modules, "ic.client", types.SimpleNamespace(Client=FakeClient))
-    monkeypatch.setitem(sys.modules, "ic.identity", types.SimpleNamespace(Identity=FakeIdentity))
+    monkeypatch.setattr(
+        haven_aol_icp_module,
+        "_import_icp_core",
+        lambda: (FakeAgent, FakeCanister, FakeClient, FakeIdentity),
+    )
 
     with pytest.raises(RuntimeError, match="requestDecryptionKey ok"):
         request_decryption_key(

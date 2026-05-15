@@ -70,6 +70,7 @@ blockchain = [
 ]
 icp = [
     "vetkd_py",
+    "icp-py-core==2.3.1",
 ]
 tui = [
     "textual==8.2.5",
@@ -80,6 +81,7 @@ all = [
     "haven-cli[media,vlm,blockchain,icp,tui]",
 ]
 dev = [
+    "icp-py-core==2.3.1",
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
     "pytest-cov==7.1.0",

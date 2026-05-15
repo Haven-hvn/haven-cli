@@ -30,6 +30,8 @@ import pytest
 
 import vetkd_py
 
+from haven_cli.services.haven_aol_icp import candid_blob_to_bytes, candid_return_item_to_value
+
 # ---------------------------------------------------------------------------
 # Canister configuration (mainnet)
 # ---------------------------------------------------------------------------
@@ -74,7 +76,7 @@ def _generate_icp_identity() -> tuple[object, str]:
     Returns:
         (identity, pem_string) — the ICP Identity object and its PEM encoding.
     """
-    from ic.identity import Identity
+    from icp_identity.identity import Identity
 
     result = subprocess.run(
         ["openssl", "genpkey", "-algorithm", "Ed25519", "-outform", "PEM"],
@@ -127,17 +129,13 @@ def _compute_derivation_input() -> bytes:
 
 def _build_ic_canister(identity) -> object:
     """Create a Canister instance targeting the mainnet Haven-AOL canister."""
-    from ic.agent import Agent
-    from ic.canister import Canister
-    from ic.client import Client
+    from icp_agent.agent import Agent
+    from icp_agent.client import Client
+    from icp_canister.canister import Canister
 
-    client = Client(MAINNET_HOST)
+    client = Client(url=MAINNET_HOST)
     agent = Agent(identity, client)
-    return Canister(
-        agent=agent,
-        canister_id=MAINNET_CANISTER_ID,
-        candid=_HAVEN_AOL_DID,
-    )
+    return Canister(agent, MAINNET_CANISTER_ID, candid_str=_HAVEN_AOL_DID)
 
 
 # ---------------------------------------------------------------------------
@@ -185,13 +183,12 @@ def verification_key(ic_canister):
     This is the mainnet's VetKD public key used for IBE encryption and
     for verifying the EncryptedVetKey.
     """
-    response = ic_canister.getVetKDPublicKey()
+    response = ic_canister.getVetKDPublicKey(verify_certificate=False)
     assert isinstance(response, list) and len(response) == 1, (
         f"Unexpected getVetKDPublicKey response shape: {type(response)}"
     )
-    raw = response[0]
-    # ic-py may return blob fields as either bytes or list of ints
-    key_bytes = bytes(raw) if isinstance(raw, list) else raw
+    raw = candid_return_item_to_value(response[0])
+    key_bytes = candid_blob_to_bytes(raw, context="getVetKDPublicKey")
     assert isinstance(key_bytes, (bytes, bytearray)), (
         f"Expected bytes-like, got {type(key_bytes)}"
     )
@@ -252,11 +249,11 @@ def encrypted_vet_key(ic_canister, eip712_proof, transport_keypair):
         "eip712VerifyingContract": eip712_proof.eip712_verifying_contract,
     }
 
-    response = ic_canister.requestDecryptionKey(gate_request)
+    response = ic_canister.requestDecryptionKey(gate_request, verify_certificate=False)
     assert isinstance(response, list) and len(response) == 1, (
         f"Unexpected response shape: {type(response)}"
     )
-    gate_result = response[0]
+    gate_result = candid_return_item_to_value(response[0])
 
     # Gracefully skip if the ephemeral wallet doesn't meet access conditions.
     # The canister returns a dict like {'err': {'InsufficientBalance': {...}}}
@@ -276,8 +273,7 @@ def encrypted_vet_key(ic_canister, eip712_proof, transport_keypair):
     )
 
     raw = gate_result["ok"]
-    # ic-py may return blob fields as either bytes or list of ints
-    encrypted_key = bytes(raw) if isinstance(raw, list) else raw
+    encrypted_key = candid_blob_to_bytes(raw, context="requestDecryptionKey ok")
     assert isinstance(encrypted_key, (bytes, bytearray)), (
         f"Expected bytes-like, got {type(encrypted_key)}"
     )
