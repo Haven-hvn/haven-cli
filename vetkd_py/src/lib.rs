@@ -7,7 +7,7 @@ use ic_vetkeys::{
     DerivedPublicKey, EncryptedVetKey, IbeCiphertext, IbeIdentity, IbeSeed,
     MasterPublicKey, TransportSecretKey, VetKey,
 };
-use ic_cdk::management_canister::{VetKDCurve, VetKDKeyId};
+use ic_management_canister_types::{VetKDCurve, VetKDKeyId};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rand::Rng;
@@ -251,7 +251,7 @@ fn vetkd_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ic_cdk::management_canister::{VetKDCurve, VetKDKeyId};
+    use ic_management_canister_types::{VetKDCurve, VetKDKeyId};
 
     #[test]
     fn master_public_key_for_mainnet_key_1() {

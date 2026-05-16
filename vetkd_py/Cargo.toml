@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
-ic-vetkeys = "0.6"
-# Keep in sync with ic-vetkeys (ic-cdk + rand versions follow that crate).
-ic-cdk = "0.19"
+ic-vetkeys = "0.7"
+# VetKDKeyId / VetKDCurve must match ic-vetkeys (via ic-cdk-management-canister).
+ic-management-canister-types = "0.7"
 rand = "0.8"

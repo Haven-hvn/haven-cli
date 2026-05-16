@@ -3,7 +3,7 @@
 **Date:** 2026-05-10  
 **Updated:** 2026-05-10 (post-remediation)  
 **Scope:** `vetkd_py/`, `haven_cli/crypto/haven_aol_local.py`, `haven_cli/services/haven_aol_icp.py`, `haven_cli/config.py`, `haven_cli/pipeline/steps/encrypt_step.py`, `haven_cli/pipeline/steps/upload_step.py`, `haven_cli/cli/download.py`  
-**Reference:** Reviewed against actual `ic-vetkeys` 0.6.0 source from `contextfordevelopment/vetkeys-main/backend/rs/ic_vetkeys/`
+**Reference:** Originally reviewed against `ic-vetkeys` 0.6.0 source from `contextfordevelopment/vetkeys-main/backend/rs/ic_vetkeys/`; the in-tree `vetkd_py` crate now targets **`ic-vetkeys` 0.7.x** with **`ic-management-canister-types`** / transitive **`ic-cdk` 0.20+** (see `vetkd_py/docs/VETKD_IC_STACK_UPGRADE.md`).
 
 This document identifies security and correctness gaps found during a self-review of the VetKD transport unwrap implementation. Remediation status is tracked inline.
 
@@ -145,19 +145,15 @@ Each decrypt makes two canister calls. No client-side rate limiting exists. For 
 
 ---
 
-### 11. ~~`ic-cdk` Dependency May Not Be Needed for Off-Chain Use~~ ✅ VERIFIED
+### 11. ~~`ic-cdk` / management types for off-chain `vetkd_py`~~ ✅ VERIFIED
 
-**Location:** `vetkd_py/Cargo.toml`  
+**Location:** `vetkd_py/Cargo.toml`, `vetkd_py/src/lib.rs`  
 **Severity:** ~~High (build risk)~~ → None  
-**Status:** ✅ Verified — builds on native target
+**Status:** ✅ Verified — builds on native target; stack upgraded (2026-05-15)
 
-Verified on 2026-05-10 via `cargo check` on a native (non-WASM) target. All 131 crates including `ic-cdk 0.19`, `ic-management-canister-types`, `ic-vetkeys 0.6`, `ic_bls12_381`, `candid`, and transitive deps compile successfully. The `ic-cdk` crate does not require WASM target.
+`vetkd_py` depends on **`ic-management-canister-types`** for `VetKDCurve` and `VetKDKeyId` (used by `MasterPublicKey::for_mainnet_key()`). It does **not** depend on `ic-cdk` directly; **`ic-cdk` 0.20.x** remains in the graph **transitively** via **`ic-vetkeys` 0.7**. Verified via `cargo test`, `cargo build --release`, and `python -m maturin build --release` on a native (non-WASM) target. The `ic-cdk` crate does not require WASM for this dependency chain.
 
-The only link failure from `cargo build` was the expected PyO3 undefined-symbol issue (`_PyBool_Type`, `_PyBytes_AsString`, etc.) — these are resolved at runtime by libpython when building via `maturin develop` or `maturin build`.
-
-**Conclusion:** `ic-cdk` dependency is safe to keep. It provides `VetKDCurve` and `VetKDKeyId` types needed by `MasterPublicKey::for_mainnet_key()`. No action required.
-
-**Future consideration:** The dependency could be removed to reduce build time (~131 crates) by defining `VetKDCurve`/`VetKDKeyId` locally, but this is a minor optimization, not a correctness issue.
+The only link failure from a plain `cargo build` of the cdylib can be the expected PyO3 undefined-symbol issue (`_PyBool_Type`, `_PyBytes_AsString`, etc.) — resolved at runtime by libpython when building via `maturin develop` or `maturin build`.
 
 ---
 
@@ -187,12 +183,12 @@ All decrypt tests mock `_vetkd_unwrap_aes_key`. There are no tests exercising th
 | 8 | ~~Low~~ | ✅ Fixed | Dead XOR code removed |
 | 9 | None | ℹ️ OK | IBE identity binding (protocol handles it) |
 | 10 | Low | ⚠️ Accepted | No rate limiting (v1) |
-| 11 | ~~High~~ | ✅ Verified | ic-cdk builds on native (non-WASM) target |
+| 11 | ~~High~~ | ✅ Verified | ic-vetkeys 0.7 + ic-management-canister-types; native + maturin builds |
 | 12 | Medium | ⚠️ Pending | Need real crypto test vectors |
 
 ---
 
-## Additional Findings from `ic-vetkeys` 0.6.0 Source Review
+## Additional Findings from `ic-vetkeys` source review (0.6.0-era; still applicable to 0.7.x wire/format)
 
 ### 13. `IbeCiphertext` Format Has 8-Byte Header
 
@@ -236,7 +232,7 @@ Only `"key_1"` (production) and `"test_key_1"` (testing on mainnet) are supporte
 
 | Category | Status |
 |----------|--------|
-| Crypto correctness | ✅ All APIs match ic-vetkeys 0.6.0; compiles on native |
+| Crypto correctness | ✅ APIs match ic-vetkeys 0.7.x; compiles on native |
 | Security hardening | ✅ 9 of 16 findings fixed; 4 accepted risks (v1); 2 info-only; 1 pending (test vectors) |
 | Build pipeline | ✅ `cargo check` passes; needs `maturin` for wheel build |
 | Test coverage | ⚠️ Python-side mocked tests pass; Rust crypto test vectors pending (#12) |
