@@ -450,6 +450,58 @@ class TestEncryptStepEncryption:
     """Tests for the encryption process using the real streaming path."""
 
     @pytest.mark.asyncio
+    async def test_encrypt_with_haven_aol_clamps_nft_gated_threshold(
+        self, tmp_path, monkeypatch
+    ):
+        """NFT-gated access uses returnValueTest value 0 but derivation threshold 1."""
+        monkeypatch.setenv(
+            "HAVEN_PRIVATE_KEY",
+            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        captured: dict[str, object] = {}
+
+        def capture_encrypt(**kwargs: object) -> dict[str, str]:
+            captured["gate"] = kwargs["gate"]
+            output_path = kwargs["output_path"]
+            Path(str(output_path)).write_bytes(b"encrypted")
+            return {
+                "data_to_encrypt_hash": "hash",
+                "encrypted_key": "key",
+                "key_hash": "keyhash",
+                "iv": "iv",
+            }
+
+        import haven_cli.pipeline.steps.encrypt_step as encrypt_step_module
+
+        monkeypatch.setattr(
+            encrypt_step_module, "encrypt_file_streaming", capture_encrypt
+        )
+
+        step = EncryptStep(config={"evm_chain": "ethereum"})
+        video_file = tmp_path / "test.mp4"
+        video_file.write_bytes(b"nft gated content")
+        context = PipelineContext(
+            source_path=video_file,
+            video_id=1,
+            options={"evm_chain": "ethereum"},
+        )
+        access_conditions = [{
+            "contractAddress": TEST_ADDRESS,
+            "chain": "EthMainnet",
+            "returnValueTest": {"comparator": ">", "value": "0"},
+        }]
+
+        await step._encrypt_with_haven_aol(
+            str(video_file),
+            access_conditions,
+            context,
+        )
+
+        gate = captured["gate"]
+        assert gate.threshold == 1
+        assert access_conditions[0]["returnValueTest"]["value"] == "0"
+
+    @pytest.mark.asyncio
     async def test_encrypt_with_haven_aol_success(self, tmp_path, monkeypatch):
         """Test successful encryption via Haven-AOL streaming."""
         # Set a test private key

@@ -17,7 +17,11 @@ from rich.table import Table
 from haven_cli.config import load_config
 from haven_cli.js_runtime.manager import JSBridgeManager, js_call
 from haven_cli.js_runtime.protocol import JSRuntimeMethods
-from haven_cli.crypto.haven_aol_local import GateParams, decrypt_file_streaming
+from haven_cli.crypto.haven_aol_local import (
+    GateParams,
+    derivation_threshold_from_access_condition,
+    decrypt_file_streaming,
+)
 from haven_cli.services.evm_utils import normalize_haven_aol_chain
 from haven_cli.crypto import (
     EncryptionMetadata,
@@ -249,15 +253,7 @@ async def _decrypt_file(
 
     gate_source = metadata.access_control_conditions[0] if metadata.access_control_conditions else {}
     token_address = str(gate_source.get("contractAddress", "")).strip()
-    threshold_raw = gate_source.get("returnValueTest", {}).get("value", "1")
-    try:
-        threshold = int(str(threshold_raw))
-    except (ValueError, TypeError):
-        # Non-numeric values (e.g. "true" for public pattern, wallet addresses
-        # for legacy owner_only) default to threshold=1 for derivation purposes.
-        threshold = 1
-    # Clamp threshold to >= 1 for the derivation input (canister rejects 0).
-    threshold = max(1, threshold)
+    threshold = derivation_threshold_from_access_condition(gate_source)
     cid_value = str(gate_source.get("cid") or cid or "").strip()
     if not cid_value:
         cid_value = f"local-{input_path.name}"

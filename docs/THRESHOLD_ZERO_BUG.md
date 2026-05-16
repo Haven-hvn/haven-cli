@@ -1,7 +1,7 @@
 # Bug: `threshold=0` in Derivation Input Makes Files Undecryptable
 
 **Severity:** HIGH — Existing encrypted files on Filecoin/Arkiv cannot be decrypted  
-**Status:** Confirmed  
+**Status:** Fixed  
 **Discovered:** 2026-05-16
 
 ## Summary
@@ -89,18 +89,16 @@ decryption tries `threshold=1`, producing a different derived key).
 
 ## Fix Applied
 
-### 1. Encrypt step (`encrypt_step.py`)
+### 1. Shared helper (`haven_aol_local.py`)
 
-Added `threshold = max(1, threshold)` after parsing the raw value. This ensures
-the derivation input always uses `threshold >= 1`, while the
-`returnValueTest.value: "0"` in the access control conditions (stored in DB and
-Arkiv) remains unchanged for the on-chain balance check.
+Added `derivation_threshold_from_access_condition()` to parse
+`returnValueTest.value` and clamp the VetKD derivation threshold to `>= 1`.
+On-chain access conditions (e.g. `balanceOf > 0` with value `"0"`) are unchanged.
 
-### 2. Decrypt step (`download.py`)
+### 2. Encrypt / decrypt / upload paths
 
-Added the same `threshold = max(1, threshold)` clamp in `_decrypt_file()`. This
-is needed for consistency and for any future cases where metadata might contain
-`threshold=0`.
+`encrypt_step.py`, `download.py`, and `upload_step.py` call the shared helper so
+encrypt, decrypt, and CID encryption all use the same derivation threshold.
 
 ### 3. Canister client validation (`haven_aol_icp.py`)
 
@@ -129,8 +127,10 @@ decrypted** with the current canister code. Options:
 
 | File | Change |
 |------|--------|
-| `haven_cli/pipeline/steps/encrypt_step.py` | `threshold = max(1, threshold)` after parsing |
-| `haven_cli/cli/download.py` | `threshold = max(1, threshold)` in `_decrypt_file()` |
+| `haven_cli/crypto/haven_aol_local.py` | `derivation_threshold_from_access_condition()` |
+| `haven_cli/pipeline/steps/encrypt_step.py` | Use shared derivation threshold helper |
+| `haven_cli/cli/download.py` | Use shared derivation threshold helper |
+| `haven_cli/pipeline/steps/upload_step.py` | Use shared derivation threshold helper |
 | `haven_cli/services/haven_aol_icp.py` | Relaxed client check from `< 1` to `< 0` |
 
 ## Related

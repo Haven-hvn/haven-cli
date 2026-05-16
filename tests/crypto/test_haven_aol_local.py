@@ -9,6 +9,7 @@ import pytest
 from haven_cli.crypto.haven_aol_local import (
     GateParams,
     compute_derivation_input,
+    derivation_threshold_from_access_condition,
     decrypt_bytes,
     decrypt_file_streaming,
     encrypt_bytes,
@@ -18,6 +19,47 @@ from haven_cli.crypto.haven_aol_local import (
     _vetkd_unwrap_aes_key,
 )
 import haven_cli.crypto.haven_aol_local as haven_aol_local
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ({"returnValueTest": {"value": "0"}}, 1),
+        ({"returnValueTest": {"value": "1"}}, 1),
+        ({"returnValueTest": {"value": "100"}}, 100),
+        ({"returnValueTest": {"value": "0xOwnerWallet"}}, 1),
+        ({}, 1),
+    ],
+)
+def test_derivation_threshold_from_access_condition(
+    condition: dict[str, object],
+    expected: int,
+) -> None:
+    assert derivation_threshold_from_access_condition(condition) == expected
+
+
+def test_nft_gated_derivation_threshold_differs_from_raw_zero() -> None:
+    """NFT gating uses on-chain value 0 but VetKD derivation must use threshold 1."""
+    condition = {
+        "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "returnValueTest": {"comparator": ">", "value": "0"},
+        "cid": "QmTestCid",
+    }
+    threshold = derivation_threshold_from_access_condition(condition)
+    gate_clamped = GateParams(
+        chain="EthMainnet",
+        token_address=condition["contractAddress"],
+        threshold=threshold,
+        cid=condition["cid"],
+    )
+    gate_zero = GateParams(
+        chain="EthMainnet",
+        token_address=condition["contractAddress"],
+        threshold=0,
+        cid=condition["cid"],
+    )
+    assert threshold == 1
+    assert compute_derivation_input(gate_clamped) != compute_derivation_input(gate_zero)
 
 
 def test_compute_derivation_input_is_stable() -> None:

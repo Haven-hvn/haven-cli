@@ -16,7 +16,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from haven_cli.crypto.haven_aol_local import GateParams, encrypt_file_streaming
+from haven_cli.crypto.haven_aol_local import (
+    GateParams,
+    derivation_threshold_from_access_condition,
+    encrypt_file_streaming,
+)
 from haven_cli.pipeline.context import EncryptionMetadata, PipelineContext
 from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.results import ErrorCategory, StepError, StepResult
@@ -597,19 +601,7 @@ class EncryptStep(ConditionalStep):
                 "token_contract/contractAddress is required for Haven-AOL encryption; it is not hard-coded."
             )
 
-        threshold_raw = gate_condition.get("returnValueTest", {}).get("value", "1")
-        try:
-            threshold = int(str(threshold_raw))
-        except ValueError:
-            # For comparator-based conditions (e.g., owner_wallet comparison),
-            # the value may be an address string, not a number. Default to 1.
-            threshold = 1
-        # Clamp threshold to >= 1 for the derivation input.
-        # The Haven-AOL canister rejects threshold=0 with InvalidThreshold in
-        # requestDecryptionKey, but the on-chain returnValueTest.value may be "0"
-        # (e.g. NFT-gated: balanceOf > 0). The derivation threshold is a separate
-        # concept from the on-chain condition value.
-        threshold = max(1, threshold)
+        threshold = derivation_threshold_from_access_condition(gate_condition)
 
         chain = self._get_chain(context)
         file_size = self._progress_file_size or os.path.getsize(video_path)

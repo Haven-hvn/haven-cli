@@ -51,6 +51,24 @@ class GateParams:
     cid: str
 
 
+def derivation_threshold_from_access_condition(
+    gate_condition: dict[str, Any],
+) -> int:
+    """Map on-chain ``returnValueTest.value`` to the VetKD derivation threshold.
+
+    On-chain conditions may use value ``"0"`` (e.g. ``balanceOf > 0`` for NFT
+    gating). The Haven-AOL canister rejects ``threshold=0`` in
+    ``requestDecryptionKey``, so the derivation input always uses
+    ``threshold >= 1`` while the stored access-condition value is unchanged.
+    """
+    threshold_raw = gate_condition.get("returnValueTest", {}).get("value", "1")
+    try:
+        threshold = int(str(threshold_raw))
+    except (ValueError, TypeError):
+        threshold = 1
+    return max(1, threshold)
+
+
 def compute_derivation_input(gate: GateParams) -> bytes:
     """Compute SHA-256 derivation input from gate params."""
     if gate.chain not in VALID_CHAINS:

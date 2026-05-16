@@ -286,6 +286,52 @@ class TestDecryptFileCommand:
                 )
 
     @pytest.mark.asyncio
+    async def test_decrypt_file_clamps_nft_gated_threshold(self, tmp_path, monkeypatch):
+        """NFT-gated metadata keeps value 0 on-chain but uses threshold 1 for derivation."""
+        monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", "/tmp/fake-id.pem")
+        encrypted_path = tmp_path / "encrypted.out"
+        encrypted_path.write_bytes(b"cipher")
+        output_path = tmp_path / "decrypted.bin"
+
+        metadata = EncryptionMetadata(
+            ciphertext=str(encrypted_path),
+            data_to_encrypt_hash="hash",
+            encrypted_key="d3JhcHBlZA==",
+            key_hash="abc",
+            iv="abc",
+            access_control_conditions=[
+                {
+                    "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                    "returnValueTest": {"comparator": ">", "value": "0"},
+                    "cid": "QmDecryptCid",
+                }
+            ],
+            chain="EthMainnet",
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_decrypt(**kwargs: object) -> None:
+            captured["gate"] = kwargs["gate"]
+
+        with patch(
+            "haven_cli.cli.download.load_encryption_metadata_by_cid",
+            new=AsyncMock(return_value=metadata),
+        ):
+            with patch(
+                "haven_cli.cli.download.decrypt_file_streaming",
+                side_effect=fake_decrypt,
+            ):
+                await _decrypt_file(
+                    input_path=encrypted_path,
+                    output_path=output_path,
+                    cid="QmDecryptCid",
+                )
+
+        gate = captured["gate"]
+        assert gate.threshold == 1
+
+    @pytest.mark.asyncio
     async def test_decrypt_file_requires_token_address(self, tmp_path, monkeypatch):
         """Missing token address should fail before decryption."""
         monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x" + ("34" * 32))

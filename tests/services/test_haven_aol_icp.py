@@ -211,15 +211,15 @@ def _fake_gate_proof() -> GateRequestProof:
     )
 
 
-def test_request_decryption_key_rejects_zero_threshold(monkeypatch, tmp_path) -> None:
+def test_request_decryption_key_rejects_negative_threshold(monkeypatch, tmp_path) -> None:
     pem_path = tmp_path / "id.pem"
     pem_path.write_text("pem")
     monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
-    with pytest.raises(ValueError, match="threshold must be >= 1"):
+    with pytest.raises(ValueError, match="threshold must be >= 0"):
         request_decryption_key(
             chain="EthMainnet",
             token_address="0x" + "c" * 40,
-            threshold=0,
+            threshold=-1,
             cid="cid",
         )
 

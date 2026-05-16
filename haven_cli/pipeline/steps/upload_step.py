@@ -23,7 +23,11 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from haven_cli.config import get_config
-from haven_cli.crypto.haven_aol_local import GateParams, encrypt_bytes
+from haven_cli.crypto.haven_aol_local import (
+    GateParams,
+    derivation_threshold_from_access_condition,
+    encrypt_bytes,
+)
 from haven_cli.database.connection import get_db_session
 from haven_cli.database.repositories import VideoRepository
 from haven_cli.js_runtime.bridge import JSRuntimeBridge
@@ -808,13 +812,7 @@ class UploadStep(ConditionalStep):
         token_address = str(gate_condition.get("contractAddress", "")).strip()
         if not token_address:
             raise RuntimeError("token_contract/contractAddress required for CID encryption")
-        threshold_raw = gate_condition.get("returnValueTest", {}).get("value", "1")
-        try:
-            threshold = int(str(threshold_raw))
-        except (ValueError, TypeError):
-            # Non-numeric values (e.g. "true" for public, wallet addresses for
-            # legacy owner_only) default to threshold=1 for derivation purposes.
-            threshold = 1
+        threshold = derivation_threshold_from_access_condition(gate_condition)
         pipeline_cfg = self._config.get("pipeline")
         config_chain = getattr(pipeline_cfg, "evm_chain", None) if pipeline_cfg is not None else self._config.get("evm_chain")
         configured_chain = context.options.get("evm_chain") or config_chain
