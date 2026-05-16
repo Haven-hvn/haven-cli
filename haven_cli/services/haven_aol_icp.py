@@ -2,11 +2,22 @@
 
 This module enforces authenticated user identity for ICP calls and does not
 allow configurable canister targets.
+
+Error handling strategy for ICP boundary-node HTTP 400:
+  - ``icp-py-core`` wraps HTTP errors in ``icp_agent.client.TransportError``.
+  - The original ``httpx.HTTPStatusError`` is available as ``.original_error``.
+  - We catch ``TransportError``, extract the response body (which contains the
+    boundary-node's specific rejection reason), and re-raise with a diagnostic
+    message that preserves the root cause.
+  - Transient errors (400 with certain rejection texts, 429, 5xx) are retried
+    with exponential backoff; permanent errors (bad identity, bad canister ID)
+    fail fast.
 """
 
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import secrets
 import time
@@ -14,6 +25,8 @@ from dataclasses import dataclass
 from typing import Protocol, Self, Type
 
 from haven_cli.services.evm_utils import sign_gate_request_typed_data
+
+logger = logging.getLogger(__name__)
 
 
 class _HavenAolIdentity(Protocol):
@@ -89,6 +102,31 @@ def _icp_verify_certificate() -> bool:
     return flag in ("1", "true", "yes", "on")
 
 
+def _icp_max_retries() -> int:
+    """Maximum retry attempts for transient ICP HTTP errors.
+
+    Set ``HAVEN_ICP_MAX_RETRIES`` to override (default: 3).
+    Set to ``0`` to disable retries.
+    """
+    raw = os.environ.get("HAVEN_ICP_MAX_RETRIES", "3").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 3
+
+
+def _icp_retry_base_delay() -> float:
+    """Base delay in seconds for exponential backoff between retries.
+
+    Set ``HAVEN_ICP_RETRY_BASE_DELAY`` to override (default: 1.0s).
+    """
+    raw = os.environ.get("HAVEN_ICP_RETRY_BASE_DELAY", "1.0").strip()
+    try:
+        return max(0.1, float(raw))
+    except ValueError:
+        return 1.0
+
+
 def candid_return_item_to_value(item: object) -> object:
     """Normalize one Candid return slot from icp-py-core's decoded reply.
 
@@ -128,10 +166,224 @@ def _first_return_slot(response: object, *, context: str) -> object:
     return candid_return_item_to_value(response[0])
 
 
+def _extract_transport_error_detail(exc: object) -> str:
+    """Extract the HTTP response body from an icp-py-core TransportError.
+
+    ``icp_agent.client.TransportError`` wraps the original
+    ``httpx.HTTPStatusError``, which in turn wraps the ``httpx.Response``.
+    The response body often contains the boundary-node's specific rejection
+    reason (e.g. "malformed CBOR", "invalid sender", "unknown API version").
+
+    Returns a human-readable diagnostic string, or an empty string if the
+    detail cannot be extracted.
+    """
+    # TransportError -> original_error is httpx.HTTPStatusError
+    original = getattr(exc, "original_error", None)
+    if original is None:
+        return ""
+
+    # httpx.HTTPStatusError -> response is httpx.Response
+    response = getattr(original, "response", None)
+    if response is None:
+        # Fallback: try reading .request from the original
+        return ""
+
+    try:
+        body = response.text
+    except Exception:
+        return ""
+
+    if not body:
+        return ""
+
+    # Truncate long bodies to avoid flooding logs
+    max_len = 512
+    if len(body) > max_len:
+        body = body[:max_len] + "…[truncated]"
+    return body
+
+
+def _classify_transport_error(exc: object) -> str:
+    """Classify a TransportError as 'transient' or 'permanent'.
+
+    Uses the HTTP status code and response body to decide.
+    """
+    original = getattr(exc, "original_error", None)
+    if original is None:
+        return "transient"  # network-level failure, retry
+
+    response = getattr(original, "response", None)
+    if response is None:
+        return "transient"
+
+    status = response.status_code
+
+    # 429 Too Many Requests — always transient
+    if status == 429:
+        return "transient"
+
+    # 5xx — transient (server-side)
+    if 500 <= status < 600:
+        return "transient"
+
+    # 400 — inspect the body for clues
+    if status == 400:
+        try:
+            body = (response.text or "").lower()
+        except Exception:
+            body = ""
+
+        # These rejection reasons are typically transient (boundary-node
+        # routing, temporary unavailability, rate limiting).
+        transient_signs = [
+            "temporarily unavailable",
+            "try again",
+            "timeout",
+            "overloaded",
+            "rate limit",
+            "throttl",
+        ]
+        for sign in transient_signs:
+            if sign in body:
+                return "transient"
+
+        # These rejection reasons are permanent (bad request structure).
+        permanent_signs = [
+            "malformed",
+            "invalid sender",
+            "unknown api version",
+            "bad encoding",
+            "invalid canister",
+            "invalid principal",
+            "unauthorized",
+            "forbidden",
+        ]
+        for sign in permanent_signs:
+            if sign in body:
+                return "permanent"
+
+        # Unknown 400 — treat as transient (could be a temporary gateway issue)
+        return "transient"
+
+    # Other 4xx — permanent
+    if 400 <= status < 500:
+        return "permanent"
+
+    return "transient"
+
+
+def _retry_on_transport_error(func, *, context: str):
+    """Execute *func* with retry logic for transient TransportError failures.
+
+    Extracts the boundary-node response body from each failure and includes it
+    in the final error message for diagnostics.
+
+    Args:
+        func: Callable that performs the ICP call (may raise TransportError).
+        context: Short description of the operation for error messages.
+
+    Returns:
+        The return value of *func*.
+
+    Raises:
+        RuntimeError: On permanent failures or when retries are exhausted.
+    """
+    max_retries = _icp_max_retries()
+    base_delay = _icp_retry_base_delay()
+    last_detail = ""
+    last_exc: Exception | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except Exception as exc:
+            # Save exc to a variable that persists beyond the except block
+            # (Python 3 deletes the except-as variable at block end).
+            last_exc = exc
+
+            # Only retry TransportError (icp-py-core HTTP failures).
+            # Use duck-typing rather than class name to avoid coupling to
+            # the exact icp-py-core exception hierarchy.
+            if not hasattr(exc, "original_error"):
+                raise
+
+            classification = _classify_transport_error(exc)
+            last_detail = _extract_transport_error_detail(exc)
+
+            if classification == "permanent" or attempt >= max_retries:
+                break
+
+            delay = base_delay * (2 ** attempt)
+            logger.warning(
+                "ICP %s transient error (attempt %d/%d, retry in %.1fs): %s%s",
+                context,
+                attempt + 1,
+                max_retries + 1,
+                delay,
+                exc,
+                f" — body: {last_detail}" if last_detail else "",
+            )
+            time.sleep(delay)
+
+    # Retries exhausted or permanent — build a diagnostic error message
+    assert last_exc is not None
+    url = getattr(getattr(last_exc, "original_error", None), "url", "unknown")
+    msg = f"ICP {context} failed (after {max_retries + 1} attempt(s))"
+    if url and url != "unknown":
+        msg += f" [url={url}]"
+    msg += f": {last_exc}"
+    if last_detail:
+        msg += f"\nBoundary-node response body: {last_detail}"
+    msg += _diagnostic_hints(last_exc)
+    raise RuntimeError(msg) from last_exc
+
+
+def _diagnostic_hints(exc: object) -> str:
+    """Return actionable diagnostic hints based on the error details."""
+    detail = _extract_transport_error_detail(exc).lower()
+    hints = []
+
+    if "malformed" in detail or "cbor" in detail:
+        hints.append(
+            "HINT: The request body was rejected as malformed. "
+            "Check icp-py-core version compatibility with the boundary node."
+        )
+    if "invalid sender" in detail or "unauthorized" in detail:
+        hints.append(
+            "HINT: The ICP identity was rejected. "
+            "Verify HAVEN_ICP_IDENTITY_PEM_PATH points to a valid non-anonymous PEM."
+        )
+    if "api version" in detail:
+        hints.append(
+            "HINT: The API version in the URL path may be incompatible. "
+            "Check HAVEN_ICP_HOST matches the expected boundary-node format."
+        )
+    if "canister" in detail and "invalid" in detail:
+        hints.append(
+            f"HINT: The canister ID may be invalid. "
+            f"Current: {HAVEN_AOL_CANISTER_ID}. "
+            "Verify the canister is deployed on mainnet."
+        )
+    if not hints:
+        hints.append(
+            "HINT: Check HAVEN_ICP_HOST, HAVEN_ICP_IDENTITY_PEM_PATH, "
+            "and icp-py-core version. See docs for ICP boundary-node troubleshooting."
+        )
+
+    return "\n" + "\n".join(hints)
+
+
 def get_vetkd_public_key_b64() -> str:
     """Fetch Haven-AOL VetKD public key from fixed canister.
 
     Requires authenticated user ICP identity. Anonymous access is not allowed.
+
+    Retries on transient HTTP errors (429, 5xx, certain 400s) with exponential
+    backoff. Permanent errors (bad identity, malformed requests) fail fast.
+
+    Raises:
+        RuntimeError: On failure, with boundary-node response body included
+            for diagnostics.
     """
     cfg = load_haven_aol_icp_config()
     Agent, Canister, Client, Identity = _icp_sdk()
@@ -151,7 +403,11 @@ def get_vetkd_public_key_b64() -> str:
     agent = Agent(identity, client)
     canister = Canister(agent, HAVEN_AOL_CANISTER_ID, candid_str=HAVEN_AOL_DID)
     verify = _icp_verify_certificate()
-    response = canister.getVetKDPublicKey(verify_certificate=verify)
+
+    def _call():
+        return canister.getVetKDPublicKey(verify_certificate=verify)
+
+    response = _retry_on_transport_error(_call, context="getVetKDPublicKey")
     key_raw = _first_return_slot(response, context="getVetKDPublicKey")
     key_bytes = candid_blob_to_bytes(key_raw, context="getVetKDPublicKey")
     return base64.b64encode(key_bytes).decode("ascii")
@@ -167,6 +423,8 @@ def request_decryption_key(
     """Request an encrypted derived key from Haven-AOL canister.
 
     This performs an authenticated user call and EIP-712 signature proof.
+
+    Retries on transient HTTP errors with exponential backoff.
     """
     if threshold < 1:
         raise ValueError(
@@ -223,7 +481,11 @@ def request_decryption_key(
         "eip712VerifyingContract": proof.eip712_verifying_contract,
     }
     verify = _icp_verify_certificate()
-    response = canister.requestDecryptionKey(gate_request, verify_certificate=verify)
+
+    def _call():
+        return canister.requestDecryptionKey(gate_request, verify_certificate=verify)
+
+    response = _retry_on_transport_error(_call, context="requestDecryptionKey")
     gate_result = _first_return_slot(response, context="requestDecryptionKey")
     if isinstance(gate_result, dict) and "ok" in gate_result:
         return candid_blob_to_bytes(

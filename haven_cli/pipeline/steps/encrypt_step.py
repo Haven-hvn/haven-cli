@@ -43,8 +43,78 @@ _TRANSIENT_ERRNOS: frozenset[int] = frozenset(
 )
 
 
+def _is_icp_transport_error(exc: BaseException) -> bool:
+    """Check if *exc* is an icp-py-core TransportError.
+
+    Uses duck-typing (checks for ``original_error`` attribute) rather than
+    class name to avoid coupling to the exact icp-py-core exception hierarchy.
+    """
+    return hasattr(exc, "original_error")
+
+
+def _classify_icp_transport_error(exc: BaseException) -> ErrorCategory:
+    """Classify an ICP TransportError as TRANSIENT or PERMANENT.
+
+    Inspects the original HTTP status code and response body from the
+    boundary node to determine whether retrying might succeed.
+    """
+    original = getattr(exc, "original_error", None)
+    if original is None:
+        return ErrorCategory.TRANSIENT  # network-level, retry
+
+    response = getattr(original, "response", None)
+    if response is None:
+        return ErrorCategory.TRANSIENT
+
+    status = response.status_code
+
+    # 429 Too Many Requests — always transient
+    if status == 429:
+        return ErrorCategory.TRANSIENT
+
+    # 5xx — transient (server-side)
+    if 500 <= status < 600:
+        return ErrorCategory.TRANSIENT
+
+    # 400 — inspect body for transient vs permanent
+    if status == 400:
+        try:
+            body = (response.text or "").lower()
+        except Exception:
+            body = ""
+        transient_signs = [
+            "temporarily unavailable", "try again", "timeout",
+            "overloaded", "rate limit", "throttl",
+        ]
+        for sign in transient_signs:
+            if sign in body:
+                return ErrorCategory.TRANSIENT
+        # malformed CBOR, invalid sender, etc. — permanent
+        permanent_signs = [
+            "malformed", "invalid sender", "unknown api version",
+            "bad encoding", "invalid canister", "invalid principal",
+            "unauthorized", "forbidden",
+        ]
+        for sign in permanent_signs:
+            if sign in body:
+                return ErrorCategory.PERMANENT
+        # Unknown 400 — treat as transient (could be a temporary gateway issue)
+        return ErrorCategory.TRANSIENT
+
+    # Other 4xx — permanent
+    if 400 <= status < 500:
+        return ErrorCategory.PERMANENT
+
+    return ErrorCategory.TRANSIENT
+
+
 def classify_encrypt_failure(exc: BaseException) -> ErrorCategory:
-    """Classify an exception from the encrypt path for retry / reporting."""
+    """Classify an exception from the encrypt path for retry / reporting.
+
+    Handles ICP ``TransportError`` (from ``icp-py-core``) by inspecting the
+    original HTTP status code and response body to determine whether the error
+    is transient (retry may help) or permanent (configuration / identity issue).
+    """
     if isinstance(exc, (ValueError, FileNotFoundError, KeyError, TypeError)):
         return ErrorCategory.PERMANENT
     if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError, BrokenPipeError)):
@@ -70,6 +140,9 @@ def classify_encrypt_failure(exc: BaseException) -> ErrorCategory:
             )
         ):
             return ErrorCategory.TRANSIENT
+    # ICP TransportError (icp-py-core HTTP failures) — classify by status code
+    if _is_icp_transport_error(exc):
+        return _classify_icp_transport_error(exc)
     return ErrorCategory.UNKNOWN
 
 

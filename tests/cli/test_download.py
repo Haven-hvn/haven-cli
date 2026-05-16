@@ -252,9 +252,9 @@ class TestDecryptFileCommand:
         assert result.exit_code != 0  # Typer validation should fail
 
     @pytest.mark.asyncio
-    async def test_decrypt_file_disabled_for_icp_only_mode(self, tmp_path, monkeypatch):
-        """Local file decrypt is blocked in ICP-only mode."""
-        monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(tmp_path / "identity.pem"))
+    async def test_decrypt_file_requires_icp_identity(self, tmp_path, monkeypatch):
+        """Decrypt requires HAVEN_ICP_IDENTITY_PEM_PATH to be set."""
+        monkeypatch.delenv("HAVEN_ICP_IDENTITY_PEM_PATH", raising=False)
         encrypted_path = tmp_path / "encrypted.out"
         encrypted_path.write_bytes(b"cipher")
 
@@ -278,7 +278,7 @@ class TestDecryptFileCommand:
             "haven_cli.cli.download.load_encryption_metadata_by_cid",
             new=AsyncMock(return_value=metadata),
         ):
-            with pytest.raises(RuntimeError, match="disabled for ICP-only Haven-AOL mode"):
+            with pytest.raises(ValueError, match="HAVEN_ICP_IDENTITY_PEM_PATH is required"):
                 await _decrypt_file(
                     input_path=encrypted_path,
                     output_path=encrypted_path,

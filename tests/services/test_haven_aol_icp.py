@@ -7,6 +7,10 @@ import pytest
 from haven_cli.services.evm_utils import GateRequestProof, build_gate_request_typed_data
 from haven_cli.services.haven_aol_icp import (
     HAVEN_AOL_CANISTER_ID,
+    _classify_transport_error,
+    _extract_transport_error_detail,
+    _icp_max_retries,
+    _icp_retry_base_delay,
     candid_blob_to_bytes,
     candid_return_item_to_value,
     get_vetkd_public_key_b64,
@@ -483,3 +487,289 @@ def test_request_decryption_key_ok_invalid_blob_type(monkeypatch, tmp_path) -> N
             threshold=1,
             cid="cid",
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests for TransportError extraction and classification helpers
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    """Minimal stand-in for httpx.Response."""
+
+    def __init__(self, status_code: int, text: str = "") -> None:
+        self.status_code = status_code
+        self.text = text
+
+
+class _FakeHTTPStatusError(Exception):
+    """Minimal stand-in for httpx.HTTPStatusError."""
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self.response = response
+        super().__init__(f"HTTP {response.status_code}")
+
+
+class _FakeTransportError(Exception):
+    """Minimal stand-in for icp_agent.client.TransportError."""
+
+    def __init__(self, url: str, original_error: Exception) -> None:
+        self.url = url
+        self.original_error = original_error
+        super().__init__(f"Transport error: {original_error}")
+
+
+def test_extract_transport_error_detail_400_body() -> None:
+    body = "malformed CBOR in request envelope"
+    resp = _FakeResponse(400, body)
+    err = _FakeTransportError("https://icp-api.io/api/v4/canister/.../call", _FakeHTTPStatusError(resp))
+    detail = _extract_transport_error_detail(err)
+    assert detail == body
+
+
+def test_extract_transport_error_detail_truncates_long_body() -> None:
+    body = "x" * 600
+    resp = _FakeResponse(400, body)
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    detail = _extract_transport_error_detail(err)
+    assert len(detail) <= 512 + len("…[truncated]")
+    assert detail.endswith("…[truncated]")
+
+
+def test_extract_transport_error_detail_no_original() -> None:
+    err = _FakeTransportError("https://icp-api.io", None)
+    assert _extract_transport_error_detail(err) == ""
+
+
+def test_extract_transport_error_detail_no_response() -> None:
+    err = _FakeTransportError("https://icp-api.io", Exception("no response"))
+    assert _extract_transport_error_detail(err) == ""
+
+
+def test_classify_transport_error_429_is_transient() -> None:
+    resp = _FakeResponse(429, "rate limited")
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    assert _classify_transport_error(err) == "transient"
+
+
+def test_classify_transport_error_500_is_transient() -> None:
+    resp = _FakeResponse(500, "internal error")
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    assert _classify_transport_error(err) == "transient"
+
+
+def test_classify_transport_error_400_malformed_is_permanent() -> None:
+    resp = _FakeResponse(400, "malformed CBOR envelope")
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    assert _classify_transport_error(err) == "permanent"
+
+
+def test_classify_transport_error_400_invalid_sender_is_permanent() -> None:
+    resp = _FakeResponse(400, "invalid sender principal")
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    assert _classify_transport_error(err) == "permanent"
+
+
+def test_classify_transport_error_400_temporarily_unavailable_is_transient() -> None:
+    resp = _FakeResponse(400, "temporarily unavailable, try again later")
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    assert _classify_transport_error(err) == "transient"
+
+
+def test_classify_transport_error_400_unknown_is_transient() -> None:
+    resp = _FakeResponse(400, "something went wrong")
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    assert _classify_transport_error(err) == "transient"
+
+
+def test_classify_transport_error_401_is_permanent() -> None:
+    resp = _FakeResponse(401, "unauthorized")
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    assert _classify_transport_error(err) == "permanent"
+
+
+def test_classify_transport_error_no_response_is_transient() -> None:
+    err = _FakeTransportError("https://icp-api.io", Exception("connection refused"))
+    assert _classify_transport_error(err) == "transient"
+
+
+def test_icp_max_retries_default(monkeypatch) -> None:
+    monkeypatch.delenv("HAVEN_ICP_MAX_RETRIES", raising=False)
+    assert _icp_max_retries() == 3
+
+
+def test_icp_max_retries_override(monkeypatch) -> None:
+    monkeypatch.setenv("HAVEN_ICP_MAX_RETRIES", "5")
+    assert _icp_max_retries() == 5
+
+
+def test_icp_max_retries_zero(monkeypatch) -> None:
+    monkeypatch.setenv("HAVEN_ICP_MAX_RETRIES", "0")
+    assert _icp_max_retries() == 0
+
+
+def test_icp_max_retries_invalid(monkeypatch) -> None:
+    monkeypatch.setenv("HAVEN_ICP_MAX_RETRIES", "abc")
+    assert _icp_max_retries() == 3
+
+
+def test_icp_retry_base_delay_default(monkeypatch) -> None:
+    monkeypatch.delenv("HAVEN_ICP_RETRY_BASE_DELAY", raising=False)
+    assert _icp_retry_base_delay() == 1.0
+
+
+def test_icp_retry_base_delay_override(monkeypatch) -> None:
+    monkeypatch.setenv("HAVEN_ICP_RETRY_BASE_DELAY", "2.5")
+    assert _icp_retry_base_delay() == 2.5
+
+
+def test_icp_retry_base_delay_invalid(monkeypatch) -> None:
+    monkeypatch.setenv("HAVEN_ICP_RETRY_BASE_DELAY", "abc")
+    assert _icp_retry_base_delay() == 1.0
+
+
+def test_get_vetkd_public_key_retries_on_transient_400(monkeypatch, tmp_path) -> None:
+    """Transient 400 triggers retry and eventually succeeds."""
+    pem_path = tmp_path / "id.pem"
+    pem_path.write_text("pem")
+    monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
+    monkeypatch.setenv("HAVEN_ICP_MAX_RETRIES", "2")
+    monkeypatch.setenv("HAVEN_ICP_RETRY_BASE_DELAY", "0.01")
+
+    call_count = 0
+
+    class FakeIdentity:
+        anonymous = False
+
+        @staticmethod
+        def from_pem(pem: str) -> FakeIdentity:
+            return FakeIdentity()
+
+    class FakeClient:
+        def __init__(self, url: str = "") -> None:
+            self.url = url
+
+    class FakeAgent:
+        def __init__(self, identity: object, client: object) -> None:
+            self.identity = identity
+            self.client = client
+
+    class FakeCanister:
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
+            self.agent = agent
+            self.canister_id = canister_id
+            self.candid_str = candid_str
+
+        def getVetKDPublicKey(self, *, verify_certificate: bool = True) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise _FakeTransportError(
+                    "https://icp-api.io",
+                    _FakeHTTPStatusError(_FakeResponse(400, "temporarily unavailable")),
+                )
+            return [b"\x01\x02"]
+
+    def _fake_import():
+        return (FakeAgent, FakeCanister, FakeClient, FakeIdentity)
+
+    monkeypatch.setattr(haven_aol_icp_module, "_import_icp_core", _fake_import)
+
+    result = get_vetkd_public_key_b64()
+    assert result == "AQI="
+    assert call_count == 2
+
+
+def test_get_vetkd_public_key_permanent_400_fails_fast(monkeypatch, tmp_path) -> None:
+    """Permanent 400 (malformed) fails without retry."""
+    pem_path = tmp_path / "id.pem"
+    pem_path.write_text("pem")
+    monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
+    monkeypatch.setenv("HAVEN_ICP_MAX_RETRIES", "3")
+    monkeypatch.setenv("HAVEN_ICP_RETRY_BASE_DELAY", "0.01")
+
+    call_count = 0
+
+    class FakeIdentity:
+        anonymous = False
+
+        @staticmethod
+        def from_pem(pem: str) -> FakeIdentity:
+            return FakeIdentity()
+
+    class FakeClient:
+        def __init__(self, url: str = "") -> None:
+            self.url = url
+
+    class FakeAgent:
+        def __init__(self, identity: object, client: object) -> None:
+            self.identity = identity
+            self.client = client
+
+    class FakeCanister:
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
+            self.agent = agent
+            self.canister_id = canister_id
+            self.candid_str = candid_str
+
+        def getVetKDPublicKey(self, *, verify_certificate: bool = True) -> object:
+            nonlocal call_count
+            call_count += 1
+            raise _FakeTransportError(
+                "https://icp-api.io",
+                _FakeHTTPStatusError(_FakeResponse(400, "malformed CBOR envelope")),
+            )
+
+    def _fake_import():
+        return (FakeAgent, FakeCanister, FakeClient, FakeIdentity)
+
+    monkeypatch.setattr(haven_aol_icp_module, "_import_icp_core", _fake_import)
+
+    with pytest.raises(RuntimeError, match="malformed CBOR"):
+        get_vetkd_public_key_b64()
+    assert call_count == 1  # no retries for permanent errors
+
+
+def test_get_vetkd_public_key_retries_exhausted(monkeypatch, tmp_path) -> None:
+    """After all retries are exhausted, RuntimeError includes diagnostic info."""
+    pem_path = tmp_path / "id.pem"
+    pem_path.write_text("pem")
+    monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
+    monkeypatch.setenv("HAVEN_ICP_MAX_RETRIES", "2")
+    monkeypatch.setenv("HAVEN_ICP_RETRY_BASE_DELAY", "0.01")
+
+    class FakeIdentity:
+        anonymous = False
+
+        @staticmethod
+        def from_pem(pem: str) -> FakeIdentity:
+            return FakeIdentity()
+
+    class FakeClient:
+        def __init__(self, url: str = "") -> None:
+            self.url = url
+
+    class FakeAgent:
+        def __init__(self, identity: object, client: object) -> None:
+            self.identity = identity
+            self.client = client
+
+    class FakeCanister:
+        def __init__(self, agent: object, canister_id: str, candid_str: str | None = None) -> None:
+            self.agent = agent
+            self.canister_id = canister_id
+            self.candid_str = candid_str
+
+        def getVetKDPublicKey(self, *, verify_certificate: bool = True) -> object:
+            raise _FakeTransportError(
+                "https://icp-api.io",
+                _FakeHTTPStatusError(_FakeResponse(500, "internal server error")),
+            )
+
+    def _fake_import():
+        return (FakeAgent, FakeCanister, FakeClient, FakeIdentity)
+
+    monkeypatch.setattr(haven_aol_icp_module, "_import_icp_core", _fake_import)
+
+    with pytest.raises(RuntimeError, match="after 3 attempt"):
+        get_vetkd_public_key_b64()
