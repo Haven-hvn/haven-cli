@@ -127,6 +127,56 @@ class TestInsufficientFundsError:
         assert is_insufficient_funds_error(error) is True
 
 
+class TestExtractRpcErrorText:
+    """Tests for extract_rpc_error_text."""
+
+    def test_plain_exception(self) -> None:
+        from haven_cli.services.evm_utils import extract_rpc_error_text
+
+        assert "timeout" in extract_rpc_error_text(Exception("connection timeout"))
+
+    def test_web3_rpc_error_dict(self) -> None:
+        from haven_cli.services.evm_utils import extract_rpc_error_text
+
+        error = MagicMock()
+        error.args = ({"message": "non-golembase transaction"},)
+        assert "non-golembase transaction" in extract_rpc_error_text(error)
+
+
+class TestNonGolemBaseTransactionError:
+    """Tests for is_non_golem_base_transaction_error."""
+
+    def test_detects_hyphenated_message(self) -> None:
+        from haven_cli.services.evm_utils import is_non_golem_base_transaction_error
+
+        error = MagicMock()
+        error.args = ({"message": "non-golembase transaction"},)
+        assert is_non_golem_base_transaction_error(error) is True
+
+    def test_ignores_unrelated_rpc_errors(self) -> None:
+        from haven_cli.services.evm_utils import is_non_golem_base_transaction_error
+
+        assert is_non_golem_base_transaction_error(Exception("connection reset")) is False
+
+
+class TestLegacyKaolinRpcUrl:
+    """Tests for is_legacy_kaolin_arkiv_rpc_url."""
+
+    def test_detects_kaolin_host(self) -> None:
+        from haven_cli.services.evm_utils import is_legacy_kaolin_arkiv_rpc_url
+
+        assert is_legacy_kaolin_arkiv_rpc_url(
+            "https://kaolin.hoodi.arkiv.network/rpc"
+        ) is True
+
+    def test_braga_not_legacy(self) -> None:
+        from haven_cli.services.evm_utils import is_legacy_kaolin_arkiv_rpc_url
+
+        assert is_legacy_kaolin_arkiv_rpc_url(
+            "https://braga.hoodi.arkiv.network/rpc"
+        ) is False
+
+
 class TestValidateEvmConfig:
     """Tests for validate_evm_config."""
     

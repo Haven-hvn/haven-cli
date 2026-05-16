@@ -20,8 +20,13 @@ from haven_cli.pipeline.context import PipelineContext
 from haven_cli.services.evm_utils import (
     InsufficientGasError,
     handle_evm_gas_error,
+    is_legacy_kaolin_arkiv_rpc_url,
+    is_non_golem_base_transaction_error,
     validate_evm_config,
 )
+
+# Minimum arkiv-sdk for Braga (RLP storage transactions via eth_sendTransaction).
+MIN_ARKIV_SDK_VERSION = "1.0.0b2"
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +135,13 @@ def build_arkiv_config(
     final_enabled = bool(final_private_key) and sync_enabled
     
     # Validate EVM config and log wallet info when enabled
+    if is_legacy_kaolin_arkiv_rpc_url(final_rpc_url):
+        logger.warning(
+            "⚠️  Arkiv RPC URL targets legacy Kaolin testnet (%s). "
+            "Kaolin was sunset; use Braga: https://braga.hoodi.arkiv.network/rpc",
+            final_rpc_url,
+        )
+
     if final_enabled and final_private_key:
         try:
             wallet_address, chain_name, token_symbol = validate_evm_config(final_private_key, final_rpc_url)
@@ -137,13 +149,17 @@ def build_arkiv_config(
             logger.info(
                 "✅ Arkiv sync enabled | "
                 "%s | "
+                "RPC: %s | "
                 "Chain: %s | "
                 "Wallet Address: %s | "
-                "Ensure you have %s for gas fees",
+                "Ensure you have %s for gas fees | "
+                "Requires arkiv-sdk>=%s",
                 network_indicator,
+                final_rpc_url,
                 chain_name,
                 wallet_address,
-                token_symbol
+                token_symbol,
+                MIN_ARKIV_SDK_VERSION,
             )
             if network_mode == "mainnet":
                 logger.warning("⚠️  Arkiv is configured for MAINNET - real tokens will be used!")
@@ -684,7 +700,16 @@ class ArkivSyncClient:
                     "Error: %s",
                     exc
                 )
-            
+            elif is_non_golem_base_transaction_error(exc):
+                logger.error(
+                    "❌ Arkiv sync failed: RPC rejected transaction (not Golem Base encoded). "
+                    "Upgrade arkiv-sdk to >=%s for Braga testnet. "
+                    "Current installs must use RLP storage transactions, not legacy "
+                    "contract.execute().transact. Error: %s",
+                    MIN_ARKIV_SDK_VERSION,
+                    exc,
+                )
+
             logger.error("❌ Arkiv sync failed: %s", exc, exc_info=True)
             raise
 

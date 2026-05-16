@@ -424,6 +424,15 @@ class TestSyncStepErrorCategorization:
         
         assert category == ErrorCategory.UNKNOWN
 
+    def test_non_golem_base_transaction_is_permanent(self) -> None:
+        """Braga rejects legacy SDK txs; do not retry."""
+        step = SyncStep()
+        error = Exception("{'code': -32000, 'message': 'non-golembase transaction'}")
+
+        category = step._categorize_error(error)
+
+        assert category == ErrorCategory.PERMANENT
+
 
 class TestSyncStepEvents:
     """Tests for event emission."""

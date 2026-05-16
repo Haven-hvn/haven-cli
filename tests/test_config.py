@@ -386,6 +386,20 @@ class TestConfigValidation:
         url_errors = [e for e in errors if "arkiv_rpc_override" in e.field]
         assert len(url_errors) >= 1
         assert url_errors[0].severity == "error"
+
+    def test_validate_kaolin_arkiv_rpc_warning(self) -> None:
+        """Warn when Arkiv sync uses sunset Kaolin RPC."""
+        config = HavenConfig()
+        config.pipeline.sync_enabled = True
+        config.blockchain.arkiv_rpc_override = "https://kaolin.hoodi.arkiv.network/rpc"
+        errors = validate_config(config)
+
+        kaolin_warnings = [
+            e for e in errors
+            if e.field == "blockchain.arkiv_rpc_override" and "Kaolin" in e.message
+        ]
+        assert len(kaolin_warnings) == 1
+        assert kaolin_warnings[0].severity == "warning"
     
     def test_validate_missing_api_key_warning(self):
         """Test validation warns about missing API key when multiplexer disabled."""

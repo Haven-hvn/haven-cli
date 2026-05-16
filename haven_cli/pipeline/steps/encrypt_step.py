@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from haven_cli.crypto.haven_aol_local import GateParams, encrypt_file_streaming
 from haven_cli.pipeline.context import EncryptionMetadata, PipelineContext
@@ -25,6 +25,11 @@ from haven_cli.services.blockchain_network import get_network_config
 from haven_cli.services.evm_utils import normalize_haven_aol_chain
 
 logger = logging.getLogger(__name__)
+
+# Pre-encrypt SHA-256 hashing occupies this share of the encrypt stage (0–100).
+HASH_PROGRESS_WEIGHT_PERCENT = 15.0
+PROGRESS_EMIT_INTERVAL_SECONDS = 1.0
+PROGRESS_EMIT_MIN_DELTA_PERCENT = 1.0
 
 # Errnos often seen for transient network / I/O issues (retry may help).
 _TRANSIENT_ERRNOS: frozenset[int] = frozenset(
@@ -153,6 +158,98 @@ def step_error_from_encrypt_exception(exc: BaseException) -> StepError:
     return StepError.from_exception(exc, code="ENCRYPT_ERROR", category=category)
 
 
+def compute_encrypt_stage_progress(
+    bytes_processed: int,
+    file_size: int,
+    *,
+    phase: str,
+    hash_weight_percent: float = HASH_PROGRESS_WEIGHT_PERCENT,
+) -> float:
+    """Map in-phase byte progress to overall encrypt-stage percent (0–100)."""
+    if file_size <= 0:
+        if phase == "hashing":
+            return 0.0
+        return min(100.0, hash_weight_percent)
+
+    fraction = min(1.0, bytes_processed / file_size)
+    if phase == "hashing":
+        return min(hash_weight_percent, fraction * hash_weight_percent)
+
+    encrypt_span = 100.0 - hash_weight_percent
+    return min(100.0, hash_weight_percent + fraction * encrypt_span)
+
+
+def should_emit_encrypt_progress(
+    now: float,
+    last_emit_at: float,
+    last_progress_percent: float,
+    progress_percent: float,
+    *,
+    interval_seconds: float = PROGRESS_EMIT_INTERVAL_SECONDS,
+    min_delta_percent: float = PROGRESS_EMIT_MIN_DELTA_PERCENT,
+    force: bool = False,
+) -> bool:
+    """Return True when a progress event or DB update should be emitted."""
+    if force or progress_percent >= 100.0:
+        return True
+    if last_emit_at <= 0:
+        return True
+    if now - last_emit_at >= interval_seconds:
+        return True
+    return progress_percent - last_progress_percent >= min_delta_percent
+
+
+def hash_file_sha256_with_progress(
+    path: str,
+    *,
+    block_size: int = 1024 * 1024,
+    progress_callback: Callable[[int], None] | None = None,
+) -> str:
+    """Hash a file with optional per-block progress callbacks (cumulative bytes read)."""
+    hasher = hashlib.sha256()
+    bytes_read = 0
+    with open(path, "rb") as handle:
+        while True:
+            block = handle.read(block_size)
+            if not block:
+                break
+            hasher.update(block)
+            bytes_read += len(block)
+            if progress_callback is not None:
+                progress_callback(bytes_read)
+    return hasher.hexdigest()
+
+
+def build_encrypt_progress_payload(
+    *,
+    video_id: Optional[int],
+    job_id: Optional[int],
+    video_path: str,
+    progress_percent: float,
+    bytes_processed: int,
+    bytes_total: int,
+    phase: str,
+    encrypt_speed: int,
+    chunk_index: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build a normalized ENCRYPT_PROGRESS event payload for TUI and metrics."""
+    payload: Dict[str, Any] = {
+        "video_id": video_id,
+        "job_id": job_id,
+        "video_path": video_path,
+        "progress": progress_percent,
+        "progress_percent": progress_percent,
+        "bytes_processed": bytes_processed,
+        "bytes_total": bytes_total,
+        "phase": phase,
+        "encrypt_speed": encrypt_speed,
+        "source_bytes_processed": bytes_processed,
+    }
+    if chunk_index is not None:
+        payload["chunk_index"] = chunk_index
+    return payload
+
+
 class EncryptStep(ConditionalStep):
     """Pipeline step for Haven-AOL encryption.
 
@@ -190,6 +287,12 @@ class EncryptStep(ConditionalStep):
         super().__init__(config=config)
         self._job_id: Optional[int] = None
         self._start_time: Optional[float] = None
+        self._progress_file_size: int = 0
+        self._last_progress_emit_at: float = 0.0
+        self._last_reported_progress: float = -1.0
+        self._last_speed_bytes: int = 0
+        self._last_speed_at: float = 0.0
+        self._last_progress_phase: str = ""
 
     @property
     def name(self) -> str:
@@ -251,16 +354,21 @@ class EncryptStep(ConditionalStep):
         """
         video_path = context.video_path
         self._start_time = time.time()
+        self._reset_progress_tracking()
+
+        file_size = self._resolve_source_file_size(context, video_path)
+        self._progress_file_size = file_size
 
         # Create EncryptionJob record for tracking
         if context.video_id:
-            file_size = context.video_metadata.file_size if context.video_metadata else 0
             self._job_id = await self._create_encryption_job(context.video_id, file_size)
             await self._update_pipeline_snapshot(context.video_id, "encrypt", 0)
 
         # Emit encrypt requested event
         await self._emit_event(EventType.ENCRYPT_REQUESTED, context, {
             "video_path": video_path,
+            "video_id": context.video_id,
+            "job_id": self._job_id,
         })
 
         try:
@@ -324,6 +432,8 @@ class EncryptStep(ConditionalStep):
             # Emit encrypt complete event
             await self._emit_event(EventType.ENCRYPT_COMPLETE, context, {
                 "video_path": video_path,
+                "video_id": context.video_id,
+                "job_id": self._job_id,
                 "encrypted_path": encryption_result.get("ciphertext_path"),
                 "data_to_encrypt_hash": encryption_metadata.data_to_encrypt_hash,
                 "chain": encryption_metadata.chain,
@@ -356,6 +466,116 @@ class EncryptStep(ConditionalStep):
 
             return StepResult.fail(self.name, step_error_from_encrypt_exception(e))
 
+    def _reset_progress_tracking(self) -> None:
+        """Reset per-run progress throttling and speed measurement state."""
+        self._progress_file_size = 0
+        self._last_progress_emit_at = 0.0
+        self._last_reported_progress = -1.0
+        self._last_speed_bytes = 0
+        self._last_speed_at = 0.0
+        self._last_progress_phase = ""
+
+    @staticmethod
+    def _resolve_source_file_size(context: PipelineContext, video_path: str) -> int:
+        """Resolve source byte count for progress (metadata, then stat)."""
+        if context.video_metadata and context.video_metadata.file_size:
+            return int(context.video_metadata.file_size)
+        return os.path.getsize(video_path)
+
+    async def _report_encrypt_progress(
+        self,
+        context: PipelineContext,
+        video_path: str,
+        bytes_processed: int,
+        file_size: int,
+        phase: str,
+        *,
+        chunk_index: Optional[int] = None,
+        force: bool = False,
+    ) -> None:
+        """Emit ENCRYPT_PROGRESS and persist job/snapshot updates (throttled)."""
+        progress_percent = compute_encrypt_stage_progress(
+            bytes_processed,
+            file_size,
+            phase=phase,
+        )
+        now = time.monotonic()
+        if phase != self._last_progress_phase:
+            self._last_speed_bytes = bytes_processed
+            self._last_speed_at = now
+            self._last_progress_phase = phase
+
+        if not should_emit_encrypt_progress(
+            now,
+            self._last_progress_emit_at,
+            self._last_reported_progress,
+            progress_percent,
+            force=force,
+        ):
+            return
+
+        encrypt_speed = 0
+        if self._last_speed_at > 0 and now > self._last_speed_at:
+            elapsed = now - self._last_speed_at
+            delta_bytes = max(0, bytes_processed - self._last_speed_bytes)
+            encrypt_speed = int(delta_bytes / elapsed) if elapsed > 0 else 0
+
+        self._last_progress_emit_at = now
+        self._last_reported_progress = progress_percent
+        self._last_speed_bytes = bytes_processed
+        self._last_speed_at = now
+
+        payload = build_encrypt_progress_payload(
+            video_id=context.video_id,
+            job_id=self._job_id,
+            video_path=video_path,
+            progress_percent=progress_percent,
+            bytes_processed=bytes_processed,
+            bytes_total=file_size,
+            phase=phase,
+            encrypt_speed=encrypt_speed,
+            chunk_index=chunk_index,
+        )
+        await self._emit_event(EventType.ENCRYPT_PROGRESS, context, payload)
+
+        if context.video_id and file_size > 0:
+            effective_bytes = int(file_size * progress_percent / 100)
+            await self._update_job_progress(
+                context.video_id,
+                effective_bytes,
+                progress_percent,
+                file_size,
+                encrypt_speed,
+            )
+
+    def _schedule_encrypt_progress(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        progress_futures: list[Future[None]],
+        context: PipelineContext,
+        video_path: str,
+        bytes_processed: int,
+        file_size: int,
+        phase: str,
+        *,
+        chunk_index: Optional[int] = None,
+        force: bool = False,
+    ) -> None:
+        """Schedule async progress reporting from a worker thread."""
+        fut = asyncio.run_coroutine_threadsafe(
+            self._report_encrypt_progress(
+                context,
+                video_path,
+                bytes_processed,
+                file_size,
+                phase,
+                chunk_index=chunk_index,
+                force=force,
+            ),
+            loop,
+        )
+        progress_futures.append(fut)
+
     async def _encrypt_with_haven_aol(
         self,
         video_path: str,
@@ -386,14 +606,44 @@ class EncryptStep(ConditionalStep):
             threshold = 1
 
         chain = self._get_chain(context)
-        hasher = hashlib.sha256()
-        with open(video_path, "rb") as f:
-            while True:
-                block = f.read(1024 * 1024)
-                if not block:
-                    break
-                hasher.update(block)
-        original_hash = hasher.hexdigest()
+        file_size = self._progress_file_size or os.path.getsize(video_path)
+        self._progress_file_size = file_size
+
+        loop = asyncio.get_running_loop()
+        progress_futures: list[Future[None]] = []
+
+        def on_hash_progress(bytes_read: int) -> None:
+            self._schedule_encrypt_progress(
+                loop,
+                progress_futures,
+                context,
+                video_path,
+                bytes_read,
+                file_size,
+                "hashing",
+                force=bytes_read >= file_size,
+            )
+
+        def _run_hash() -> str:
+            return hash_file_sha256_with_progress(
+                video_path,
+                progress_callback=on_hash_progress,
+            )
+
+        original_hash = await asyncio.to_thread(_run_hash)
+        for fut in progress_futures:
+            await asyncio.wrap_future(fut)
+        progress_futures.clear()
+
+        await self._report_encrypt_progress(
+            context,
+            video_path,
+            file_size,
+            file_size,
+            "hashing",
+            force=True,
+        )
+
         cid_value = str(context.options.get("cid", "")).strip()
         if not cid_value:
             # Upload CID is unknown pre-upload; derive a deterministic local CID key.
@@ -416,23 +666,18 @@ class EncryptStep(ConditionalStep):
             cid=cid_value,
         )
 
-        loop = asyncio.get_running_loop()
-        progress_futures: list[Future[None]] = []
-
         def on_encrypt_progress(chunk_index: int, source_bytes_processed: int) -> None:
-            fut = asyncio.run_coroutine_threadsafe(
-                self._emit_event(
-                    EventType.ENCRYPT_PROGRESS,
-                    context,
-                    {
-                        "video_path": video_path,
-                        "chunk_index": chunk_index,
-                        "source_bytes_processed": source_bytes_processed,
-                    },
-                ),
+            self._schedule_encrypt_progress(
                 loop,
+                progress_futures,
+                context,
+                video_path,
+                source_bytes_processed,
+                file_size,
+                "encrypting",
+                chunk_index=chunk_index,
+                force=source_bytes_processed >= file_size,
             )
-            progress_futures.append(fut)
 
         def _run_encrypt() -> Dict[str, Any]:
             return encrypt_file_streaming(
@@ -447,6 +692,15 @@ class EncryptStep(ConditionalStep):
         encrypted = await asyncio.to_thread(_run_encrypt)
         for fut in progress_futures:
             await asyncio.wrap_future(fut)
+
+        await self._report_encrypt_progress(
+            context,
+            video_path,
+            file_size,
+            file_size,
+            "encrypting",
+            force=True,
+        )
 
         return {
             "ciphertext_path": encrypted_path,

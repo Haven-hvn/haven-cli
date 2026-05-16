@@ -122,6 +122,19 @@ class TestBuildArkivConfig:
         expected_expires = 8 * 7 * 24 * 60 * 60
         assert config.expires_in == expected_expires
 
+    @patch.dict(os.environ, {"ARKIV_SYNC_ENABLED": "true"}, clear=True)
+    def test_legacy_kaolin_rpc_logs_warning(self, caplog):
+        """Warn when RPC still points at sunset Kaolin testnet."""
+        import logging
+
+        caplog.set_level(logging.WARNING)
+        build_arkiv_config(
+            private_key="0x" + "11" * 32,
+            rpc_url="https://kaolin.hoodi.arkiv.network/rpc",
+            enabled=True,
+        )
+        assert any("Kaolin" in record.message for record in caplog.records)
+
 
 class TestBuildPayloadGoldStandard:
     """Gold standard compliance tests for _build_payload function.

@@ -1052,6 +1052,16 @@ def validate_config(config: Optional[HavenConfig] = None) -> List[ValidationErro
                 message=f"Invalid URL format: {config.blockchain.arkiv_rpc_override}",
                 severity="error"
             ))
+        arkiv_rpc = config.blockchain.get_arkiv_rpc_url()
+        if "kaolin" in arkiv_rpc.lower():
+            errors.append(ValidationError(
+                field="blockchain.arkiv_rpc_override",
+                message=(
+                    "Arkiv Kaolin testnet was sunset; use Braga "
+                    "(https://braga.hoodi.arkiv.network/rpc)."
+                ),
+                severity="warning",
+            ))
     
     # Scheduler validation
     if config.scheduler.enabled:

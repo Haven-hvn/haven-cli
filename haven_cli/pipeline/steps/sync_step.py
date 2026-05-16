@@ -33,6 +33,7 @@ from haven_cli.services.arkiv_sync import (
     build_arkiv_config,
 )
 from haven_cli.services.blockchain_network import get_network_config
+from haven_cli.services.evm_utils import is_non_golem_base_transaction_error
 
 
 class SyncStep(ConditionalStep):
@@ -316,6 +317,9 @@ class SyncStep(ConditionalStep):
         ]
         if any(p in error_str for p in transient_patterns):
             return ErrorCategory.TRANSIENT
+
+        if is_non_golem_base_transaction_error(error):
+            return ErrorCategory.PERMANENT
         
         # Configuration errors - permanent
         permanent_patterns = [

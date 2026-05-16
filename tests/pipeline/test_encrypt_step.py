@@ -21,10 +21,15 @@ from haven_cli.pipeline.results import ErrorCategory, StepResult
 from haven_cli.pipeline.events import EventType
 from haven_cli.pipeline.steps import encrypt_step as encrypt_step_module
 from haven_cli.pipeline.steps.encrypt_step import (
+    HASH_PROGRESS_WEIGHT_PERCENT,
     EncryptStep,
     _classify_icp_transport_error,
     _is_icp_transport_error,
+    build_encrypt_progress_payload,
     classify_encrypt_failure,
+    compute_encrypt_stage_progress,
+    hash_file_sha256_with_progress,
+    should_emit_encrypt_progress,
     step_error_from_encrypt_exception,
 )
 
@@ -36,6 +41,75 @@ TEST_ADDRESS = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 def _mock_haven_aol_ibe(monkeypatch) -> None:
     """Mock IBE key wrapping for deterministic unit tests."""
     monkeypatch.setattr(haven_aol_local, "_ibe_encrypt_aes_key", lambda aes_key, derivation_input: b"wrapped")
+
+
+class TestEncryptProgressHelpers:
+    """Tests for encrypt progress calculation and payload helpers."""
+
+    def test_compute_encrypt_stage_progress_hashing(self) -> None:
+        assert compute_encrypt_stage_progress(50, 100, phase="hashing") == pytest.approx(
+            HASH_PROGRESS_WEIGHT_PERCENT / 2
+        )
+
+    def test_compute_encrypt_stage_progress_encrypting(self) -> None:
+        span = 100.0 - HASH_PROGRESS_WEIGHT_PERCENT
+        assert compute_encrypt_stage_progress(50, 100, phase="encrypting") == pytest.approx(
+            HASH_PROGRESS_WEIGHT_PERCENT + span / 2
+        )
+
+    def test_compute_encrypt_stage_progress_zero_file_size(self) -> None:
+        assert compute_encrypt_stage_progress(0, 0, phase="hashing") == 0.0
+        assert compute_encrypt_stage_progress(0, 0, phase="encrypting") == pytest.approx(
+            HASH_PROGRESS_WEIGHT_PERCENT
+        )
+
+    def test_should_emit_encrypt_progress_force(self) -> None:
+        assert should_emit_encrypt_progress(10.0, 9.0, 5.0, 5.0, force=True) is True
+
+    def test_should_emit_encrypt_progress_interval(self) -> None:
+        assert should_emit_encrypt_progress(2.0, 0.0, 0.0, 1.0) is True
+        assert should_emit_encrypt_progress(1.5, 1.0, 1.0, 1.5) is False
+        assert should_emit_encrypt_progress(2.5, 1.0, 1.0, 1.5) is True
+
+    def test_should_emit_encrypt_progress_delta(self) -> None:
+        assert should_emit_encrypt_progress(1.0, 0.5, 0.0, 2.0) is True
+
+    def test_build_encrypt_progress_payload(self) -> None:
+        payload = build_encrypt_progress_payload(
+            video_id=7,
+            job_id=3,
+            video_path="/v.mp4",
+            progress_percent=42.5,
+            bytes_processed=425,
+            bytes_total=1000,
+            phase="encrypting",
+            encrypt_speed=1024,
+            chunk_index=2,
+        )
+        assert payload["video_id"] == 7
+        assert payload["job_id"] == 3
+        assert payload["progress"] == 42.5
+        assert payload["progress_percent"] == 42.5
+        assert payload["bytes_processed"] == 425
+        assert payload["phase"] == "encrypting"
+        assert payload["encrypt_speed"] == 1024
+        assert payload["chunk_index"] == 2
+
+    def test_hash_file_sha256_with_progress(self, tmp_path: Path) -> None:
+        data = b"abc" * 100
+        path = tmp_path / "hash_me.bin"
+        path.write_bytes(data)
+        seen: list[int] = []
+
+        digest = hash_file_sha256_with_progress(
+            str(path),
+            block_size=50,
+            progress_callback=seen.append,
+        )
+
+        assert digest == hashlib.sha256(data).hexdigest()
+        assert seen[-1] == len(data)
+        assert len(seen) >= 2
 
 
 class TestEncryptFailureClassification:
@@ -565,7 +639,7 @@ class TestEncryptStepProcess:
 
     @pytest.mark.asyncio
     async def test_process_emits_encrypt_progress_events(self, tmp_path, monkeypatch):
-        """Chunked encrypt schedules ENCRYPT_PROGRESS via thread callback."""
+        """Chunked encrypt emits normalized ENCRYPT_PROGRESS with video_id and phases."""
         monkeypatch.setenv(
             "HAVEN_PRIVATE_KEY",
             "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -588,7 +662,7 @@ class TestEncryptStepProcess:
             },
             video_id=42,
         )
-        emitted: list[EventType] = []
+        progress_payloads: list[dict] = []
         real_emit = step._emit_event
 
         async def capture_emit(
@@ -596,17 +670,63 @@ class TestEncryptStepProcess:
             ctx: PipelineContext,
             payload: dict,
         ) -> None:
-            emitted.append(event_type)
+            if event_type == EventType.ENCRYPT_PROGRESS:
+                progress_payloads.append(payload)
             await real_emit(event_type, ctx, payload)
 
         step._emit_event = capture_emit  # type: ignore[method-assign]
 
         with patch.object(step, "_save_encryption_metadata", new_callable=AsyncMock):
-            result = await step.process(context)
+            with patch.object(step, "_update_job_progress", new_callable=AsyncMock) as mock_job:
+                result = await step.process(context)
 
         assert result.success is True
-        assert EventType.ENCRYPT_PROGRESS in emitted
-        assert emitted.count(EventType.ENCRYPT_PROGRESS) >= 2
+        assert len(progress_payloads) >= 2
+        for payload in progress_payloads:
+            assert payload["video_id"] == 42
+            assert "progress" in payload
+            assert payload["phase"] in ("hashing", "encrypting")
+            assert payload["bytes_total"] == 250
+        phases = {p["phase"] for p in progress_payloads}
+        assert "hashing" in phases
+        assert "encrypting" in phases
+        assert mock_job.await_count >= 1
+        final = progress_payloads[-1]
+        assert final["progress"] == pytest.approx(100.0)
+
+    @pytest.mark.asyncio
+    async def test_report_encrypt_progress_throttled(self) -> None:
+        """Progress reporting skips redundant emissions within throttle window."""
+        step = EncryptStep()
+        step._reset_progress_tracking()
+        context = PipelineContext(
+            source_path=Path("/unused.mp4"),
+            options={},
+            video_id=1,
+        )
+        emitted: list[float] = []
+        real_emit = step._emit_event
+
+        async def capture_emit(
+            event_type: EventType,
+            ctx: PipelineContext,
+            payload: dict,
+        ) -> None:
+            if event_type == EventType.ENCRYPT_PROGRESS:
+                emitted.append(payload["progress"])
+            await real_emit(event_type, ctx, payload)
+
+        step._emit_event = capture_emit  # type: ignore[method-assign]
+
+        with patch.object(step, "_update_job_progress", new_callable=AsyncMock):
+            await step._report_encrypt_progress(
+                context, "/v.mp4", 10, 100, "hashing", force=True
+            )
+            await step._report_encrypt_progress(
+                context, "/v.mp4", 11, 100, "hashing"
+            )
+
+        assert len(emitted) == 1
 
     @pytest.mark.asyncio
     async def test_process_without_video_id(self, tmp_path, monkeypatch):

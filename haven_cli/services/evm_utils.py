@@ -326,6 +326,47 @@ def detect_chain_from_rpc_url(rpc_url: str) -> Tuple[str, str]:
     return ("EVM Chain", "gas tokens")
 
 
+# Braga testnet (Arkiv Hoodi) — https://docs.arkiv.network/networks/braga/
+ARKIV_BRAGA_TESTNET_CHAIN_ID_HEX = "0xe0087f86e"
+
+
+def extract_rpc_error_text(error: Exception) -> str:
+    """
+    Combine ``str(error)`` with nested Web3RPCError message text when present.
+    """
+    parts: list[str] = [str(error)]
+    if error.args:
+        error_data = error.args[0]
+        if isinstance(error_data, dict):
+            message = error_data.get("message")
+            if message:
+                parts.append(str(message))
+        else:
+            parts.append(str(error_data))
+    return " ".join(parts)
+
+
+def is_non_golem_base_transaction_error(error: Exception) -> bool:
+    """
+    Return True when the RPC rejected a transaction that is not Golem Base encoded.
+
+    Braga requires RLP storage transactions (``arkiv-sdk>=1.0.0b2``). Older SDK
+    builds that call ``contract.execute(...).transact`` produce this error.
+    """
+    combined = extract_rpc_error_text(error).lower()
+    patterns = (
+        "non-golembase transaction",
+        "non golem base transaction",
+        "nongolem base transaction",
+    )
+    return any(pattern in combined for pattern in patterns)
+
+
+def is_legacy_kaolin_arkiv_rpc_url(rpc_url: str) -> bool:
+    """Return True if the RPC URL targets the sunset Kaolin testnet."""
+    return "kaolin" in rpc_url.lower()
+
+
 def is_insufficient_funds_error(error: Exception) -> bool:
     """
     Check if an error indicates insufficient funds for gas.
@@ -337,16 +378,7 @@ def is_insufficient_funds_error(error: Exception) -> bool:
     Returns:
         True if the error indicates insufficient funds
     """
-    error_str = str(error).lower()
-    error_message = ""
-    
-    # Extract error message from Web3RPCError
-    if hasattr(error, 'args') and error.args:
-        error_data = error.args[0] if error.args else {}
-        if isinstance(error_data, dict):
-            error_message = error_data.get('message', '').lower()
-        else:
-            error_message = str(error_data).lower()
+    combined_error = extract_rpc_error_text(error).lower()
     
     # Check for common insufficient funds error patterns across EVM chains
     insufficient_funds_patterns = [
@@ -360,7 +392,6 @@ def is_insufficient_funds_error(error: Exception) -> bool:
         'balance too low',
     ]
     
-    combined_error = f"{error_str} {error_message}".lower()
     return any(pattern in combined_error for pattern in insufficient_funds_patterns)
 
 
