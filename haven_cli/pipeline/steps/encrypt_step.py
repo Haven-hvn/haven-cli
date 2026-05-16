@@ -604,6 +604,12 @@ class EncryptStep(ConditionalStep):
             # For comparator-based conditions (e.g., owner_wallet comparison),
             # the value may be an address string, not a number. Default to 1.
             threshold = 1
+        # Clamp threshold to >= 1 for the derivation input.
+        # The Haven-AOL canister rejects threshold=0 with InvalidThreshold in
+        # requestDecryptionKey, but the on-chain returnValueTest.value may be "0"
+        # (e.g. NFT-gated: balanceOf > 0). The derivation threshold is a separate
+        # concept from the on-chain condition value.
+        threshold = max(1, threshold)
 
         chain = self._get_chain(context)
         file_size = self._progress_file_size or os.path.getsize(video_path)

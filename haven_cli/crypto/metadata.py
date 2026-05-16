@@ -1,7 +1,7 @@
 """Encryption metadata handling for Haven-AOL.
 
 Provides functions to load and save encryption metadata for files,
-supporting both database storage and sidecar files.
+supporting database storage, sidecar files, and Arkiv blockchain entities.
 """
 
 from __future__ import annotations
@@ -285,3 +285,135 @@ async def find_encryption_metadata(
             return metadata
     
     return None
+
+
+async def load_encryption_metadata_from_arkiv_entity(
+    entity_key: str,
+    rpc_url: str,
+    private_key: str,
+) -> Optional[EncryptionMetadata]:
+    """Load encryption metadata from an Arkiv entity.
+    
+    Fetches the entity by its key and extracts encryption metadata
+    from the entity payload. This is used as a fallback when metadata
+    is not available in the local database or sidecar files.
+    
+    Args:
+        entity_key: Arkiv entity key (hex string)
+        rpc_url: Arkiv RPC URL
+        private_key: EVM private key for Arkiv connection
+        
+    Returns:
+        EncryptionMetadata if found, None otherwise
+        
+    Example:
+        metadata = await load_encryption_metadata_from_arkiv_entity(
+            "0x1234...abcd",
+            "https://braga.hoodi.arkiv.network/rpc",
+            os.environ["HAVEN_PRIVATE_KEY"],
+        )
+    """
+    try:
+        from arkiv import Arkiv
+        from arkiv.account import NamedAccount
+        from arkiv.provider import ProviderBuilder
+        from arkiv.types import EntityKey
+
+        provider = ProviderBuilder().custom(rpc_url).build()
+        account = NamedAccount.from_private_key("haven-cli", private_key)
+        client = Arkiv(provider=provider, account=account)
+
+        key = EntityKey(entity_key)
+        entity = client.arkiv.get_entity(key)
+
+        if not entity or not entity.payload:
+            logger.warning(f"Entity {entity_key} not found or has no payload")
+            return None
+
+        payload = json.loads(entity.payload.decode("utf-8"))
+        enc_meta_raw = payload.get("encryption_metadata", "")
+        if not enc_meta_raw:
+            logger.warning(f"Entity {entity_key} has no encryption_metadata in payload")
+            return None
+
+        enc = json.loads(enc_meta_raw) if isinstance(enc_meta_raw, str) else enc_meta_raw
+        return _parse_encryption_metadata(enc)
+
+    except ImportError:
+        logger.warning("arkiv package not installed, cannot fetch entity metadata")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to load encryption metadata from Arkiv entity {entity_key}: {e}")
+        return None
+
+
+async def load_encryption_metadata_from_arkiv_query(
+    cid_hash: str,
+    rpc_url: str,
+    private_key: str,
+) -> Optional[EncryptionMetadata]:
+    """Load encryption metadata from Arkiv by querying entities with a CID hash.
+    
+    Searches for encrypted entities matching the given CID hash and returns
+    the encryption metadata from the first match.
+    
+    Args:
+        cid_hash: SHA-256 hash of the root CID
+        rpc_url: Arkiv RPC URL
+        private_key: EVM private key for Arkiv connection
+        
+    Returns:
+        EncryptionMetadata if found, None otherwise
+        
+    Example:
+        metadata = await load_encryption_metadata_from_arkiv_query(
+            "c8732a56d8f08d52c05f89607b3d3b4125fc2a24e3b9bbe4b2f0dfed904568ad",
+            "https://braga.hoodi.arkiv.network/rpc",
+            os.environ["HAVEN_PRIVATE_KEY"],
+        )
+    """
+    try:
+        from arkiv import Arkiv
+        from arkiv.account import NamedAccount
+        from arkiv.provider import ProviderBuilder
+        from arkiv.types import QueryOptions
+
+        provider = ProviderBuilder().custom(rpc_url).build()
+        account = NamedAccount.from_private_key("haven-cli", private_key)
+        client = Arkiv(provider=provider, account=account)
+
+        # Query for encrypted entities with matching CID hash
+        entities = list(client.arkiv.query_entities(
+            query=f'cid_hash = "{cid_hash}" AND is_encrypted = 1',
+            options=QueryOptions(
+                max_results_per_page=5,
+            ),
+        ))
+
+        if not entities:
+            logger.warning(f"No encrypted entities found for CID hash {cid_hash}")
+            return None
+
+        # Fetch the first matching entity to get the payload
+        from arkiv.types import EntityKey
+        entity = client.arkiv.get_entity(EntityKey(str(entities[0].key)))
+
+        if not entity or not entity.payload:
+            logger.warning(f"Entity {entities[0].key} has no payload")
+            return None
+
+        payload = json.loads(entity.payload.decode("utf-8"))
+        enc_meta_raw = payload.get("encryption_metadata", "")
+        if not enc_meta_raw:
+            logger.warning(f"Entity {entities[0].key} has no encryption_metadata")
+            return None
+
+        enc = json.loads(enc_meta_raw) if isinstance(enc_meta_raw, str) else enc_meta_raw
+        return _parse_encryption_metadata(enc)
+
+    except ImportError:
+        logger.warning("arkiv package not installed, cannot query Arkiv")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to query Arkiv for CID hash {cid_hash}: {e}")
+        return None

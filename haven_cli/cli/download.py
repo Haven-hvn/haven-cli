@@ -23,6 +23,8 @@ from haven_cli.crypto import (
     EncryptionMetadata,
     load_encryption_metadata,
     load_encryption_metadata_by_cid,
+    load_encryption_metadata_from_arkiv_entity,
+    load_encryption_metadata_from_arkiv_query,
     verify_cid_format,
 )
 
@@ -60,6 +62,11 @@ def download(
         "-c",
         help="Path to configuration file.",
     ),
+    entity_key: Optional[str] = typer.Option(
+        None,
+        "--entity-key",
+        help="Arkiv entity key for encryption metadata lookup (if not in local DB).",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -80,10 +87,13 @@ def download(
     Encryption metadata is looked up in the following order:
     1. Database (if CID was previously uploaded)
     2. Sidecar file (.encmeta extension)
+    3. Arkiv entity (if --entity-key is provided)
+    4. Arkiv query by CID hash (automatic fallback for encrypted files)
     
     Example:
         haven download bafybeig... --output video.mp4
         haven download bafybeig... --output video.mp4 --decrypt
+        haven download bafybeig... --output video.mp4 --decrypt --entity-key 0x1234...
         haven download Qm... --output video.mp4 --force
     """
     config = load_config(config_file)
@@ -157,6 +167,7 @@ def download(
                             output,
                             output,
                             cid,
+                            entity_key=entity_key,
                         )
                         
                         progress.update(task, description="Decryption complete")
@@ -191,6 +202,7 @@ async def _decrypt_file(
     input_path: Path,
     output_path: Path,
     cid: str,
+    entity_key: Optional[str] = None,
 ) -> None:
     """Decrypt a file using Haven-AOL.
     
@@ -198,6 +210,7 @@ async def _decrypt_file(
         input_path: Path to the encrypted file
         output_path: Path to write the decrypted file
         cid: Content ID for metadata lookup
+        entity_key: Optional Arkiv entity key for metadata lookup
     Raises:
         ValueError: If encryption metadata is not found
         RuntimeError: If decryption fails
@@ -209,10 +222,25 @@ async def _decrypt_file(
         # Try sidecar file
         metadata = await load_encryption_metadata(input_path)
     
+    if not metadata and entity_key:
+        # Try fetching from Arkiv entity directly
+        console.print(f"[dim]Fetching encryption metadata from Arkiv entity {entity_key}...[/dim]")
+        arkiv_rpc = os.environ.get("ARKIV_RPC_URL", "https://braga.hoodi.arkiv.network/rpc")
+        private_key = os.environ.get("HAVEN_PRIVATE_KEY", "")
+        if private_key:
+            metadata = await load_encryption_metadata_from_arkiv_entity(
+                entity_key=entity_key,
+                rpc_url=arkiv_rpc,
+                private_key=private_key,
+            )
+        else:
+            console.print("[yellow]Warning: HAVEN_PRIVATE_KEY not set, cannot fetch from Arkiv[/yellow]")
+    
     if not metadata:
         raise ValueError(
             f"No encryption metadata found for CID {cid}. "
-            "Ensure the file was encrypted during upload or provide a sidecar .encmeta file."
+            "Ensure the file was encrypted during upload, provide a sidecar .encmeta file, "
+            "or pass --entity-key to fetch metadata from Arkiv."
         )
     
     icp_identity_path = os.environ.get("HAVEN_ICP_IDENTITY_PEM_PATH", "").strip()
@@ -228,6 +256,8 @@ async def _decrypt_file(
         # Non-numeric values (e.g. "true" for public pattern, wallet addresses
         # for legacy owner_only) default to threshold=1 for derivation purposes.
         threshold = 1
+    # Clamp threshold to >= 1 for the derivation input (canister rejects 0).
+    threshold = max(1, threshold)
     cid_value = str(gate_source.get("cid") or cid or "").strip()
     if not cid_value:
         cid_value = f"local-{input_path.name}"
@@ -485,6 +515,11 @@ def decrypt_file(
         "-c",
         help="Path to configuration file.",
     ),
+    entity_key: Optional[str] = typer.Option(
+        None,
+        "--entity-key",
+        help="Arkiv entity key for encryption metadata lookup (if not in local DB).",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -495,12 +530,13 @@ def decrypt_file(
     """Decrypt a local file using Haven-AOL.
     
     This command decrypts a file that was encrypted with Haven-AOL.
-    Encryption metadata is looked up from the database (by CID) or from
-    a sidecar .encmeta file.
+    Encryption metadata is looked up from the database (by CID), from
+    a sidecar .encmeta file, or from an Arkiv entity (--entity-key).
     
     Example:
         haven download decrypt-file encrypted.mp4 --output decrypted.mp4
         haven download decrypt-file encrypted.mp4 --cid bafybeig...
+        haven download decrypt-file encrypted.mp4 --entity-key 0x1234...
     """
     config = load_config(config_file)
     
@@ -537,6 +573,7 @@ def decrypt_file(
                     input_path,
                     output,
                     cid or "",
+                    entity_key=entity_key,
                 )
                 
                 progress.update(task, completed=True)

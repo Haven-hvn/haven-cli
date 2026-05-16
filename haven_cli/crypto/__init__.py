@@ -10,6 +10,8 @@ from .metadata import (
     load_encryption_metadata,
     save_encryption_metadata,
     load_encryption_metadata_by_cid,
+    load_encryption_metadata_from_arkiv_entity,
+    load_encryption_metadata_from_arkiv_query,
     verify_cid_format,
 )
 from .haven_aol_local import GateParams, compute_derivation_input, encrypt_bytes, decrypt_bytes

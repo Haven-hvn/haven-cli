@@ -434,9 +434,9 @@ def request_decryption_key(
 
     Retries on transient HTTP errors with exponential backoff.
     """
-    if threshold < 1:
+    if threshold < 0:
         raise ValueError(
-            "Gate threshold must be >= 1 (Haven-AOL canister rejects 0 as InvalidThreshold)"
+            "Gate threshold must be >= 0 (Haven-AOL canister rejects negative values)"
         )
     cfg = load_haven_aol_icp_config()
     evm_private_key = os.environ.get("HAVEN_PRIVATE_KEY", "").strip()
