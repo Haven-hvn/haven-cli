@@ -43,7 +43,6 @@ dependencies = [
     "uvicorn==0.46.0",
     "unidecode==1.4.0",
     "python-dotenv==1.2.2",
-    "vlm-engine==1.0.1",
     "livekit==1.1.7",
     "psutil==7.2.2",
     "av==17.0.1",
@@ -62,6 +61,7 @@ media = [
     "python-magic==0.4.27",
 ]
 vlm = [
+    "vlm-engine==1.0.1",
     "openai==2.36.0",
     "google-generativeai==0.8.6",
 ]
