@@ -41,7 +41,7 @@ class TestDetectChain:
     
     def test_arkiv_network(self):
         """Test Arkiv network detection."""
-        chain, token = detect_chain_from_rpc_url("https://kaolin.hoodi.arkiv.network/rpc")
+        chain, token = detect_chain_from_rpc_url("https://braga.hoodi.arkiv.network/rpc")
         assert chain == "Arkiv"
         assert token == "GLM"
     
@@ -51,9 +51,9 @@ class TestDetectChain:
         assert chain == "Arkiv"
         assert token == "GLM"
 
-    def test_arkiv_kaolin_hostname(self):
-        """Kaolin RPC hostnames are recognized (explicit subdomain match)."""
-        chain, token = detect_chain_from_rpc_url("https://kaolin.custom.example/rpc")
+    def test_arkiv_braga_hostname(self):
+        """Braga RPC hostnames are recognized (explicit subdomain match)."""
+        chain, token = detect_chain_from_rpc_url("https://braga.custom.example/rpc")
         assert chain == "Arkiv"
         assert token == "GLM"
     
@@ -182,7 +182,7 @@ class TestEvmUtilsIntegration:
     
     def test_detect_arkiv_default_rpc(self):
         """Test that the default Arkiv RPC URL is detected correctly."""
-        rpc_url = "https://kaolin.hoodi.arkiv.network/rpc"
+        rpc_url = "https://braga.hoodi.arkiv.network/rpc"
         chain, token = detect_chain_from_rpc_url(rpc_url)
         
         assert chain == "Arkiv"

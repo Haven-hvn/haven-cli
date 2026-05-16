@@ -91,8 +91,8 @@ _NETWORK_PRESETS: dict[NetworkMode, NetworkConfig] = {
         mode=NetworkMode.TESTNET,
         filecoin_rpc_url="wss://wss.calibration.node.glif.io/apigw/lotus/rpc/v1",
         filecoin_chain_id=314159,  # Filecoin Calibration testnet
-        arkiv_rpc_url="https://kaolin.hoodi.arkiv.network/rpc",  # Arkiv on Hoodi testnet
-        arkiv_chain_name="Arkiv Hoodi Testnet",
+        arkiv_rpc_url="https://braga.hoodi.arkiv.network/rpc",  # Arkiv on Braga testnet
+        arkiv_chain_name="Arkiv Braga Testnet",
         chain_for_access_control="ethereum",
     ),
 }

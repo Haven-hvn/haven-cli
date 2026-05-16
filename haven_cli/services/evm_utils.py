@@ -315,6 +315,7 @@ def detect_chain_from_rpc_url(rpc_url: str) -> Tuple[str, str]:
         or "hoodi" in rpc_lower
         or "mendoza" in rpc_lower
         or "kaolin" in rpc_lower
+        or "braga" in rpc_lower
     ):
         return ("Arkiv", "GLM")
     

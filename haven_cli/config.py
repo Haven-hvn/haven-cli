@@ -125,7 +125,7 @@ class BlockchainConfig:
         return (
             "https://mainnet.arkiv.network/rpc"
             if main
-            else "https://kaolin.hoodi.arkiv.network/rpc"
+            else "https://braga.hoodi.arkiv.network/rpc"
         )
 
 
