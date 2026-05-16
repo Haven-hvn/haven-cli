@@ -92,7 +92,8 @@ def _classify_icp_transport_error(exc: BaseException) -> ErrorCategory:
         # malformed CBOR, invalid sender, etc. — permanent
         permanent_signs = [
             "malformed", "invalid sender", "unknown api version",
-            "bad encoding", "invalid canister", "invalid principal",
+            "bad encoding", "invalid canister", "canister_not_found",
+            "specified canister does not exist", "invalid principal",
             "unauthorized", "forbidden",
         ]
         for sign in permanent_signs:

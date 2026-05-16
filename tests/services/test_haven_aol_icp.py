@@ -21,7 +21,7 @@ from haven_cli.services import haven_aol_icp as haven_aol_icp_module
 
 
 def test_haven_aol_canister_is_fixed() -> None:
-    assert HAVEN_AOL_CANISTER_ID == "bkyz2-fmaaa-aaaaa-qaaaq-cai"
+    assert HAVEN_AOL_CANISTER_ID == "dciac-uaaaa-aaaad-qlzuq-cai"
 
 
 def test_candid_blob_to_bytes_from_bytes() -> None:
@@ -566,6 +566,13 @@ def test_classify_transport_error_400_malformed_is_permanent() -> None:
 
 def test_classify_transport_error_400_invalid_sender_is_permanent() -> None:
     resp = _FakeResponse(400, "invalid sender principal")
+    err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
+    assert _classify_transport_error(err) == "permanent"
+
+
+def test_classify_transport_error_400_canister_not_found_is_permanent() -> None:
+    body = '{"error":"canister_not_found","details":"The specified canister does not exist"}'
+    resp = _FakeResponse(400, body)
     err = _FakeTransportError("https://icp-api.io", _FakeHTTPStatusError(resp))
     assert _classify_transport_error(err) == "permanent"
 

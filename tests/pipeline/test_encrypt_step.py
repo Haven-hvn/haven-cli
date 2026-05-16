@@ -1030,6 +1030,13 @@ def test_classify_icp_400_malformed_permanent() -> None:
     assert _classify_icp_transport_error(err) is ErrorCategory.PERMANENT
 
 
+def test_classify_icp_400_canister_not_found_permanent() -> None:
+    err = _FakeTransport(
+        _FakeResp(400, '{"error":"canister_not_found","details":"The specified canister does not exist"}')
+    )
+    assert _classify_icp_transport_error(err) is ErrorCategory.PERMANENT
+
+
 def test_classify_icp_400_temporarily_unavailable_transient() -> None:
     err = _FakeTransport(_FakeResp(400, "temporarily unavailable"))
     assert _classify_icp_transport_error(err) is ErrorCategory.TRANSIENT

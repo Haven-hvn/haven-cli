@@ -38,7 +38,7 @@ class _HavenAolIdentity(Protocol):
     def from_pem(cls, pem: str) -> Self: ...
 
 
-HAVEN_AOL_CANISTER_ID = "bkyz2-fmaaa-aaaaa-qaaaq-cai"
+HAVEN_AOL_CANISTER_ID = "dciac-uaaaa-aaaad-qlzuq-cai"
 HAVEN_AOL_DID = """type Chain = variant { EthMainnet; EthSepolia; ArbitrumOne; BaseMainnet; OptimismMainnet; };
 type GateRequest = record {
   chain : Chain; tokenAddress : text; threshold : nat; cid : text; evmAddress : text;
@@ -254,6 +254,8 @@ def _classify_transport_error(exc: object) -> str:
             "unknown api version",
             "bad encoding",
             "invalid canister",
+            "canister_not_found",
+            "specified canister does not exist",
             "invalid principal",
             "unauthorized",
             "forbidden",
@@ -358,7 +360,13 @@ def _diagnostic_hints(exc: object) -> str:
             "HINT: The API version in the URL path may be incompatible. "
             "Check HAVEN_ICP_HOST matches the expected boundary-node format."
         )
-    if "canister" in detail and "invalid" in detail:
+    if "canister_not_found" in detail or "specified canister does not exist" in detail:
+        hints.append(
+            f"HINT: The boundary node reports this canister does not exist on this network. "
+            f"Configured ID: {HAVEN_AOL_CANISTER_ID}. "
+            "Confirm HAVEN_ICP_HOST (mainnet vs local) matches the deployment in the ICP dashboard."
+        )
+    elif "canister" in detail and "invalid" in detail:
         hints.append(
             f"HINT: The canister ID may be invalid. "
             f"Current: {HAVEN_AOL_CANISTER_ID}. "
