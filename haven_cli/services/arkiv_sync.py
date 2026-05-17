@@ -410,6 +410,10 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
         if context.upload_result and context.upload_result.root_cid:
             payload["filecoin_root_cid"] = context.upload_result.root_cid
     
+    # Piece CID is required for Synapse download in haven-dapp (root CID is not valid)
+    if context.upload_result and context.upload_result.piece_cid:
+        payload["piece_cid"] = context.upload_result.piece_cid
+
     # cid_hash is needed for deduplication during restore (both encrypted and non-encrypted)
     if context.upload_result and context.upload_result.root_cid:
         cid_hash = hashlib.sha256(

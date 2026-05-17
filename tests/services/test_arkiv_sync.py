@@ -463,8 +463,7 @@ class TestBuildPayload:
         expected_hash = hashlib.sha256("QmTest123".encode()).hexdigest()
         assert payload["cid_hash"] == expected_hash
         
-        # piece_cid is NOT in gold standard payload (not needed for restore)
-        assert "piece_cid" not in payload
+        assert payload["piece_cid"] == "QmPiece456"
     
     def test_payload_with_analysis(self):
         """Test payload with analysis result - gold standard excludes recalculable fields."""
