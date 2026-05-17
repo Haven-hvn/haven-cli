@@ -122,7 +122,7 @@ class TestUploadStepUpload:
             None,  # synapse.connect response
             {
                 "cid": "bafybeigtest123",
-                "pieceCid": "baga6ea4test456",
+                "pieceCid": "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
                 "dealId": "12345",
                 "txHash": "0xabcdef123456",
             },  # synapse.upload response
@@ -149,7 +149,7 @@ class TestUploadStepUpload:
         )
         
         assert result["root_cid"] == "bafybeigtest123"
-        assert result["piece_cid"] == "baga6ea4test456"
+        assert result["piece_cid"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
         assert result["deal_id"] == "12345"
         assert result["transaction_hash"] == "0xabcdef123456"
         
@@ -190,7 +190,7 @@ class TestUploadStepUpload:
             None,  # synapse.connect
             {
                 "cid": "bafybeigencrypted",
-                "pieceCid": "baga6ea4encrypted",
+                "pieceCid": "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
                 "txHash": "0xencrypthash",
             },  # synapse.upload
         ])
@@ -427,7 +427,7 @@ class TestUploadStepProcess:
             None,  # synapse.connect
             {
                 "cid": "bafybeigtest123",
-                "pieceCid": "baga6ea4test456",
+                "pieceCid": "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
                 "txHash": "0xhash",
             },  # synapse.upload
         ])
@@ -442,7 +442,7 @@ class TestUploadStepProcess:
         
         assert result.success is True
         assert result.data["root_cid"] == "bafybeigtest123"
-        assert result.data["piece_cid"] == "baga6ea4test456"
+        assert result.data["piece_cid"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
         assert result.data["cid"] == "bafybeigtest123"  # Alias
         assert context.upload_result is not None
         assert context.upload_result.root_cid == "bafybeigtest123"
@@ -472,7 +472,7 @@ class TestUploadStepProcess:
                 raise RuntimeError("Connection timeout")
             return {
                 "cid": "bafybeigtest123",
-                "pieceCid": "baga6ea4test456",
+                "pieceCid": "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
                 "txHash": "0xhash",
             }
         
@@ -531,7 +531,7 @@ class TestUploadStepDatabase:
         result = UploadResult(
             video_path="/tmp/test.mp4",
             root_cid="bafybeigtest123",
-            piece_cid="baga6ea4test456",
+            piece_cid="bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
             transaction_hash="0xhash",
         )
         
@@ -560,7 +560,7 @@ class TestUploadStepDatabase:
         call_args = mock_repo.update.call_args
         assert call_args[0][0] is mock_video
         assert call_args[1]["cid"] == "bafybeigtest123"
-        assert call_args[1]["piece_cid"] == "baga6ea4test456"
+        assert call_args[1]["piece_cid"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
     
     @pytest.mark.asyncio
     async def test_update_database_video_not_found(self):
