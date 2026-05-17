@@ -80,40 +80,39 @@ class AIAnalysisResult:
 
 @dataclass
 class EncryptionMetadata:
-    """Metadata about file encryption via Haven-AOL.
-    
-    Aligned with EncryptionMetadata type from HavenPlayer.p specification.
+    """Metadata about file encryption via Haven-AOL gate v1.
+
+    ``gate`` is the canonical on-chain format (Arkiv ``encryption_metadata``).
+    ``ciphertext`` is the local encrypted file path only (never stored on Arkiv).
+    ``iv`` is the base64 chunked-file base IV (stored in the ciphertext header on disk).
     """
-    
+
+    gate: Dict[str, Any] = field(default_factory=dict)
     ciphertext: str = ""
-    data_to_encrypt_hash: str = ""
-    encrypted_key: str = ""       # Encrypted symmetric key (base64)
-    key_hash: str = ""            # Hash of the encryption key
-    iv: str = ""                  # Initialization vector (base64)
-    access_control_conditions: List[Dict[str, Any]] = field(default_factory=list)
-    chain: str = ""
+    iv: str = ""
+
+    @property
+    def encrypted_aes_key(self) -> str:
+        return str(self.gate.get("encryptedAesKey", ""))
+
+    @property
+    def chain(self) -> str:
+        return str(self.gate.get("chain", ""))
+
+    @property
+    def cid(self) -> str:
+        return str(self.gate.get("cid", ""))
 
 
 @dataclass
 class CidEncryptionMetadata:
-    """Metadata about CID-level encryption via Haven-AOL.
-    
-    Used when the CID itself is encrypted separately from the content.
-    This allows different access control for the CID vs the content.
-    
-    Attributes:
-        encrypted_key: Encrypted symmetric key (base64)
-        key_hash: Hash of the encryption key
-        iv: Initialization vector (base64)
-        access_control_conditions: access control conditions
-    chain: Blockchain for access control.
-    """
-    
-    encrypted_key: str = ""
-    key_hash: str = ""
-    iv: str = ""
-    access_control_conditions: List[Dict[str, Any]] = field(default_factory=list)
-    chain: str = ""
+    """CID-layer Haven-AOL gate v1 (Arkiv ``cid_encryption_metadata``)."""
+
+    gate: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def encrypted_aes_key(self) -> str:
+        return str(self.gate.get("encryptedAesKey", ""))
 
 
 @dataclass

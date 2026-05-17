@@ -258,20 +258,17 @@ class TestDecryptFileCommand:
         encrypted_path = tmp_path / "encrypted.out"
         encrypted_path.write_bytes(b"cipher")
 
+        from haven_cli.crypto.gate_metadata import build_gate_metadata
+
         metadata = EncryptionMetadata(
             ciphertext=str(encrypted_path),
-            data_to_encrypt_hash="hash",
-            encrypted_key="d3JhcHBlZA==",
-            key_hash="abc",
-            iv="abc",
-            access_control_conditions=[
-                {
-                    "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-                    "returnValueTest": {"value": "1"},
-                    "cid": "QmDecryptCid",
-                }
-            ],
-            chain="EthMainnet",
+            gate=build_gate_metadata(
+                cid="QmDecryptCid",
+                chain="EthMainnet",
+                token_address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                threshold=1,
+                encrypted_aes_key_b64="d3JhcHBlZA==",
+            ),
         )
 
         with patch(
@@ -293,20 +290,17 @@ class TestDecryptFileCommand:
         encrypted_path.write_bytes(b"cipher")
         output_path = tmp_path / "decrypted.bin"
 
+        from haven_cli.crypto.gate_metadata import build_gate_metadata
+
         metadata = EncryptionMetadata(
             ciphertext=str(encrypted_path),
-            data_to_encrypt_hash="hash",
-            encrypted_key="d3JhcHBlZA==",
-            key_hash="abc",
-            iv="abc",
-            access_control_conditions=[
-                {
-                    "contractAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-                    "returnValueTest": {"comparator": ">", "value": "0"},
-                    "cid": "QmDecryptCid",
-                }
-            ],
-            chain="EthMainnet",
+            gate=build_gate_metadata(
+                cid="QmDecryptCid",
+                chain="EthMainnet",
+                token_address="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                threshold=1,
+                encrypted_aes_key_b64="d3JhcHBlZA==",
+            ),
         )
 
         captured: dict[str, object] = {}
@@ -338,16 +332,21 @@ class TestDecryptFileCommand:
         encrypted_path = tmp_path / "encrypted.out"
         encrypted_path.write_bytes(b"not-used")
         metadata = EncryptionMetadata(
-            encrypted_key="abc",
-            access_control_conditions=[{}],
-            chain="EthMainnet",
+            gate={
+                "version": 1,
+                "cid": "bafy-test",
+                "chain": "EthMainnet",
+                "tokenAddress": "",
+                "threshold": "1",
+                "encryptedAesKey": "abc",
+            },
         )
 
         with patch(
             "haven_cli.cli.download.load_encryption_metadata_by_cid",
             new=AsyncMock(return_value=metadata),
         ):
-            with pytest.raises(ValueError, match="missing token contract address"):
+            with pytest.raises(ValueError, match="missing tokenAddress"):
                 await _decrypt_file(
                     input_path=encrypted_path,
                     output_path=tmp_path / "decrypted.bin",

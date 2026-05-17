@@ -84,23 +84,28 @@ The payload contains sensitive data that should remain private. It is stored as 
 | `duration` | number | Video duration in seconds |
 | `file_size` | number | File size in bytes |
 
-### Lit Encryption Metadata Structure
+### Haven-AOL Gate Metadata (v1)
+
+Both `encryption_metadata` and `cid_encryption_metadata` use the same gate object:
 
 ```json
 {
-  "version": "hybrid-v1",
-  "encryptedKey": "base64...",
-  "keyHash": "sha256...",
-  "iv": "base64...",
-  "algorithm": "AES-GCM",
-  "keyLength": 256,
-  "accessControlConditions": [...],
-  "chain": "ethereum",
-  "originalMimeType": "video/mp4",
-  "originalSize": 10485760,
-  "originalHash": "sha256..."
+  "version": 1,
+  "cid": "bafy... or sha256:...",
+  "chain": "EthMainnet",
+  "tokenAddress": "0x...",
+  "threshold": "1",
+  "encryptedAesKey": "base64..."
 }
 ```
+
+Optional payload fields (not inside gate JSON):
+
+| Field | Description |
+|-------|-------------|
+| `content_mime_type` | Original MIME type (e.g. `video/mp4`) |
+| `content_file_size` | Original file size in bytes |
+| `original_hash` | SHA-256 of plaintext before encryption |
 
 ### Segment Metadata Structure
 

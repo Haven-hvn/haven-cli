@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from haven_cli.crypto.gate_metadata import merge_encrypt_result_gate
 from haven_cli.crypto.haven_aol_local import (
     GateParams,
     derivation_threshold_from_access_condition,
@@ -398,15 +399,14 @@ class EncryptStep(ConditionalStep):
                 context,
             )
 
-            # Create encryption metadata
+            content_gate = merge_encrypt_result_gate(
+                encryption_result["gate"],
+                encryption_result["encrypted_key"],
+            )
             encryption_metadata = EncryptionMetadata(
+                gate=content_gate,
                 ciphertext=encryption_result.get("ciphertext_path", ""),
-                data_to_encrypt_hash=encryption_result.get("data_to_encrypt_hash", ""),
-                encrypted_key=encryption_result.get("encrypted_key", ""),
-                key_hash=encryption_result.get("key_hash", ""),
                 iv=encryption_result.get("iv", ""),
-                access_control_conditions=access_conditions,
-                chain=encryption_result["chain"],
             )
 
             # Store in context
@@ -430,7 +430,10 @@ class EncryptStep(ConditionalStep):
 
             # Mark job as completed
             if self._job_id and context.video_id:
-                await self._complete_encryption_job(self._job_id, encryption_metadata.data_to_encrypt_hash)
+                await self._complete_encryption_job(
+                    self._job_id,
+                    encryption_result.get("data_to_encrypt_hash", ""),
+                )
                 await self._update_pipeline_snapshot(context.video_id, "encrypt", 100, status="completed")
 
             # Emit encrypt complete event
@@ -439,15 +442,15 @@ class EncryptStep(ConditionalStep):
                 "video_id": context.video_id,
                 "job_id": self._job_id,
                 "encrypted_path": encryption_result.get("ciphertext_path"),
-                "data_to_encrypt_hash": encryption_metadata.data_to_encrypt_hash,
-                "chain": encryption_metadata.chain,
+                "data_to_encrypt_hash": encryption_result.get("data_to_encrypt_hash", ""),
+                "chain": content_gate["chain"],
             })
 
             return StepResult.ok(
                 self.name,
-                ciphertext_hash=encryption_metadata.data_to_encrypt_hash,
+                ciphertext_hash=encryption_result.get("data_to_encrypt_hash", ""),
                 access_conditions=access_conditions,
-                chain=encryption_metadata.chain,
+                chain=content_gate["chain"],
                 encrypted_path=encryption_result.get("ciphertext_path"),
             )
 
@@ -700,6 +703,10 @@ class EncryptStep(ConditionalStep):
             force=True,
         )
 
+        content_gate = merge_encrypt_result_gate(
+            encrypted["gate"],
+            encrypted["encrypted_key_b64"],
+        )
         return {
             "ciphertext_path": encrypted_path,
             "data_to_encrypt_hash": encrypted["data_to_encrypt_hash"],
@@ -707,6 +714,7 @@ class EncryptStep(ConditionalStep):
             "chain": chain,
             "original_hash": original_hash,
             "metadata_path": "",
+            "gate": content_gate,
             "encrypted_key": encrypted["encrypted_key_b64"],
             "key_hash": encrypted["key_hash"],
             "iv": encrypted["iv_b64"],
@@ -990,28 +998,10 @@ class EncryptStep(ConditionalStep):
             )
 
     def _metadata_to_json(self, metadata: EncryptionMetadata) -> str:
-        """Convert encryption metadata to JSON string.
+        """Convert encryption metadata to JSON string (gate v1)."""
+        from haven_cli.crypto.gate_metadata import gate_metadata_to_json
 
-        Args:
-            metadata: Encryption metadata
-
-        Returns:
-            JSON string representation
-        """
-        import json
-        return json.dumps({
-            "ciphertext": metadata.ciphertext,
-            "data_to_encrypt_hash": metadata.data_to_encrypt_hash,
-            "dataToEncryptHash": metadata.data_to_encrypt_hash,  # camelCase for JS compatibility
-            "encrypted_key": metadata.encrypted_key,
-            "encryptedKey": metadata.encrypted_key,  # camelCase for JS compatibility
-            "key_hash": metadata.key_hash,
-            "keyHash": metadata.key_hash,  # camelCase for JS compatibility
-            "iv": metadata.iv,
-            "access_control_conditions": metadata.access_control_conditions,
-            "accessControlConditions": metadata.access_control_conditions,  # camelCase
-            "chain": metadata.chain,
-        })
+        return gate_metadata_to_json(metadata.gate)
 
     async def on_skip(self, context: PipelineContext, reason: str) -> None:
         """Handle step skip - encryption not requested."""

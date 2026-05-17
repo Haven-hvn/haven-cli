@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Protocol
 
+from haven_cli.crypto.gate_metadata import gate_metadata_to_json, is_gate_metadata
 from haven_cli.pipeline.context import PipelineContext
 from haven_cli.services.evm_utils import (
     InsufficientGasError,
@@ -382,47 +383,28 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
     # For encrypted videos: encrypted_cid is in attributes (public), actual CID is decrypted during restore
     # Store CID encryption metadata in payload so we can decrypt encrypted_cid during restore
     if context.encryption_metadata:
-        if context.cid_encryption_metadata and context.encrypted_cid:
-            cid_metadata: dict[str, Any] = {
-                "version": "hybrid-v1",
-                "encryptedKey": context.cid_encryption_metadata.encrypted_key,
-                "keyHash": context.cid_encryption_metadata.key_hash,
-                "iv": context.cid_encryption_metadata.iv,
-                "algorithm": "AES-GCM",
-                "keyLength": 256,
-                "accessControlConditions": context.cid_encryption_metadata.access_control_conditions,
-                "chain": context.cid_encryption_metadata.chain,
-                "encryptedCid": context.encrypted_cid,
-            }
-            payload["cid_encryption_metadata"] = json.dumps(cid_metadata)
-        
-        # Video file encryption metadata (REQUIRED for decryption - contains accessControlConditions, dataToEncryptHash, chain)
-        # NOTE: ciphertext is NOT included here - it's already on Filecoin and would be a duplicate
-        # The decryption function will use the Filecoin data instead of metadata.ciphertext
-        if context.encryption_metadata:
-            # Build encryption metadata structure for decryption
-            encryption_metadata: dict[str, Any] = {
-                "version": "hybrid-v1",
-                "encryptedKey": context.encryption_metadata.encrypted_key,
-                "keyHash": context.encryption_metadata.key_hash,
-                "iv": context.encryption_metadata.iv,
-                "algorithm": "AES-GCM",
-                "keyLength": 256,
-                "accessControlConditions": context.encryption_metadata.access_control_conditions,
-                "chain": context.encryption_metadata.chain,
-            }
-            
-            # Add optional fields if available
-            if context.video_metadata:
-                encryption_metadata["originalMimeType"] = context.video_metadata.mime_type
-                encryption_metadata["originalSize"] = context.video_metadata.file_size
-            
-            # Add original hash if available from encryption result
+        if (
+            context.cid_encryption_metadata
+            and context.encrypted_cid
+            and is_gate_metadata(context.cid_encryption_metadata.gate)
+        ):
+            payload["cid_encryption_metadata"] = gate_metadata_to_json(
+                context.cid_encryption_metadata.gate
+            )
+
+        if is_gate_metadata(context.encryption_metadata.gate):
+            payload["encryption_metadata"] = gate_metadata_to_json(
+                context.encryption_metadata.gate
+            )
+
+            if context.video_metadata and context.video_metadata.mime_type:
+                payload["content_mime_type"] = context.video_metadata.mime_type
+            if context.video_metadata and context.video_metadata.file_size:
+                payload["content_file_size"] = context.video_metadata.file_size
+
             original_hash = context.get_step_data("encrypt", "original_hash")
             if original_hash:
-                encryption_metadata["originalHash"] = original_hash
-            
-            payload["encryption_metadata"] = json.dumps(encryption_metadata)
+                payload["original_hash"] = original_hash
     else:
         # For non-encrypted videos, store filecoin_root_cid in payload (not in attributes for consistency)
         if context.upload_result and context.upload_result.root_cid:

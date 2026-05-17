@@ -24,6 +24,7 @@ from haven_cli.pipeline.context import (
     UploadResult,
     VideoMetadata,
 )
+from haven_cli.crypto.gate_metadata import build_gate_metadata
 from haven_cli.services.arkiv_sync import (
     ArkivSyncClient,
     ArkivSyncConfig,
@@ -33,6 +34,28 @@ from haven_cli.services.arkiv_sync import (
     _is_413_error,
     build_arkiv_config,
 )
+
+
+def _content_encryption_metadata(**overrides: str) -> EncryptionMetadata:
+    gate = build_gate_metadata(
+        cid=overrides.get("cid", "sha256:content"),
+        chain=overrides.get("chain", "EthMainnet"),
+        token_address=overrides.get("token_address", "0x" + "11" * 20),
+        threshold=1,
+        encrypted_aes_key_b64=overrides.get("encrypted_aes_key", "base64encryptedkey"),
+    )
+    return EncryptionMetadata(gate=gate, iv=overrides.get("iv", "base64iv"))
+
+
+def _cid_encryption_metadata(**overrides: str) -> CidEncryptionMetadata:
+    gate = build_gate_metadata(
+        cid=overrides.get("cid", "bafyencrypted"),
+        chain=overrides.get("chain", "EthMainnet"),
+        token_address=overrides.get("token_address", "0x" + "22" * 20),
+        threshold=1,
+        encrypted_aes_key_b64=overrides.get("encrypted_aes_key", "cidencryptedkey"),
+    )
+    return CidEncryptionMetadata(gate=gate)
 
 
 class TestBuildArkivConfig:
@@ -162,12 +185,7 @@ class TestBuildPayloadGoldStandard:
         """Ensure payload uses is_encrypted (int 0 or 1), not encrypted."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            encryption_metadata=EncryptionMetadata(
-                encrypted_key="base64key",
-                key_hash="keyhash",
-                iv="base64iv",
-                chain="ethereum"
-            )
+            encryption_metadata=_content_encryption_metadata(),
         )
         payload = _build_payload(context)
         
@@ -181,13 +199,14 @@ class TestBuildPayloadGoldStandard:
             source_path=Path("/tmp/test.mp4"),
             encryption_metadata=EncryptionMetadata(
                 ciphertext="encrypted_data_should_not_be_here",
-                data_to_encrypt_hash="hash123",
-                encrypted_key="base64key",
-                key_hash="keyhash",
-                iv="base64iv",
-                access_control_conditions=[{"contractAddress": "", "chain": "ethereum"}],
-                chain="ethereum"
-            )
+                gate=build_gate_metadata(
+                    cid="sha256:hash123",
+                    chain="EthMainnet",
+                    token_address="0x" + "33" * 20,
+                    threshold=1,
+                    encrypted_aes_key_b64="base64key",
+                ),
+            ),
         )
         payload = _build_payload(context)
         
@@ -205,36 +224,25 @@ class TestBuildPayloadGoldStandard:
                 mime_type="video/mp4",
                 file_size=10485760
             ),
-            encryption_metadata=EncryptionMetadata(
-                encrypted_key="base64encryptedkey",
-                key_hash="sha256keyhash",
-                iv="base64iv123",
-                access_control_conditions=[{"contractAddress": "0x123", "chain": "ethereum"}],
-                chain="ethereum"
-            )
+            encryption_metadata=_content_encryption_metadata(
+                encrypted_aes_key="base64encryptedkey",
+            ),
         )
-        # Add original_hash via step_data
         context.set_step_data("encrypt", "original_hash", "sha256originalhash")
-        
+
         payload = _build_payload(context)
-        
+
         assert "encryption_metadata" in payload
         encryption_meta = json.loads(payload["encryption_metadata"])
-        
-        # Required fields per gold standard
-        assert encryption_meta["version"] == "hybrid-v1"
-        assert encryption_meta["encryptedKey"] == "base64encryptedkey"
-        assert encryption_meta["keyHash"] == "sha256keyhash"
-        assert encryption_meta["iv"] == "base64iv123"
-        assert encryption_meta["algorithm"] == "AES-GCM"
-        assert encryption_meta["keyLength"] == 256
-        assert "accessControlConditions" in encryption_meta
-        assert encryption_meta["chain"] == "ethereum"
-        
-        # Optional but recommended fields
-        assert encryption_meta["originalMimeType"] == "video/mp4"
-        assert encryption_meta["originalSize"] == 10485760
-        assert encryption_meta["originalHash"] == "sha256originalhash"
+
+        assert encryption_meta["version"] == 1
+        assert encryption_meta["encryptedAesKey"] == "base64encryptedkey"
+        assert encryption_meta["chain"] == "EthMainnet"
+        assert encryption_meta["tokenAddress"] == "0x" + "11" * 20
+
+        assert payload["content_mime_type"] == "video/mp4"
+        assert payload["content_file_size"] == 10485760
+        assert payload["original_hash"] == "sha256originalhash"
     
     def test_cid_hash_in_payload(self):
         """Ensure cid_hash is present in payload and is valid SHA256."""
@@ -327,39 +335,25 @@ class TestBuildPayloadGoldStandard:
                 video_path="/tmp/test.mp4",
                 root_cid="QmEncryptedCID"
             ),
-            encryption_metadata=EncryptionMetadata(
-                encrypted_key="base64encryptedkey",
-                key_hash="keyhash456",
-                iv="base64iv",
-                access_control_conditions=[{"contractAddress": "0x456", "chain": "ethereum"}],
-                chain="ethereum"
-            ),
+            encryption_metadata=_content_encryption_metadata(),
             encrypted_cid="encryptedcid123",
-            cid_encryption_metadata=CidEncryptionMetadata(
-                encrypted_key="cidencryptedkey",
-                key_hash="cidkeyhash",
-                iv="cidiv",
-                access_control_conditions=[{"contractAddress": "0x789", "chain": "ethereum"}],
-                chain="ethereum"
-            )
+            cid_encryption_metadata=_cid_encryption_metadata(
+                encrypted_aes_key="cidencryptedkey",
+            ),
         )
         payload = _build_payload(context)
-        
-        # Required encryption fields (gold standard uses int 0/1)
-        assert "is_encrypted" in payload
+
         assert payload["is_encrypted"] == 1
         assert "encryption_metadata" in payload
         assert "cid_encryption_metadata" in payload
-        
-        # Verify encryption_metadata structure
+
         encryption_meta = json.loads(payload["encryption_metadata"])
-        assert encryption_meta["version"] == "hybrid-v1"
-        assert encryption_meta["encryptedKey"] == "base64encryptedkey"
-        
-        # Verify cid_encryption_metadata structure
+        assert encryption_meta["version"] == 1
+        assert encryption_meta["encryptedAesKey"] == "base64encryptedkey"
+
         cid_meta = json.loads(payload["cid_encryption_metadata"])
-        assert cid_meta["version"] == "hybrid-v1"
-        assert cid_meta["encryptedCid"] == "encryptedcid123"
+        assert cid_meta["version"] == 1
+        assert cid_meta["encryptedAesKey"] == "cidencryptedkey"
         
         # For encrypted videos, filecoin_root_cid should NOT be in payload (privacy)
         assert "filecoin_root_cid" not in payload
@@ -500,40 +494,25 @@ class TestBuildPayload:
         """Test payload with encryption metadata includes encryption_metadata."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            encryption_metadata=EncryptionMetadata(
-                ciphertext="encrypted_data",
-                data_to_encrypt_hash="hash123",
-                encrypted_key="base64encryptedkey",
-                key_hash="keyhash456",
-                iv="base64iv",
-                access_control_conditions=[{"contractAddress": "", "chain": "ethereum"}],
-                chain="ethereum"
-            )
+            encryption_metadata=_content_encryption_metadata(
+                encrypted_aes_key="base64encryptedkey",
+            ),
         )
-        
+
         payload = _build_payload(context)
-        
-        # Gold standard uses int (0 or 1) for is_encrypted
+
         assert payload["is_encrypted"] == 1
-        # Old scattered fields should be removed
         assert "encryption_chain" not in payload
         assert "encryption_data_hash" not in payload
-        # New encryption_metadata should be present
         assert "encryption_metadata" in payload
-        
-        # Parse and verify the encryption_metadata JSON structure
+
         encryption_metadata = json.loads(payload["encryption_metadata"])
-        assert encryption_metadata["version"] == "hybrid-v1"
-        assert encryption_metadata["encryptedKey"] == "base64encryptedkey"
-        assert encryption_metadata["keyHash"] == "keyhash456"
-        assert encryption_metadata["iv"] == "base64iv"
-        assert encryption_metadata["algorithm"] == "AES-GCM"
-        assert encryption_metadata["keyLength"] == 256
-        assert encryption_metadata["chain"] == "ethereum"
-        assert len(encryption_metadata["accessControlConditions"]) == 1
-    
+        assert encryption_metadata["version"] == 1
+        assert encryption_metadata["encryptedAesKey"] == "base64encryptedkey"
+        assert encryption_metadata["chain"] == "EthMainnet"
+
     def test_payload_with_encryption_and_video_metadata(self):
-        """Test payload includes video metadata in encryption_metadata."""
+        """Test payload includes optional content fields beside gate metadata."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -542,21 +521,14 @@ class TestBuildPayload:
                 mime_type="video/mp4",
                 file_size=10485760
             ),
-            encryption_metadata=EncryptionMetadata(
-                encrypted_key="base64encryptedkey",
-                key_hash="keyhash456",
-                iv="base64iv",
-                chain="ethereum"
-            )
+            encryption_metadata=_content_encryption_metadata(),
         )
-        
+
         payload = _build_payload(context)
-        
-        # Gold standard uses int (0 or 1) for is_encrypted
+
         assert payload["is_encrypted"] == 1
-        encryption_metadata = json.loads(payload["encryption_metadata"])
-        assert encryption_metadata["originalMimeType"] == "video/mp4"
-        assert encryption_metadata["originalSize"] == 10485760
+        assert payload["content_mime_type"] == "video/mp4"
+        assert payload["content_file_size"] == 10485760
     
     def test_payload_without_encryption(self):
         """Test payload without encryption does not include encryption_metadata."""
@@ -574,39 +546,21 @@ class TestBuildPayload:
         # (encrypted videos only)
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            encryption_metadata=EncryptionMetadata(
-                encrypted_key="base64encryptedkey",
-                key_hash="keyhash456",
-                iv="base64iv",
-                access_control_conditions=[{"contractAddress": "", "chain": "ethereum"}],
-                chain="ethereum"
-            ),
+            encryption_metadata=_content_encryption_metadata(),
             encrypted_cid="encryptedcid123",
-            cid_encryption_metadata=CidEncryptionMetadata(
-                encrypted_key="base64encryptedkey",
-                key_hash="keyhash789",
-                iv="base64iv",
-                access_control_conditions=[{"contractAddress": "", "chain": "ethereum"}],
-                chain="ethereum"
-            )
+            cid_encryption_metadata=_cid_encryption_metadata(
+                encrypted_aes_key="cidlayerkey",
+            ),
         )
-        
+
         payload = _build_payload(context)
-        
-        # cid_encryption_metadata should be present for encrypted videos
+
         assert "cid_encryption_metadata" in payload
-        
-        # Parse and verify the cid_encryption_metadata JSON structure
+
         cid_metadata = json.loads(payload["cid_encryption_metadata"])
-        assert cid_metadata["version"] == "hybrid-v1"
-        assert cid_metadata["encryptedKey"] == "base64encryptedkey"
-        assert cid_metadata["keyHash"] == "keyhash789"
-        assert cid_metadata["iv"] == "base64iv"
-        assert cid_metadata["algorithm"] == "AES-GCM"
-        assert cid_metadata["keyLength"] == 256
-        assert cid_metadata["chain"] == "ethereum"
-        assert cid_metadata["encryptedCid"] == "encryptedcid123"
-        assert len(cid_metadata["accessControlConditions"]) == 1
+        assert cid_metadata["version"] == 1
+        assert cid_metadata["encryptedAesKey"] == "cidlayerkey"
+        assert cid_metadata["chain"] == "EthMainnet"
     
     def test_payload_without_cid_encryption(self):
         """Test payload without CID encryption does not include cid_encryption_metadata."""
@@ -709,12 +663,7 @@ class TestBuildAttributesGoldStandard:
         
         # Set encryption metadata if requested
         if encrypted:
-            context.encryption_metadata = EncryptionMetadata(
-                encrypted_key="base64key",
-                key_hash="keyhash",
-                iv="base64iv",
-                chain="ethereum"
-            )
+            context.encryption_metadata = _content_encryption_metadata()
         
         # Set analysis result if analysis_model provided
         if analysis_model:
@@ -831,12 +780,7 @@ class TestBuildAttributesGoldStandard:
         )
         # Add CID encryption metadata and encrypted_cid
         context.encrypted_cid = "encryptedcid123"
-        context.cid_encryption_metadata = CidEncryptionMetadata(
-            encrypted_key="base64key",
-            key_hash="keyhash",
-            iv="base64iv",
-            chain="ethereum"
-        )
+        context.cid_encryption_metadata = _cid_encryption_metadata()
         attributes = _build_attributes(context)
         
         # Should not contain these sensitive fields
@@ -912,7 +856,7 @@ class TestBuildAttributes:
         """Test attributes with encryption."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
-            encryption_metadata=EncryptionMetadata(chain="ethereum")
+            encryption_metadata=_content_encryption_metadata()
         )
         
         attrs = _build_attributes(context)
@@ -944,13 +888,7 @@ class TestBuildAttributes:
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             encrypted_cid="encryptedcid123",
-            cid_encryption_metadata=CidEncryptionMetadata(
-                encrypted_key="base64encryptedkey",
-                key_hash="keyhash789",
-                iv="base64iv",
-                access_control_conditions=[{"contractAddress": "", "chain": "ethereum"}],
-                chain="ethereum"
-            )
+            cid_encryption_metadata=_cid_encryption_metadata(),
         )
         
         attrs = _build_attributes(context)

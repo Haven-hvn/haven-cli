@@ -251,24 +251,26 @@ async def _decrypt_file(
     if not icp_identity_path:
         raise ValueError("HAVEN_ICP_IDENTITY_PEM_PATH is required for Haven-AOL ICP decryption")
 
-    gate_source = metadata.access_control_conditions[0] if metadata.access_control_conditions else {}
-    token_address = str(gate_source.get("contractAddress", "")).strip()
-    threshold = derivation_threshold_from_access_condition(gate_source)
-    cid_value = str(gate_source.get("cid") or cid or "").strip()
+    gate_dict = metadata.gate
+    token_address = str(gate_dict.get("tokenAddress", "")).strip()
+    if not token_address:
+        raise ValueError("Encryption metadata missing tokenAddress (gate v1)")
+
+    cid_value = str(gate_dict.get("cid") or cid or "").strip()
     if not cid_value:
         cid_value = f"local-{input_path.name}"
 
-    if not token_address:
-        raise ValueError("Encryption metadata missing token contract address")
+    chain_raw = str(gate_dict.get("chain", "")).strip()
+    if not chain_raw:
+        raise ValueError("Encryption metadata is missing chain (gate v1)")
 
-    if not metadata.chain:
-        raise ValueError(
-            "Encryption metadata is missing chain. "
-            "Cannot decrypt without the access-control asset chain (EVM)."
-        )
+    try:
+        threshold = int(str(gate_dict.get("threshold", "1")))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid gate threshold in encryption metadata") from exc
 
     gate = GateParams(
-        chain=normalize_haven_aol_chain(str(metadata.chain)),
+        chain=normalize_haven_aol_chain(chain_raw),
         token_address=token_address,
         threshold=threshold,
         cid=cid_value,
@@ -286,7 +288,7 @@ async def _decrypt_file(
                 input_path=input_path,
                 output_path=temp_output_path,
                 private_key="",
-                encrypted_key_b64=metadata.encrypted_key,
+                encrypted_key_b64=metadata.encrypted_aes_key,
                 gate=gate,
             )
             temp_output_path.replace(output_path)
@@ -298,7 +300,7 @@ async def _decrypt_file(
             input_path=input_path,
             output_path=output_path,
             private_key="",
-            encrypted_key_b64=metadata.encrypted_key,
+            encrypted_key_b64=metadata.encrypted_aes_key,
             gate=gate,
         )
 

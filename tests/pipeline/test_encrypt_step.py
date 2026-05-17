@@ -887,11 +887,17 @@ class TestEncryptStepDatabase:
         """Test saving encryption metadata to database."""
         step = EncryptStep()
 
+        from haven_cli.crypto.gate_metadata import build_gate_metadata
+
         metadata = EncryptionMetadata(
             ciphertext="/path/to/encrypted.enc",
-            data_to_encrypt_hash="0xhash123",
-            access_control_conditions=[{"conditionType": "evmBasic"}],
-            chain="ethereum",
+            gate=build_gate_metadata(
+                cid="sha256:hash123",
+                chain="EthMainnet",
+                token_address="0x" + "aa" * 20,
+                threshold=1,
+                encrypted_aes_key_b64="key-b64",
+            ),
         )
 
         mock_video = MagicMock()
@@ -927,11 +933,17 @@ class TestEncryptStepDatabase:
         """Test saving metadata when video doesn't exist."""
         step = EncryptStep()
 
+        from haven_cli.crypto.gate_metadata import build_gate_metadata
+
         metadata = EncryptionMetadata(
             ciphertext="/path/to/encrypted.enc",
-            data_to_encrypt_hash="0xhash123",
-            access_control_conditions=[],
-            chain="ethereum",
+            gate=build_gate_metadata(
+                cid="sha256:hash123",
+                chain="EthMainnet",
+                token_address="0x" + "bb" * 20,
+                threshold=1,
+                encrypted_aes_key_b64="key-b64",
+            ),
         )
 
         mock_repo = MagicMock()
@@ -957,11 +969,17 @@ class TestEncryptStepDatabase:
         """Test handling of database error during save."""
         step = EncryptStep()
 
+        from haven_cli.crypto.gate_metadata import build_gate_metadata
+
         metadata = EncryptionMetadata(
             ciphertext="/path/to/encrypted.enc",
-            data_to_encrypt_hash="0xhash123",
-            access_control_conditions=[],
-            chain="ethereum",
+            gate=build_gate_metadata(
+                cid="sha256:hash123",
+                chain="EthMainnet",
+                token_address="0x" + "bb" * 20,
+                threshold=1,
+                encrypted_aes_key_b64="key-b64",
+            ),
         )
 
         with patch("haven_cli.database.connection.get_db_session") as mock_get_session:
@@ -982,22 +1000,25 @@ class TestEncryptStepHelpers:
         """Test conversion of metadata to JSON."""
         step = EncryptStep()
 
+        from haven_cli.crypto.gate_metadata import build_gate_metadata
+
         metadata = EncryptionMetadata(
             ciphertext="/path/to/enc",
-            data_to_encrypt_hash="0xhash",
-            access_control_conditions=[{"type": "test"}],
-            chain="ethereum",
+            gate=build_gate_metadata(
+                cid="sha256:hash",
+                chain="EthMainnet",
+                token_address="0x" + "cc" * 20,
+                threshold=1,
+                encrypted_aes_key_b64="key-b64",
+            ),
         )
 
         json_str = step._metadata_to_json(metadata)
         data = json.loads(json_str)
 
-        assert data["ciphertext"] == "/path/to/enc"
-        assert data["data_to_encrypt_hash"] == "0xhash"
-        assert data["dataToEncryptHash"] == "0xhash"  # camelCase
-        assert data["chain"] == "ethereum"
-        assert data["access_control_conditions"] == [{"type": "test"}]
-        assert data["accessControlConditions"] == [{"type": "test"}]  # camelCase
+        assert data["version"] == 1
+        assert data["encryptedAesKey"] == "key-b64"
+        assert data["chain"] == "EthMainnet"
 
     @pytest.mark.asyncio
     async def test_on_skip(self):

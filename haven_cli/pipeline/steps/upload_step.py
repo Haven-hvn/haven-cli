@@ -23,9 +23,9 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from haven_cli.config import get_config
+from haven_cli.crypto.gate_metadata import merge_encrypt_result_gate
 from haven_cli.crypto.haven_aol_local import (
     GateParams,
-    derivation_threshold_from_access_condition,
     encrypt_bytes,
 )
 from haven_cli.database.connection import get_db_session
@@ -475,17 +475,15 @@ class UploadStep(ConditionalStep):
                 try:
                     cid_encryption_result = await self._encrypt_cid(
                         upload_result.get("root_cid"),
-                        context.encryption_metadata.access_control_conditions,
+                        context.encryption_metadata.gate,
                         context,
                     )
                     # Create CidEncryptionMetadata from result (excluding encrypted_cid)
-                    cid_encryption_metadata = CidEncryptionMetadata(
-                        encrypted_key=cid_encryption_result.get("encryptedKey", ""),
-                        key_hash=cid_encryption_result.get("keyHash", ""),
-                        iv=cid_encryption_result.get("iv", ""),
-                        access_control_conditions=cid_encryption_result.get("accessControlConditions", []),
-                        chain=cid_encryption_result["chain"],
+                    cid_gate = merge_encrypt_result_gate(
+                        cid_encryption_result["gate"],
+                        cid_encryption_result["encryptedKey"],
                     )
+                    cid_encryption_metadata = CidEncryptionMetadata(gate=cid_gate)
                     logger.info(f"CID encrypted for Arkiv sync")
                 except Exception as e:
                     raise RuntimeError(f"Failed to encrypt CID for Arkiv sync: {e}") from e
@@ -802,27 +800,33 @@ class UploadStep(ConditionalStep):
     async def _encrypt_cid(
         self,
         cid: str,
-        access_control_conditions: List[Dict[str, Any]],
+        content_gate: Dict[str, Any],
         context: PipelineContext,
     ) -> Dict[str, Any]:
         """Encrypt the CID with local Haven-AOL logic for Arkiv sync."""
         logger.info(f"Encrypting CID for Arkiv sync: {cid[:30]}...")
 
-        gate_condition = access_control_conditions[0] if access_control_conditions else {}
-        token_address = str(gate_condition.get("contractAddress", "")).strip()
+        token_address = str(content_gate.get("tokenAddress", "")).strip()
         if not token_address:
-            raise RuntimeError("token_contract/contractAddress required for CID encryption")
-        threshold = derivation_threshold_from_access_condition(gate_condition)
-        pipeline_cfg = self._config.get("pipeline")
-        config_chain = getattr(pipeline_cfg, "evm_chain", None) if pipeline_cfg is not None else self._config.get("evm_chain")
-        configured_chain = context.options.get("evm_chain") or config_chain
-        if not configured_chain:
-            raise RuntimeError(
-                "evm_chain is required for CID encryption "
-                "(EVM chain where access-control assets live). "
-                "Set --evm-chain or pipeline.evm_chain."
-            )
-        chain = normalize_haven_aol_chain(str(configured_chain))
+            raise RuntimeError("content gate missing tokenAddress for CID encryption")
+        try:
+            threshold = int(str(content_gate.get("threshold", "1")))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Invalid gate threshold in content encryption metadata") from exc
+
+        chain_raw = str(content_gate.get("chain", "")).strip()
+        if chain_raw:
+            chain = normalize_haven_aol_chain(chain_raw)
+        else:
+            pipeline_cfg = self._config.get("pipeline")
+            config_chain = getattr(pipeline_cfg, "evm_chain", None) if pipeline_cfg is not None else self._config.get("evm_chain")
+            configured_chain = context.options.get("evm_chain") or config_chain
+            if not configured_chain:
+                raise RuntimeError(
+                    "evm_chain is required for CID encryption "
+                    "(set gate.chain, --evm-chain, or pipeline.evm_chain)."
+                )
+            chain = normalize_haven_aol_chain(str(configured_chain))
 
         try:
             encrypted = encrypt_bytes(
@@ -836,13 +840,11 @@ class UploadStep(ConditionalStep):
                 ),
             )
             logger.info(f"CID encrypted successfully")
+            cid_gate = merge_encrypt_result_gate(encrypted["gate"], encrypted["encrypted_key_b64"])
             return {
                 "encryptedCid": base64.b64encode(encrypted["ciphertext_bytes"]).decode("ascii"),
                 "encryptedKey": encrypted["encrypted_key_b64"],
-                "keyHash": encrypted["key_hash"],
-                "iv": encrypted["iv_b64"],
-                "accessControlConditions": access_control_conditions,
-                "chain": chain,
+                "gate": cid_gate,
             }
         except Exception as e:
             logger.error(f"CID encryption failed: {e}")
