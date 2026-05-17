@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional, Protocol
 
 from haven_cli.crypto.gate_metadata import gate_metadata_to_json, is_gate_metadata
 from haven_cli.pipeline.context import PipelineContext
+from haven_cli.services.piece_cid import require_piece_cid
 from haven_cli.services.evm_utils import (
     InsufficientGasError,
     handle_evm_gas_error,
@@ -410,9 +411,12 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
         if context.upload_result and context.upload_result.root_cid:
             payload["filecoin_root_cid"] = context.upload_result.root_cid
     
-    # Piece CID is required for Synapse download in haven-dapp (root CID is not valid)
-    if context.upload_result and context.upload_result.piece_cid:
-        payload["piece_cid"] = context.upload_result.piece_cid
+    # Filecoin Pin piece CID (bafkzcib…) — required for haven-dapp Synapse download
+    if context.upload_result and context.upload_result.root_cid:
+        payload["piece_cid"] = require_piece_cid(
+            context.upload_result.piece_cid,
+            context="Arkiv payload",
+        )
 
     # cid_hash is needed for deduplication during restore (both encrypted and non-encrypted)
     if context.upload_result and context.upload_result.root_cid:

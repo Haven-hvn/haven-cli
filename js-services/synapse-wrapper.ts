@@ -617,11 +617,19 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 100,
       });
 
+      const pieceCid = uploadResult.pieceCid?.toString?.() ?? String(uploadResult.pieceCid ?? '');
+      if (!pieceCid || !pieceCid.startsWith('bafkzcib')) {
+        throw new Error(
+          `Filecoin Pin upload did not return a valid pieceCid (bafkzcib…); got: ${pieceCid || '(empty)'}`
+        );
+      }
+
       return {
         cid: rootCidString,
+        pieceCid,
         size: carFileSize,
         uploadedAt: new Date().toISOString(),
-        dealId: uploadResult.pieceCid,
+        dealId: pieceCid,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

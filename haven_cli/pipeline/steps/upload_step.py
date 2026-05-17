@@ -732,11 +732,18 @@ class UploadStep(ConditionalStep):
         await on_progress(STAGE_COMPLETE, COMPLETION_PERCENT, 0, 0)
         
         logger.info(f"Upload complete. CID: {result.get('cid', '')}")
-        
+
+        from haven_cli.services.piece_cid import require_piece_cid
+
+        piece_cid = require_piece_cid(
+            result.get("pieceCid") or result.get("dealId", ""),
+            context="Filecoin video upload",
+        )
+
         return {
             "root_cid": result["cid"],
-            "piece_cid": result.get("pieceCid", ""),
-            "deal_id": result.get("dealId", ""),
+            "piece_cid": piece_cid,
+            "deal_id": piece_cid,
             "transaction_hash": result.get("txHash", ""),
         }
     
@@ -792,7 +799,7 @@ class UploadStep(ConditionalStep):
         
         return {
             "root_cid": result["cid"],
-            "piece_cid": result.get("pieceCid", ""),
+            "piece_cid": result.get("pieceCid") or result.get("dealId", ""),
             "deal_id": result.get("dealId", ""),
             "transaction_hash": result.get("txHash", ""),
         }

@@ -15,6 +15,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Filecoin Pin piece CID (matches haven-dapp / filecoin-pin glossary)
+TEST_PIECE_CID = (
+    "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
+)
+
 from haven_cli.pipeline.context import (
     AIAnalysisResult,
     CidEncryptionMetadata,
@@ -172,7 +177,8 @@ class TestBuildPayloadGoldStandard:
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
                 video_path="/tmp/test.mp4",
-                root_cid="QmTest123abc"
+                root_cid="QmTest123abc",
+                piece_cid=TEST_PIECE_CID,
             )
         )
         payload = _build_payload(context)
@@ -250,7 +256,8 @@ class TestBuildPayloadGoldStandard:
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
                 video_path="/tmp/test.mp4",
-                root_cid="QmTestCID123"
+                root_cid="QmTestCID123",
+                piece_cid=TEST_PIECE_CID,
             )
         )
         payload = _build_payload(context)
@@ -270,7 +277,8 @@ class TestBuildPayloadGoldStandard:
             upload_result=UploadResult(
                 video_path="/tmp/test.mp4",
                 root_cid="QmRootCID",
-                vlm_json_cid="QmVlmAnalysisCID456"
+                piece_cid=TEST_PIECE_CID,
+                vlm_json_cid="QmVlmAnalysisCID456",
             )
         )
         payload = _build_payload(context)
@@ -285,7 +293,8 @@ class TestBuildPayloadGoldStandard:
             upload_result=UploadResult(
                 video_path="/tmp/test.mp4",
                 root_cid="bafybeiaaav5q7z3b2q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q",
-                vlm_json_cid="bafybeibbbv5q7z3b2q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q"
+                piece_cid=TEST_PIECE_CID,
+                vlm_json_cid="bafybeibbbv5q7z3b2q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q3v3q",
             )
         )
         payload = _build_payload(context)
@@ -305,7 +314,8 @@ class TestBuildPayloadGoldStandard:
             ),
             upload_result=UploadResult(
                 video_path="/tmp/test.mp4",
-                root_cid="QmNonEncryptedCID"
+                root_cid="QmNonEncryptedCID",
+                piece_cid=TEST_PIECE_CID,
             )
         )
         payload = _build_payload(context)
@@ -333,7 +343,8 @@ class TestBuildPayloadGoldStandard:
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
                 video_path="/tmp/test.mp4",
-                root_cid="QmEncryptedCID"
+                root_cid="QmEncryptedCID",
+                piece_cid="bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
             ),
             encryption_metadata=_content_encryption_metadata(),
             encrypted_cid="encryptedcid123",
@@ -343,6 +354,7 @@ class TestBuildPayloadGoldStandard:
         )
         payload = _build_payload(context)
 
+        assert payload["piece_cid"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
         assert payload["is_encrypted"] == 1
         assert "encryption_metadata" in payload
         assert "cid_encryption_metadata" in payload
@@ -450,7 +462,7 @@ class TestBuildPayload:
             upload_result=UploadResult(
                 video_path="/tmp/test.mp4",
                 root_cid="QmTest123",
-                piece_cid="QmPiece456"
+                piece_cid="bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
             )
         )
         
@@ -463,7 +475,21 @@ class TestBuildPayload:
         expected_hash = hashlib.sha256("QmTest123".encode()).hexdigest()
         assert payload["cid_hash"] == expected_hash
         
-        assert payload["piece_cid"] == "QmPiece456"
+        assert payload["piece_cid"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
+
+    def test_payload_requires_piece_cid_when_root_cid_present(self):
+        """Arkiv sync must not proceed without piece_cid (haven-dapp Synapse-only path)."""
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            upload_result=UploadResult(
+                video_path="/tmp/test.mp4",
+                root_cid="QmTest123",
+                piece_cid="",
+            ),
+        )
+
+        with pytest.raises(ValueError, match="piece_cid is required"):
+            _build_payload(context)
     
     def test_payload_with_analysis(self):
         """Test payload with analysis result - gold standard excludes recalculable fields."""
@@ -657,7 +683,8 @@ class TestBuildAttributesGoldStandard:
         if uploaded:
             context.upload_result = UploadResult(
                 video_path="/tmp/test.mp4",
-                root_cid=root_cid
+                root_cid=root_cid,
+                piece_cid=TEST_PIECE_CID,
             )
         
         # Set encryption metadata if requested
@@ -839,8 +866,9 @@ class TestBuildAttributes:
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
                 video_path="/tmp/test.mp4",
-                root_cid="QmTest123"
-            )
+                root_cid="QmTest123",
+                piece_cid=TEST_PIECE_CID,
+            ),
         )
         
         attrs = _build_attributes(context)
