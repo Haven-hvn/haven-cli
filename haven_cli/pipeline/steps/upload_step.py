@@ -44,6 +44,7 @@ from haven_cli.pipeline.results import ErrorCategory, StepError, StepResult
 from haven_cli.pipeline.step import ConditionalStep
 from haven_cli.services.blockchain_network import get_network_config
 from haven_cli.services.evm_utils import normalize_haven_aol_chain
+from haven_cli.services.foc_upload import FocUploadError, verify_foc_upload_js_result
 
 logger = logging.getLogger(__name__)
 
@@ -494,6 +495,9 @@ class UploadStep(ConditionalStep):
                 root_cid=upload_result.get("root_cid", ""),
                 piece_cid=upload_result.get("piece_cid", ""),
                 transaction_hash=upload_result.get("transaction_hash", ""),
+                filecoin_data_set_id=upload_result.get("filecoin_data_set_id"),
+                filecoin_uploaded_at=upload_result.get("filecoin_uploaded_at"),
+                filecoin_service_provider=upload_result.get("filecoin_service_provider"),
                 encryption_metadata=context.encryption_metadata,
                 vlm_json_cid=vlm_json_cid,
             )
@@ -642,9 +646,19 @@ class UploadStep(ConditionalStep):
         Raises:
             RuntimeError: If upload fails
         """
+        # Determine file to upload (encrypted or original)
+        file_to_upload = video_path
+        if encryption_metadata and encryption_metadata.ciphertext:
+            if os.path.exists(encryption_metadata.ciphertext):
+                file_to_upload = encryption_metadata.ciphertext
+                logger.info(f"Using encrypted file for upload: {file_to_upload}")
+
+        if not os.path.exists(file_to_upload):
+            raise FileNotFoundError(f"File to upload not found: {file_to_upload}")
+
         # Connect to Synapse with network configuration
         logger.info("Connecting to Synapse...")
-        
+
         filecoin_mode = self._config.get(
             "filecoin_network_mode",
             self._config.get("network_mode", "testnet"),
@@ -652,30 +666,21 @@ class UploadStep(ConditionalStep):
         rpc_url = self._config.get("filecoin_rpc_url")
         if not rpc_url:
             rpc_url = get_network_config(filecoin_mode).filecoin_rpc_url
-        
+
         try:
-            # Use longer timeout for Synapse connection (testnet can be slow)
-            await self._js_call_with_retry("synapse.connect", {
-                "rpcUrl": rpc_url,
-                "networkMode": filecoin_mode,
-            }, timeout=120.0)  # 2 minutes for connection
+            await self._js_call_with_retry(
+                "synapse.connect",
+                {
+                    "rpcUrl": rpc_url,
+                    "networkMode": filecoin_mode,
+                },
+                timeout=120.0,
+            )
         except Exception as e:
             logger.error(f"Failed to connect to Synapse: {e}")
             raise RuntimeError(f"Synapse connection failed: {e}") from e
-        
+
         await on_progress(STAGE_CONNECTING, CONNECTION_PERCENT, 0, 0)
-        
-        # Determine file to upload (encrypted or original)
-        file_to_upload = video_path
-        if encryption_metadata and encryption_metadata.ciphertext:
-            # Use encrypted file if available
-            if os.path.exists(encryption_metadata.ciphertext):
-                file_to_upload = encryption_metadata.ciphertext
-                logger.info(f"Using encrypted file for upload: {file_to_upload}")
-        
-        # Verify file exists
-        if not os.path.exists(file_to_upload):
-            raise FileNotFoundError(f"File to upload not found: {file_to_upload}")
         
         # Upload to Filecoin
         # Note: Progress 20% from synapse means CAR file created, not actual upload started
@@ -705,33 +710,6 @@ class UploadStep(ConditionalStep):
             raise RuntimeError(f"Upload to Filecoin failed: {e}") from e
         
         await on_progress(STAGE_CONFIRMING, CONFIRMATION_PERCENT, 0, 0)
-        
-        # Wait for deal confirmation (optional)
-        if config.get("wait_for_deal", False):
-            logger.info("Waiting for deal confirmation...")
-            try:
-                status = await self._js_call_with_retry("synapse.getStatus", {"cid": result["cid"]})
-                max_wait_attempts = 60  # Max 5 minutes (60 * 5s)
-                attempts = 0
-                
-                while status.get("status") == "pending" and attempts < max_wait_attempts:
-                    await asyncio.sleep(5)
-                    status = await self._js_call_with_retry("synapse.getStatus", {"cid": result["cid"]})
-                    attempts += 1
-                    logger.debug(f"Deal status: {status.get('status')} (attempt {attempts})")
-                
-                if status.get("status") != "confirmed":
-                    logger.warning(f"Deal confirmation timeout after {attempts} attempts")
-                else:
-                    logger.info("Deal confirmed successfully")
-                    
-            except Exception as e:
-                # Log but don't fail - upload succeeded even if status check fails
-                logger.warning(f"Could not get deal status: {e}")
-        
-        await on_progress(STAGE_COMPLETE, COMPLETION_PERCENT, 0, 0)
-        
-        logger.info(f"Upload complete. CID: {result.get('cid', '')}")
 
         from haven_cli.services.piece_cid import require_piece_cid
 
@@ -740,11 +718,84 @@ class UploadStep(ConditionalStep):
             context="Filecoin video upload",
         )
 
+        try:
+            foc = verify_foc_upload_js_result(result, context="Filecoin video upload")
+        except FocUploadError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        logger.info(
+            "FOC commit verified: piece_cid=%s copies=%s data_set_id=%s provider=%s owner=%s",
+            foc.piece_cid,
+            foc.copy_count,
+            foc.data_set_id,
+            foc.service_provider or "(unknown)",
+            foc.catalog_owner or "(unknown)",
+        )
+
+        verify_params: Dict[str, Any] = {"pieceCid": foc.piece_cid}
+        if foc.catalog_owner:
+            verify_params["catalogOwner"] = foc.catalog_owner
+
+        await self._js_call_with_retry(
+            "synapse.verifyPieceRetrieval",
+            verify_params,
+            timeout=300.0,
+            max_retries=1,
+        )
+
+        if config.get("wait_for_deal", False):
+            logger.info("Waiting for FOC retrievability confirmation...")
+            try:
+                status_params: Dict[str, Any] = {
+                    "cid": result["cid"],
+                    "pieceCid": foc.piece_cid,
+                }
+                if foc.catalog_owner:
+                    status_params["catalogOwner"] = foc.catalog_owner
+
+                status = await self._js_call_with_retry("synapse.getStatus", status_params)
+                max_wait_attempts = 60
+                attempts = 0
+
+                def _is_retrievable(status_payload: Dict[str, Any]) -> bool:
+                    if status_payload.get("retrievable"):
+                        return True
+                    return status_payload.get("status") in ("active", "confirmed")
+
+                while not _is_retrievable(status) and attempts < max_wait_attempts:
+                    await asyncio.sleep(5)
+                    status = await self._js_call_with_retry("synapse.getStatus", status_params)
+                    attempts += 1
+                    logger.debug(
+                        "FOC retrieval status: %s (attempt %s)",
+                        status.get("status"),
+                        attempts,
+                    )
+
+                if not _is_retrievable(status):
+                    logger.warning(
+                        "FOC retrieval not confirmed after %s attempts", attempts
+                    )
+                else:
+                    logger.info("FOC piece retrievability confirmed")
+            except Exception as e:
+                logger.warning(f"Could not confirm FOC retrieval status: {e}")
+
+        await on_progress(STAGE_COMPLETE, COMPLETION_PERCENT, 0, 0)
+
+        logger.info(f"Upload complete. CID: {result.get('cid', '')}")
+
+        uploaded_at = datetime.now(timezone.utc)
+
         return {
             "root_cid": result["cid"],
-            "piece_cid": piece_cid,
-            "deal_id": piece_cid,
+            "piece_cid": foc.piece_cid,
+            "deal_id": foc.piece_cid,
             "transaction_hash": result.get("txHash", ""),
+            "filecoin_data_set_id": foc.data_set_id,
+            "filecoin_uploaded_at": uploaded_at.isoformat(),
+            "filecoin_service_provider": foc.service_provider or None,
+            "foc_copy_count": foc.copy_count,
         }
     
     async def _upload_vlm_json(
@@ -953,10 +1004,20 @@ class UploadStep(ConditionalStep):
                 video = repo.get_by_source_path(video_path)
                 
                 if video:
-                    update_kwargs = {
+                    update_kwargs: Dict[str, Any] = {
                         "cid": result.root_cid,
                         "piece_cid": result.piece_cid,
                     }
+                    if result.filecoin_data_set_id:
+                        update_kwargs["filecoin_data_set_id"] = result.filecoin_data_set_id
+                    if result.filecoin_uploaded_at:
+                        try:
+                            uploaded_at = datetime.fromisoformat(result.filecoin_uploaded_at)
+                            if uploaded_at.tzinfo is None:
+                                uploaded_at = uploaded_at.replace(tzinfo=timezone.utc)
+                            update_kwargs["filecoin_uploaded_at"] = uploaded_at
+                        except ValueError:
+                            update_kwargs["filecoin_uploaded_at"] = datetime.now(timezone.utc)
                     # Include vlm_json_cid if available
                     if result.vlm_json_cid:
                         update_kwargs["vlm_json_cid"] = result.vlm_json_cid
@@ -999,7 +1060,7 @@ class UploadStep(ConditionalStep):
                 repo = UploadJobRepository(session)
                 job = repo.create(
                     video_id=video_id,
-                    target="ipfs",
+                    target="filecoin",
                     status="uploading",
                     bytes_total=bytes_total,
                 )

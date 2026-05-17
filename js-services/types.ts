@@ -91,11 +91,27 @@ export interface SynapseUploadParams {
   onProgress?: boolean; // If true, emit progress notifications
 }
 
+export interface SynapseUploadCopy {
+  providerId?: string;
+  dataSetId?: string | number;
+  pieceId?: string | number;
+  role?: string;
+  retrievalUrl?: string;
+  serviceProvider?: string;
+}
+
 export interface SynapseUploadResult {
   cid: string;
+  pieceCid: string;
   size: number;
   uploadedAt: string;
   dealId?: string;
+  complete: boolean;
+  copyCount: number;
+  copies: SynapseUploadCopy[];
+  dataSetId?: string;
+  serviceProvider?: string;
+  catalogOwner?: string;
 }
 
 export interface SynapseUploadProgress {
@@ -106,11 +122,19 @@ export interface SynapseUploadProgress {
 
 export interface SynapseStatusParams {
   cid: string;
+  pieceCid?: string;
+  catalogOwner?: string;
 }
 
 export interface SynapseStatusResult {
   cid: string;
   status: 'pending' | 'active' | 'terminated' | 'unknown';
+  retrievable?: boolean;
+  retrievalUrl?: string;
+  pieceCid?: string;
+  dataSetId?: string;
+  serviceProvider?: string;
+  copyCount?: number;
   deals: SynapseDeal[];
 }
 
@@ -125,6 +149,9 @@ export interface SynapseDeal {
 export interface SynapseDownloadParams {
   cid: string;
   outputPath: string;
+  pieceCid?: string;
+  catalogOwner?: string;
+  timeoutMs?: number;
   onProgress?: boolean; // If true, emit progress notifications
 }
 

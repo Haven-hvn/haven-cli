@@ -212,6 +212,13 @@ const methods: MethodRegistry = {
     return await synapseWrapper.download(downloadParams);
   },
 
+  'synapse.verifyPieceRetrieval': async (params: unknown) => {
+    if (!synapseWrapper?.isConnected) {
+      throw new Error('Synapse not connected');
+    }
+    return await synapseWrapper.verifyPieceRetrieval(params as Record<string, unknown>);
+  },
+
   'synapse.createCar': async (params: unknown) => {
     if (!synapseWrapper?.isConnected) {
       throw new Error('Synapse not connected');

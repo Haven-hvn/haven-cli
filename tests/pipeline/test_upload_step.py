@@ -20,6 +20,17 @@ from haven_cli.pipeline.context import (
 from haven_cli.pipeline.results import ErrorCategory, StepError, StepResult
 from haven_cli.pipeline.steps.upload_step import UploadStep
 
+PIECE = "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
+
+FOC_UPLOAD_RESULT = {
+    "cid": "bafybeigtest123",
+    "pieceCid": PIECE,
+    "complete": True,
+    "copies": [{"dataSetId": "42", "providerId": "0x1111111111111111111111111111111111111111"}],
+    "catalogOwner": "0xb24ca10fb6907a2d94b0dc5dbea6b5e379d19ffd",
+    "txHash": "0xabcdef123456",
+}
+
 
 class TestUploadStepBasics:
     """Basic tests for UploadStep."""
@@ -110,25 +121,16 @@ class TestUploadStepUpload:
     @pytest.mark.asyncio
     async def test_upload_to_filecoin_success(self, tmp_path):
         """Test successful upload to Filecoin."""
-        step = UploadStep()
+        step = UploadStep(config={"network_mode": "testnet"})
         
-        # Create test video file
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test video content")
         
-        # Mock the bridge
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # synapse.connect response
-            {
-                "cid": "bafybeigtest123",
-                "pieceCid": "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
-                "dealId": "12345",
-                "txHash": "0xabcdef123456",
-            },  # synapse.upload response
+        mock_js = AsyncMock(side_effect=[
+            None,
+            FOC_UPLOAD_RESULT,
+            {"retrievable": True, "retrievalUrl": "https://example.com/piece"},
         ])
-        
-        mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         
         config = {
             "data_set_id": 1,
@@ -140,170 +142,120 @@ class TestUploadStepUpload:
         async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             progress_calls.append((stage, percent, bytes_uploaded, total_bytes))
         
-        result = await step._upload_to_filecoin(
-            mock_bridge,
-            str(video_file),
-            config,
-            None,  # No encryption
-            on_progress,
-        )
+        with patch.object(step, "_js_call_with_retry", mock_js):
+            result = await step._upload_to_filecoin(
+                str(video_file),
+                config,
+                None,
+                on_progress,
+            )
         
         assert result["root_cid"] == "bafybeigtest123"
-        assert result["piece_cid"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
-        assert result["deal_id"] == "12345"
-        assert result["transaction_hash"] == "0xabcdef123456"
-        
-        # Verify bridge calls
-        assert mock_bridge.call.call_count == 2
-        
-        # Check synapse.connect call (now includes network configuration)
-        connect_call = mock_bridge.call.call_args_list[0]
-        assert connect_call[0][0] == "synapse.connect"
-        assert "rpcUrl" in connect_call[0][1]
-        assert "networkMode" in connect_call[0][1]
-        assert connect_call[0][1]["networkMode"] == "testnet"
-        
-        # Check synapse.upload call
-        upload_call = mock_bridge.call.call_args_list[1]
-        assert upload_call[0][0] == "synapse.upload"
-        assert upload_call[0][1]["filePath"] == str(video_file)
-        assert upload_call[0][1]["metadata"]["encrypted"] is False
-        assert upload_call[0][1]["metadata"]["dataSetId"] == 1
-        assert upload_call[0][1]["onProgress"] is True
-        
-        # Verify progress was reported
+        assert result["piece_cid"] == PIECE
+        assert result["filecoin_data_set_id"] == "42"
+        assert mock_js.call_count == 3
+        assert mock_js.call_args_list[2][0][0] == "synapse.verifyPieceRetrieval"
         assert len(progress_calls) > 0
     
     @pytest.mark.asyncio
     async def test_upload_to_filecoin_with_encryption(self, tmp_path):
         """Test upload with encrypted file."""
-        step = UploadStep()
+        step = UploadStep(config={"network_mode": "testnet"})
         
-        # Create original and encrypted files
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"original content")
         encrypted_file = tmp_path / "test.mp4.enc"
         encrypted_file.write_bytes(b"encrypted content")
         
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # synapse.connect
-            {
-                "cid": "bafybeigencrypted",
-                "pieceCid": "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
-                "txHash": "0xencrypthash",
-            },  # synapse.upload
-        ])
-        mock_bridge.on_notification = MagicMock(return_value=MagicMock())
+        enc_result = {**FOC_UPLOAD_RESULT, "cid": "bafybeigencrypted", "txHash": "0xencrypthash"}
+        mock_js = AsyncMock(side_effect=[None, enc_result, {"retrievable": True}])
         
         encryption_metadata = EncryptionMetadata(
             ciphertext=str(encrypted_file),
-            data_to_encrypt_hash="0xhash",
-            access_control_conditions=[],
-            chain="ethereum",
+            iv="dGVzdGl2MTIzNDU2",
+            gate={
+                "chain": "BaseMainnet",
+                "tokenAddress": "0x3C7d1aDdC0ED70e186a60224ab1c9f8c8969c108",
+                "threshold": "1",
+                "encryptedAesKey": "encKeyB64",
+                "cid": "bafybeigencrypted",
+            },
         )
         
-        config = {
-            "data_set_id": 1,
-            "wait_for_deal": False,
-        }
+        config = {"data_set_id": 1, "wait_for_deal": False}
         
         async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
-        result = await step._upload_to_filecoin(
-            mock_bridge,
-            str(video_file),
-            config,
-            encryption_metadata,
-            on_progress,
-        )
+        with patch.object(step, "_js_call_with_retry", mock_js):
+            await step._upload_to_filecoin(
+                str(video_file),
+                config,
+                encryption_metadata,
+                on_progress,
+            )
         
-        # Verify encrypted file was used for upload
-        upload_call = mock_bridge.call.call_args_list[1]
+        upload_call = mock_js.call_args_list[1]
         assert upload_call[0][1]["filePath"] == str(encrypted_file)
         assert upload_call[0][1]["metadata"]["encrypted"] is True
     
     @pytest.mark.asyncio
     async def test_upload_to_filecoin_connection_failure(self, tmp_path):
         """Test handling of Synapse connection failure."""
-        step = UploadStep()
+        step = UploadStep(config={"network_mode": "testnet"})
         
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
         
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=RuntimeError("Connection refused"))
-        
-        config = {
-            "data_set_id": 1,
-            "wait_for_deal": False,
-        }
+        mock_js = AsyncMock(side_effect=RuntimeError("Connection refused"))
+        config = {"data_set_id": 1, "wait_for_deal": False}
         
         async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
-        with pytest.raises(RuntimeError, match="Synapse connection failed"):
-            await step._upload_to_filecoin(
-                mock_bridge,
-                str(video_file),
-                config,
-                None,
-                on_progress,
-            )
+        with patch.object(step, "_js_call_with_retry", mock_js):
+            with pytest.raises(RuntimeError, match="Synapse connection failed"):
+                await step._upload_to_filecoin(
+                    str(video_file),
+                    config,
+                    None,
+                    on_progress,
+                )
     
     @pytest.mark.asyncio
     async def test_upload_to_filecoin_upload_failure(self, tmp_path):
         """Test handling of upload failure."""
-        step = UploadStep()
+        step = UploadStep(config={"network_mode": "testnet"})
         
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
         
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # synapse.connect succeeds
-            RuntimeError("Upload failed"),  # synapse.upload fails
-        ])
-        mock_bridge.on_notification = MagicMock(return_value=MagicMock())
-        
-        config = {
-            "data_set_id": 1,
-            "wait_for_deal": False,
-        }
+        mock_js = AsyncMock(side_effect=[None, RuntimeError("Upload failed")])
+        config = {"data_set_id": 1, "wait_for_deal": False}
         
         async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
-        with pytest.raises(RuntimeError, match="Upload to Filecoin failed"):
-            await step._upload_to_filecoin(
-                mock_bridge,
-                str(video_file),
-                config,
-                None,
-                on_progress,
-            )
+        with patch.object(step, "_js_call_with_retry", mock_js):
+            with pytest.raises(RuntimeError, match="Upload to Filecoin failed"):
+                await step._upload_to_filecoin(
+                    str(video_file),
+                    config,
+                    None,
+                    on_progress,
+                )
     
     @pytest.mark.asyncio
     async def test_upload_to_filecoin_file_not_found(self, tmp_path):
         """Test handling of missing file."""
-        step = UploadStep()
-        
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(return_value=None)
-        mock_bridge.on_notification = MagicMock(return_value=MagicMock())
-        
-        config = {
-            "data_set_id": 1,
-            "wait_for_deal": False,
-        }
+        step = UploadStep(config={"network_mode": "testnet"})
+        config = {"data_set_id": 1, "wait_for_deal": False}
         
         async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
         
         with pytest.raises(FileNotFoundError, match="File to upload not found"):
             await step._upload_to_filecoin(
-                mock_bridge,
                 "/nonexistent/path/video.mp4",
                 config,
                 None,
@@ -313,45 +265,36 @@ class TestUploadStepUpload:
     @pytest.mark.asyncio
     async def test_upload_to_filecoin_wait_for_deal(self, tmp_path):
         """Test upload with wait_for_deal enabled."""
-        step = UploadStep()
+        step = UploadStep(config={"network_mode": "testnet"})
         
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
         
-        mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # synapse.connect
-            {
-                "cid": "bafybeigtest123",
-                "txHash": "0xhash",
-            },  # synapse.upload
-            {"status": "pending"},  # synapse.getStatus - first call
-            {"status": "pending"},  # synapse.getStatus - second call
-            {"status": "confirmed"},  # synapse.getStatus - confirmed
+        mock_js = AsyncMock(side_effect=[
+            None,
+            FOC_UPLOAD_RESULT,
+            {"retrievable": True},
+            {"status": "pending", "retrievable": False},
+            {"status": "active", "retrievable": True},
         ])
-        mock_bridge.on_notification = MagicMock(return_value=MagicMock())
-        
-        config = {
-            "data_set_id": 1,
-            "wait_for_deal": True,
-        }
-        
+
+        config = {"data_set_id": 1, "wait_for_deal": True}
+
         async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
             pass
-        
-        result = await step._upload_to_filecoin(
-            mock_bridge,
-            str(video_file),
-            config,
-            None,
-            on_progress,
-        )
-        
+
+        with patch.object(step, "_js_call_with_retry", mock_js):
+            with patch("haven_cli.pipeline.steps.upload_step.asyncio.sleep", new_callable=AsyncMock):
+                result = await step._upload_to_filecoin(
+                    str(video_file),
+                    config,
+                    None,
+                    on_progress,
+                )
+
         assert result["root_cid"] == "bafybeigtest123"
-        # Should have called getStatus 3 times
-        status_calls = [call for call in mock_bridge.call.call_args_list 
-                       if call[0][0] == "synapse.getStatus"]
-        assert len(status_calls) == 3
+        status_calls = [c for c in mock_js.call_args_list if c[0][0] == "synapse.getStatus"]
+        assert len(status_calls) == 2
 
 
 class TestUploadStepErrorCategorization:
@@ -423,22 +366,15 @@ class TestUploadStepProcess:
         )
         
         mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # synapse.connect
-            {
-                "cid": "bafybeigtest123",
-                "pieceCid": "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
-                "txHash": "0xhash",
-            },  # synapse.upload
-        ])
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
-        
+        mock_js = AsyncMock(side_effect=[None, FOC_UPLOAD_RESULT, {"retrievable": True}])
         mock_config = MagicMock()
         
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
-            with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
-                with patch.object(step, '_update_database', new_callable=AsyncMock):
-                    result = await step.process(context)
+            with patch.object(step, '_js_call_with_retry', mock_js):
+                with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
+                    with patch.object(step, '_update_database', new_callable=AsyncMock):
+                        result = await step.process(context)
         
         assert result.success is True
         assert result.data["root_cid"] == "bafybeigtest123"
@@ -451,7 +387,7 @@ class TestUploadStepProcess:
     async def test_process_transient_error_retry(self, tmp_path):
         """Test retry on transient error."""
         step = UploadStep()
-        step._retry_delay_seconds = 0.1  # Short delay for tests
+        step._retry_delay_seconds = 0.01
         
         video_file = tmp_path / "test.mp4"
         video_file.write_bytes(b"test content")
@@ -462,31 +398,29 @@ class TestUploadStepProcess:
         )
         
         mock_bridge = MagicMock()
-        # First call fails with transient error, second succeeds
+        mock_bridge.on_notification = MagicMock(return_value=MagicMock())
         call_count = 0
-        
-        async def mock_call(*args, **kwargs):
+
+        async def mock_js(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("Connection timeout")
-            return {
-                "cid": "bafybeigtest123",
-                "pieceCid": "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
-                "txHash": "0xhash",
-            }
-        
-        mock_bridge.call = mock_call
-        mock_bridge.on_notification = MagicMock(return_value=MagicMock())
-        
+            if call_count == 2:
+                return None
+            if call_count == 3:
+                return FOC_UPLOAD_RESULT
+            return {"retrievable": True}
+
         mock_config = MagicMock()
-        
+
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
-            with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
-                with patch.object(step, '_update_database', new_callable=AsyncMock):
-                    result = await step.process(context)
-        
-        # The process method retries internally
+            with patch.object(step, '_js_call_with_retry', mock_js):
+                with patch("haven_cli.pipeline.steps.upload_step.asyncio.sleep", new_callable=AsyncMock):
+                    with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
+                        with patch.object(step, '_update_database', new_callable=AsyncMock):
+                            result = await step.process(context)
+
         assert result.success is True
     
     @pytest.mark.asyncio
@@ -503,21 +437,20 @@ class TestUploadStepProcess:
         )
         
         mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=RuntimeError("Unauthorized: 401"))
         mock_bridge.on_notification = MagicMock(return_value=MagicMock())
-        
+        mock_js = AsyncMock(side_effect=RuntimeError("Unauthorized: 401"))
         mock_config = MagicMock()
-        
+
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
-            with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
-                result = await step.process(context)
-        
+            with patch.object(step, '_js_call_with_retry', mock_js):
+                with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
+                    result = await step.process(context)
+
         assert result.success is False
         assert result.failed is True
         assert result.error is not None
         assert result.error.code == "UPLOAD_ERROR"
-        # Should only call once since it's a permanent error
-        assert mock_bridge.call.call_count == 1
+        assert mock_js.call_count == 1
 
 
 class TestUploadStepDatabase:

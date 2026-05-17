@@ -321,6 +321,7 @@ class JSRuntimeMethods:
     SYNAPSE_UPLOAD = "synapse.upload"
     SYNAPSE_DOWNLOAD = "synapse.download"
     SYNAPSE_GET_STATUS = "synapse.getStatus"
+    SYNAPSE_VERIFY_PIECE = "synapse.verifyPieceRetrieval"
     SYNAPSE_GET_CID = "synapse.getCid"
     
     # Arkiv

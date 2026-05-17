@@ -33,9 +33,15 @@ import {
   type UploadExecutionResult,
 } from 'filecoin-pin/core/upload';
 import type { Synapse } from '@filoz/synapse-sdk';
+import {
+  asPieceCID,
+  chainResolver,
+  filbeamResolver,
+  resolvePieceUrl,
+} from '@filoz/synapse-core/piece';
 import { CID } from 'multiformats/cid';
 
-import { carFileByteLength, openCarReadableStream } from './car_stream.ts';
+import { carFileByteLength, openCarReadableStream, streamHttpResponseToFile } from './car_stream.ts';
 
 // Import pino Logger type
 import type { Logger } from 'npm:pino@^10.0.0';
@@ -217,6 +223,12 @@ export interface SynapseWrapper {
     params: Record<string, unknown>,
     onProgress?: DownloadProgressCallback
   ): Promise<SynapseDownloadResult>;
+  verifyPieceRetrieval(params: Record<string, unknown>): Promise<{
+    pieceCid: string;
+    retrievable: boolean;
+    retrievalUrl: string;
+    catalogOwner: string;
+  }>;
   createCar(params: Record<string, unknown>): Promise<SynapseCreateCarResult>;
   validateFileSize(
     fileSize: number,
@@ -271,12 +283,35 @@ function createLogger(): Logger {
 /**
  * Synapse SDK wrapper implementation using filecoin-pin.
  */
+const PIECE_CID_PREFIX = 'bafkzcib';
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 3_600_000;
+
+function isPieceCid(cid: string): boolean {
+  return cid.startsWith(PIECE_CID_PREFIX);
+}
+
+function assertFocUploadCommitted(uploadResult: UploadExecutionResult): void {
+  if (!uploadResult.complete) {
+    const failedCount = uploadResult.failedAttempts?.length ?? 0;
+    throw new Error(
+      `FOC upload incomplete (complete=false, failedAttempts=${failedCount}). ` +
+        'Wallet may lack tFIL/USDFC or PDP commit did not finish.'
+    );
+  }
+  const copies = uploadResult.copies ?? [];
+  if (copies.length === 0) {
+    throw new Error(
+      'FOC upload returned zero copies — piece was not committed to warm storage on FVM'
+    );
+  }
+}
+
 class SynapseWrapperImpl implements SynapseWrapper {
   private _isConnected = false;
   private _endpoint = '';
   private _privateKey = '';
   private _rpcUrl = '';
-  private _synapse: unknown = null;
+  private _synapse: Synapse | null = null;
   private _logger = createLogger();
 
   get isConnected(): boolean {
@@ -452,6 +487,65 @@ class SynapseWrapperImpl implements SynapseWrapper {
     };
   }
 
+  private async _ensureSynapseInitialized(
+    privateKey?: string,
+    rpcUrl?: string
+  ): Promise<Synapse> {
+    if (this._synapse) {
+      return this._synapse;
+    }
+
+    const key = privateKey ?? this._privateKey ?? Deno.env.get('HAVEN_PRIVATE_KEY') ?? '';
+    if (!key) {
+      throw new Error('HAVEN_PRIVATE_KEY is required for Synapse retrieval');
+    }
+
+    const normalizedPrivateKey = key.startsWith('0x') ? key : `0x${key}`;
+    const resolvedRpcUrl =
+      rpcUrl ??
+      this._rpcUrl ??
+      Deno.env.get('HAVEN_FILECOIN_RPC_URL') ??
+      Deno.env.get('FILECOIN_RPC_URL') ??
+      'wss://api.calibration.node.glif.io/rpc/v1';
+
+    const synapse = await initSynapse(
+      {
+        privateKey: normalizedPrivateKey as `0x${string}`,
+        rpcUrl: resolvedRpcUrl,
+      },
+      this._logger
+    );
+    this._synapse = synapse;
+    return synapse;
+  }
+
+  private _catalogOwnerAddress(synapse: Synapse, catalogOwner?: string): `0x${string}` {
+    const address = (catalogOwner ?? synapse.client.account.address).trim().toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(address)) {
+      throw new Error(`Invalid catalog owner address: ${catalogOwner ?? '(empty)'}`);
+    }
+    return address as `0x${string}`;
+  }
+
+  private async _resolvePieceRetrievalUrl(
+    synapse: Synapse,
+    pieceCid: string,
+    catalogOwner?: string
+  ): Promise<string> {
+    const parsed = asPieceCID(pieceCid);
+    if (parsed == null) {
+      throw new Error(`Invalid piece CID: ${pieceCid}`);
+    }
+
+    const owner = this._catalogOwnerAddress(synapse, catalogOwner);
+    return resolvePieceUrl({
+      address: owner,
+      client: synapse.client,
+      pieceCid: parsed,
+      resolvers: [filbeamResolver, chainResolver],
+    });
+  }
+
   async upload(
     params: Record<string, unknown>,
     onProgress?: ProgressCallback
@@ -617,12 +711,34 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 100,
       });
 
+      assertFocUploadCommitted(uploadResult);
+
       const pieceCid = uploadResult.pieceCid?.toString?.() ?? String(uploadResult.pieceCid ?? '');
-      if (!pieceCid || !pieceCid.startsWith('bafkzcib')) {
+      if (!pieceCid || !isPieceCid(pieceCid)) {
         throw new Error(
           `Filecoin Pin upload did not return a valid pieceCid (bafkzcib…); got: ${pieceCid || '(empty)'}`
         );
       }
+
+      const copies = uploadResult.copies ?? [];
+      const primaryCopy = copies[0] as Record<string, unknown> | undefined;
+      const dataSetId = String(primaryCopy?.dataSetId ?? '');
+      const serviceProvider = String(
+        primaryCopy?.serviceProvider ?? primaryCopy?.providerId ?? ''
+      );
+      const catalogOwner = synapse.client.account.address;
+
+      console.error(
+        '[synapse-wrapper] FOC upload committed:',
+        JSON.stringify({
+          pieceCid,
+          complete: uploadResult.complete,
+          copyCount: copies.length,
+          dataSetId,
+          serviceProvider,
+          catalogOwner,
+        })
+      );
 
       return {
         cid: rootCidString,
@@ -630,6 +746,23 @@ class SynapseWrapperImpl implements SynapseWrapper {
         size: carFileSize,
         uploadedAt: new Date().toISOString(),
         dealId: pieceCid,
+        complete: uploadResult.complete,
+        copyCount: copies.length,
+        copies: copies.map((copy) => {
+          const row = copy as Record<string, unknown>;
+          return {
+            providerId: row.providerId != null ? String(row.providerId) : undefined,
+            dataSetId: row.dataSetId as string | number | undefined,
+            pieceId: row.pieceId as string | number | undefined,
+            role: row.role as string | undefined,
+            retrievalUrl: row.retrievalUrl as string | undefined,
+            serviceProvider:
+              row.serviceProvider != null ? String(row.serviceProvider) : undefined,
+          };
+        }),
+        dataSetId,
+        serviceProvider,
+        catalogOwner,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -818,27 +951,94 @@ class SynapseWrapperImpl implements SynapseWrapper {
     }
 
     const statusParams = params as unknown as SynapseStatusParams;
-    const { cid } = statusParams;
+    const cid = String(statusParams.cid ?? '').trim();
+    const pieceCidParam = String(statusParams.pieceCid ?? '').trim();
+    const pieceCid = pieceCidParam || (isPieceCid(cid) ? cid : '');
 
-    if (!cid) {
-      throw new Error('Missing required parameter: cid');
+    if (!cid && !pieceCid) {
+      throw new Error('Missing required parameter: cid or pieceCid');
     }
 
-    // For now, return a simulated status since we need to implement
-    // the actual status check using filecoin-pin's APIs
-    // In production, this would query the Filecoin chain
+    if (!pieceCid) {
+      return {
+        cid,
+        status: 'unknown',
+        retrievable: false,
+        deals: [],
+      };
+    }
+
+    const synapse = await this._ensureSynapseInitialized();
+    try {
+      const retrievalUrl = await this._resolvePieceRetrievalUrl(
+        synapse,
+        pieceCid,
+        statusParams.catalogOwner
+      );
+      return {
+        cid: cid || pieceCid,
+        pieceCid,
+        status: 'active',
+        retrievable: true,
+        retrievalUrl,
+        deals: [],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this._logger.warn(`Piece not retrievable on FOC: ${message}`);
+      return {
+        cid: cid || pieceCid,
+        pieceCid,
+        status: 'pending',
+        retrievable: false,
+        deals: [],
+      };
+    }
+  }
+
+  async verifyPieceRetrieval(
+    params: Record<string, unknown>
+  ): Promise<{
+    pieceCid: string;
+    retrievable: boolean;
+    retrievalUrl: string;
+    catalogOwner: string;
+  }> {
+    if (!this._isConnected) {
+      throw new Error('Synapse not connected');
+    }
+
+    const pieceCid = String(params.pieceCid ?? '').trim();
+    if (!isPieceCid(pieceCid)) {
+      throw new Error(`verifyPieceRetrieval requires a piece CID (bafkzcib…), got: ${pieceCid}`);
+    }
+
+    const synapse = await this._ensureSynapseInitialized(
+      params.privateKey as string | undefined,
+      params.rpcUrl as string | undefined
+    );
+    const catalogOwner = this._catalogOwnerAddress(
+      synapse,
+      params.catalogOwner as string | undefined
+    );
+    const retrievalUrl = await this._resolvePieceRetrievalUrl(synapse, pieceCid, catalogOwner);
+
+    const timeoutMs = Number(params.timeoutMs ?? 120_000);
+    const headResponse = await fetch(retrievalUrl, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!headResponse.ok && headResponse.status !== 405) {
+      throw new Error(
+        `FOC retrieval probe failed: HTTP ${headResponse.status} for ${retrievalUrl}`
+      );
+    }
+
     return {
-      cid,
-      status: 'active',
-      deals: [
-        {
-          dealId: `deal_${cid.slice(-12)}`,
-          provider: 'f01234',
-          status: 'active',
-          startEpoch: 1000000,
-          endEpoch: 2000000,
-        },
-      ],
+      pieceCid,
+      retrievable: true,
+      retrievalUrl,
+      catalogOwner,
     };
   }
 
@@ -896,7 +1096,8 @@ class SynapseWrapperImpl implements SynapseWrapper {
     }
 
     const downloadParams = params as unknown as SynapseDownloadParams;
-    let { cid, outputPath } = downloadParams;
+    let { cid, outputPath, pieceCid, catalogOwner } = downloadParams;
+    const timeoutMs = Number(downloadParams.timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS);
 
     if (!cid) {
       throw new Error('Missing required parameter: cid');
@@ -905,16 +1106,74 @@ class SynapseWrapperImpl implements SynapseWrapper {
       throw new Error('Missing required parameter: outputPath');
     }
 
-    // Strip whitespace from CID (handle potential newline issues)
     cid = cid.trim();
+    const effectivePieceCid = (pieceCid ?? (isPieceCid(cid) ? cid : '')).trim();
 
-    // Validate CID format
+    if (effectivePieceCid) {
+      return this._downloadPieceFromFoc(
+        effectivePieceCid,
+        outputPath,
+        timeoutMs,
+        catalogOwner,
+        onProgress
+      );
+    }
+
     if (!isValidCid(cid)) {
       throw new Error(`Invalid CID format: ${cid}`);
     }
 
-    // Download from IPFS gateway or Filecoin retrieval
-    // For now, we use a public IPFS gateway
+    return this._downloadFromIpfsGateways(cid, outputPath, timeoutMs, onProgress);
+  }
+
+  private async _downloadPieceFromFoc(
+    pieceCid: string,
+    outputPath: string,
+    timeoutMs: number,
+    catalogOwner: string | undefined,
+    onProgress?: DownloadProgressCallback
+  ): Promise<SynapseDownloadResult> {
+    const synapse = await this._ensureSynapseInitialized();
+    const retrievalUrl = await this._resolvePieceRetrievalUrl(synapse, pieceCid, catalogOwner);
+
+    onProgress?.({ bytesDownloaded: 0, totalBytes: 0, percentage: 0 });
+
+    const response = await fetch(retrievalUrl, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) {
+      throw new Error(`FOC retrieval failed: HTTP ${response.status} ${response.statusText}`);
+    }
+
+    const bytesDownloaded = await streamHttpResponseToFile(response, outputPath, {
+      timeoutMs,
+      onProgress: ({ bytesDownloaded, totalBytes }) => {
+        const percentage =
+          totalBytes > 0 ? Math.round((bytesDownloaded / totalBytes) * 100) : 0;
+        onProgress?.({ bytesDownloaded, totalBytes, percentage });
+      },
+    });
+
+    onProgress?.({
+      bytesDownloaded,
+      totalBytes: bytesDownloaded,
+      percentage: 100,
+    });
+
+    return {
+      success: true,
+      size: bytesDownloaded,
+      cid: pieceCid,
+      outputPath,
+    };
+  }
+
+  private async _downloadFromIpfsGateways(
+    cid: string,
+    outputPath: string,
+    timeoutMs: number,
+    onProgress?: DownloadProgressCallback
+  ): Promise<SynapseDownloadResult> {
     const gateways = [
       `https://ipfs.io/ipfs/${cid}`,
       `https://gateway.ipfs.io/ipfs/${cid}`,
@@ -925,77 +1184,40 @@ class SynapseWrapperImpl implements SynapseWrapper {
 
     for (const gateway of gateways) {
       try {
-        onProgress?.({
-          bytesDownloaded: 0,
-          totalBytes: 0,
-          percentage: 0,
+        onProgress?.({ bytesDownloaded: 0, totalBytes: 0, percentage: 0 });
+
+        const response = await fetch(gateway, {
+          signal: AbortSignal.timeout(timeoutMs),
         });
 
-        const response = await fetch(gateway);
-        
         if (!response.ok) {
           throw new Error(`Gateway returned ${response.status}: ${response.statusText}`);
         }
 
-        const contentLength = response.headers.get('content-length');
-        const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
-
-        if (!response.body) {
-          throw new Error('Response has no body');
-        }
-
-        // Read the stream
-        const reader = response.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let bytesDownloaded = 0;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          
-          if (done) {
-            break;
-          }
-
-          chunks.push(value);
-          bytesDownloaded += value.length;
-
-          if (totalBytes > 0) {
-            onProgress?.({
-              bytesDownloaded,
-              totalBytes,
-              percentage: Math.round((bytesDownloaded / totalBytes) * 100),
-            });
-          }
-        }
-
-        // Combine chunks
-        const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-        const data = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          data.set(chunk, offset);
-          offset += chunk.length;
-        }
-
-        // Write to file
-        await Deno.writeFile(outputPath, data);
+        const bytesDownloaded = await streamHttpResponseToFile(response, outputPath, {
+          timeoutMs,
+          onProgress: ({ bytesDownloaded, totalBytes }) => {
+            const percentage =
+              totalBytes > 0 ? Math.round((bytesDownloaded / totalBytes) * 100) : 0;
+            onProgress?.({ bytesDownloaded, totalBytes, percentage });
+          },
+        });
 
         onProgress?.({
-          bytesDownloaded: data.length,
-          totalBytes: data.length,
+          bytesDownloaded,
+          totalBytes: bytesDownloaded,
           percentage: 100,
         });
 
         return {
           success: true,
-          size: data.length,
+          size: bytesDownloaded,
           cid,
           outputPath,
         };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         this._logger.warn(`Gateway failed: ${gateway}, error: ${lastError.message}`);
-        continue;
       }
     }
 

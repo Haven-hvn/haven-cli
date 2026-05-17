@@ -148,6 +148,9 @@ class UploadResult:
     root_cid: str = ""
     piece_cid: str = ""
     transaction_hash: str = ""
+    filecoin_data_set_id: Optional[str] = None
+    filecoin_uploaded_at: Optional[str] = None
+    filecoin_service_provider: Optional[str] = None
     encryption_metadata: Optional[EncryptionMetadata] = None
     vlm_json_cid: Optional[str] = None  # CID of the uploaded VLM AI.json file
     cid_hash: Optional[str] = None  # SHA256 hash of root_cid for deduplication

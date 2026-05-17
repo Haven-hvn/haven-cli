@@ -77,6 +77,11 @@ def download(
         "-f",
         help="Overwrite existing file if it exists.",
     ),
+    timeout: float = typer.Option(
+        3600.0,
+        "--timeout",
+        help="Download timeout in seconds (default 3600).",
+    ),
 ) -> None:
     """Download a file from Filecoin network.
     
@@ -152,13 +157,19 @@ def download(
                     # Download file from Filecoin
                     progress.update(task, description="Fetching from Filecoin...", advance=10)
                     
+                    download_params: dict[str, object] = {
+                        "cid": cid,
+                        "outputPath": str(output),
+                        "timeoutMs": int(timeout * 1000),
+                    }
+                    if cid.startswith("bafkzcib"):
+                        download_params["pieceCid"] = cid
+
                     result = await js_call(
                         JSRuntimeMethods.SYNAPSE_DOWNLOAD,
-                        {
-                            "cid": cid,
-                            "outputPath": str(output),
-                        },
+                        download_params,
                         max_retries=3,
+                        timeout=timeout + 60.0,
                     )
                     
                     progress.update(task, advance=50)
