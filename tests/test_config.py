@@ -557,6 +557,13 @@ class TestEnvironmentVariables:
         assert config.blockchain.effective_filecoin_network_mode == "testnet"
         assert config.blockchain.effective_arkiv_network_mode == "mainnet"
 
+    def test_env_filecoin_with_cdn(self, monkeypatch):
+        """Test HAVEN_FILECOIN_WITH_CDN env var."""
+        monkeypatch.setenv("HAVEN_FILECOIN_WITH_CDN", "false")
+        config = load_config()
+        assert config.pipeline.filecoin_with_cdn is False
+        assert os.environ.get("HAVEN_FILECOIN_WITH_CDN") == "false"
+
 
 class TestEnsureDirectories:
     """Test ensure_directories function."""

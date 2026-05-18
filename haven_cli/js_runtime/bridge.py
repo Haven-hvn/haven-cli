@@ -410,7 +410,8 @@ class JSRuntimeBridge:
         # This ensures the SDK uses the correct WebSocket endpoint (wss://) instead of HTTP
         filecoin_rpc_url = get_filecoin_rpc_url(self._config.network_mode)
         env["HAVEN_FILECOIN_RPC_URL"] = filecoin_rpc_url
-        
+        env.setdefault("HAVEN_FILECOIN_WITH_CDN", "true")
+
         if self._config.debug:
             env["DEBUG"] = "1"
         

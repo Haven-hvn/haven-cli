@@ -181,6 +181,8 @@ class PipelineConfig:
     # Set blockchain.filecoin_rpc_override to override
     # Note: Authentication via HAVEN_PRIVATE_KEY environment variable ONLY
     upload_enabled: bool = True
+    # Filecoin Onchain Cloud CDN (Filecoin Beam). Legacy withCDN=false uploads are not supported.
+    filecoin_with_cdn: bool = True
     
     # Blockchain Sync (Arkiv)
     # Note: Arkiv RPC is derived from blockchain.arkiv_network_mode (or network_mode)
@@ -319,7 +321,11 @@ def load_config(
     
     # Override with environment variables
     config = _load_from_env(config, env_prefix)
-    
+
+    os.environ["HAVEN_FILECOIN_WITH_CDN"] = (
+        "true" if config.pipeline.filecoin_with_cdn else "false"
+    )
+
     return config
 
 
@@ -504,6 +510,8 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
         config.pipeline.nft_contract = env_val
     if env_val := os.environ.get(f"{prefix}UPLOAD_ENABLED"):
         config.pipeline.upload_enabled = env_val.lower() in ("true", "1", "yes")
+    if env_val := os.environ.get(f"{prefix}FILECOIN_WITH_CDN"):
+        config.pipeline.filecoin_with_cdn = env_val.lower() not in ("false", "0", "no")
     # Note: Filecoin RPC endpoint is configured via blockchain.filecoin_rpc_override
     # or HAVEN_FILECOIN_RPC_OVERRIDE environment variable
     

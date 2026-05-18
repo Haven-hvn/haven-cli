@@ -3,7 +3,30 @@
  */
 import { assertEquals, assertRejects } from 'https://deno.land/std@0.200.0/testing/asserts.ts';
 import { CID } from 'multiformats/cid';
-import { createSynapseWrapper, isValidCid, formatBytes } from './synapse-wrapper.ts';
+import {
+  createSynapseWrapper,
+  filecoinWithCdnEnabled,
+  formatBytes,
+  isValidCid,
+} from './synapse-wrapper.ts';
+
+Deno.test('filecoinWithCdnEnabled defaults true unless env disables', () => {
+  const prev = Deno.env.get('HAVEN_FILECOIN_WITH_CDN');
+  try {
+    Deno.env.delete('HAVEN_FILECOIN_WITH_CDN');
+    assertEquals(filecoinWithCdnEnabled(), true);
+    Deno.env.set('HAVEN_FILECOIN_WITH_CDN', 'false');
+    assertEquals(filecoinWithCdnEnabled(), false);
+    Deno.env.set('HAVEN_FILECOIN_WITH_CDN', '0');
+    assertEquals(filecoinWithCdnEnabled(), false);
+  } finally {
+    if (prev === undefined) {
+      Deno.env.delete('HAVEN_FILECOIN_WITH_CDN');
+    } else {
+      Deno.env.set('HAVEN_FILECOIN_WITH_CDN', prev);
+    }
+  }
+});
 
 Deno.test('createSynapseWrapper creates a wrapper instance', () => {
   const wrapper = createSynapseWrapper();

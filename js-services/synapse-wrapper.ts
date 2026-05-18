@@ -38,6 +38,7 @@ import {
   chainResolver,
   filbeamResolver,
   resolvePieceUrl,
+  type resolvePieceUrl as ResolvePieceUrlTypes,
 } from '@filoz/synapse-core/piece';
 import { CID } from 'multiformats/cid';
 
@@ -286,6 +287,16 @@ function createLogger(): Logger {
 const PIECE_CID_PREFIX = 'bafkzcib';
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 3_600_000;
 
+/** New Haven uploads use Filecoin Beam (CDN). Set HAVEN_FILECOIN_WITH_CDN=false to disable. */
+export function filecoinWithCdnEnabled(): boolean {
+  const raw = (Deno.env.get('HAVEN_FILECOIN_WITH_CDN') ?? 'true').trim().toLowerCase();
+  return raw !== 'false' && raw !== '0' && raw !== 'no';
+}
+
+function pieceUrlResolvers(_synapse: Synapse): ResolvePieceUrlTypes.ResolverFnType[] {
+  return [filbeamResolver, chainResolver];
+}
+
 function isPieceCid(cid: string): boolean {
   return cid.startsWith(PIECE_CID_PREFIX);
 }
@@ -512,6 +523,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
       {
         privateKey: normalizedPrivateKey as `0x${string}`,
         rpcUrl: resolvedRpcUrl,
+        withCDN: filecoinWithCdnEnabled(),
       },
       this._logger
     );
@@ -542,7 +554,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
       address: owner,
       client: synapse.client,
       pieceCid: parsed,
-      resolvers: [filbeamResolver, chainResolver],
+      resolvers: pieceUrlResolvers(synapse),
     });
   }
 
@@ -612,6 +624,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
         {
           privateKey: normalizedPrivateKey as `0x${string}`,
           rpcUrl,
+          withCDN: filecoinWithCdnEnabled(),
         },
         this._logger,
       );

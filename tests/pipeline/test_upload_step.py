@@ -554,41 +554,43 @@ class TestUploadStepProgress:
         video_file.write_bytes(b"test content")
         
         mock_bridge = MagicMock()
-        mock_bridge.call = AsyncMock(side_effect=[
-            None,  # synapse.connect
-            {"cid": "bafybeigtest123"},  # synapse.upload
+        mock_js = AsyncMock(side_effect=[
+            None,
+            FOC_UPLOAD_RESULT,
+            {"retrievable": True, "retrievalUrl": "https://example.com/piece"},
         ])
-        
+
         # Track notification handler registration
         notification_handler = None
         unregister_mock = MagicMock()
-        
+
         def mock_on_notification(method, handler):
             nonlocal notification_handler
             if method == "synapse.uploadProgress":
                 notification_handler = handler
             return unregister_mock
-        
+
         mock_bridge.on_notification = mock_on_notification
-        
+
         mock_config = MagicMock()
-        
+
         context = PipelineContext(
             source_path=video_file,
             options={},
         )
-        
+
         # Mock _emit_event to capture progress events
         emitted_events = []
-        
+
         async def mock_emit_event(event_type, ctx, data):
             emitted_events.append((event_type, data))
-        
+
         with patch.object(step, '_get_js_bridge', return_value=mock_bridge):
-            with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
-                with patch.object(step, '_update_database', new_callable=AsyncMock):
-                    with patch.object(step, '_emit_event', mock_emit_event):
-                        result = await step.process(context)
+            with patch.object(step, '_js_call_with_retry', mock_js):
+                with patch("haven_cli.pipeline.steps.upload_step.get_config", return_value=mock_config):
+                    with patch.object(step, '_update_database', new_callable=AsyncMock):
+                        with patch.object(step, '_emit_event', mock_emit_event):
+                            result = await step.process(context)
         
         # Simulate a progress notification from the bridge
         if notification_handler:
