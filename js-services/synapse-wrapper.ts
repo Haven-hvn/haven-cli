@@ -752,10 +752,10 @@ class SynapseWrapperImpl implements SynapseWrapper {
           const row = copy as Record<string, unknown>;
           return {
             providerId: row.providerId != null ? String(row.providerId) : undefined,
-            dataSetId: row.dataSetId as string | number | undefined,
-            pieceId: row.pieceId as string | number | undefined,
-            role: row.role as string | undefined,
-            retrievalUrl: row.retrievalUrl as string | undefined,
+            dataSetId: row.dataSetId != null ? String(row.dataSetId) : undefined,
+            pieceId: row.pieceId != null ? String(row.pieceId) : undefined,
+            role: row.role != null ? String(row.role) : undefined,
+            retrievalUrl: row.retrievalUrl != null ? String(row.retrievalUrl) : undefined,
             serviceProvider:
               row.serviceProvider != null ? String(row.serviceProvider) : undefined,
           };

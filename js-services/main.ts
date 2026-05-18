@@ -17,6 +17,7 @@ import type {
   RuntimeStatus,
 } from './types.ts';
 import { ErrorCodes } from './types.ts';
+import { stringifyForRpc } from './json-safe.ts';
 import { createSynapseWrapper, type SynapseWrapper, InsufficientBalanceError } from './synapse-wrapper.ts';
 
 // ============================================================================
@@ -120,7 +121,7 @@ function extractBalanceInfo(error: unknown): { available?: string; required?: st
 }
 
 function sendResponse(response: JSONRPCResponse): void {
-  console.log(JSON.stringify(response));
+  console.log(stringifyForRpc(response));
 }
 
 function sendNotification(method: string, params?: unknown): void {
@@ -129,7 +130,7 @@ function sendNotification(method: string, params?: unknown): void {
     method,
     params: params as Record<string, unknown>,
   };
-  console.log(JSON.stringify(notification));
+  console.log(stringifyForRpc(notification));
 }
 
 // ============================================================================
