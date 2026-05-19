@@ -3,17 +3,20 @@
 This step synchronizes video metadata to the Arkiv blockchain,
 creating a permanent, queryable record of the archived content.
 It:
-1. Builds the Arkiv entity payload
-2. Checks for existing entities (update vs create)
-3. Submits transaction to Arkiv
-4. Records the entity key
+1. Requests attestation from Haven-AOL canister (for gated content)
+2. Builds the Arkiv entity payload
+3. Checks for existing entities (update vs create)
+4. Submits transaction to Arkiv
+5. Records the entity key
 
 The step is conditional and can be skipped via the arkiv_sync_enabled option.
 
 Task 12: Writes progress to SyncJob and PipelineSnapshot tables.
 """
 
+import hashlib
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -135,6 +138,9 @@ class SyncStep(ConditionalStep):
         })
         
         try:
+            # ── Attestation: request canister-signed proof for gated content ──
+            await self._request_attestation(context)
+            
             # Get Arkiv configuration
             arkiv_config = self._get_arkiv_config()
             
@@ -259,6 +265,68 @@ class SyncStep(ConditionalStep):
             network_mode=arkiv_mode,
         )
     
+    async def _request_attestation(self, context: PipelineContext) -> None:
+        """Request a canister-signed attestation for gated content.
+
+        The attestation proves the uploader held the required token at upload time.
+        It is stored in ``context.attestation`` and included in the Arkiv payload.
+
+        Attestation is non-blocking: failure logs a warning but does not abort
+        the sync step. The upload proceeds without attestation in that case.
+        """
+        # Only attest gated (encrypted) content
+        if not context.encryption_metadata:
+            return
+
+        from haven_cli.crypto.gate_metadata import is_gate_metadata
+
+        gate = context.encryption_metadata.gate
+        if not is_gate_metadata(gate):
+            return
+
+        # Need root CID to compute cid_hash
+        if not context.upload_result or not context.upload_result.root_cid:
+            logger.warning("Cannot attest: no root CID available yet")
+            return
+
+        # Need private key to sign EIP-712
+        private_key = os.environ.get("HAVEN_PRIVATE_KEY", "").strip()
+        if not private_key:
+            logger.warning("Cannot attest: HAVEN_PRIVATE_KEY not set")
+            return
+
+        cid_hash = hashlib.sha256(
+            context.upload_result.root_cid.encode()
+        ).hexdigest()
+
+        try:
+            from haven_cli.services.evm_utils import get_wallet_address_from_private_key
+            from haven_cli.services.haven_aol_icp import attest_holding
+
+            evm_address = get_wallet_address_from_private_key(private_key)
+
+            attestation = attest_holding(
+                private_key=private_key,
+                chain=gate["chain"],
+                token_address=gate["tokenAddress"],
+                threshold=int(gate.get("threshold", "1")),
+                cid_hash=cid_hash,
+                evm_address=evm_address,
+            )
+
+            context.attestation = attestation
+            logger.info(
+                "✅ Got attestation for gate_token=%s",
+                gate["tokenAddress"],
+            )
+
+        except Exception as exc:
+            # Attestation failure should NOT block upload — it's a social feature
+            logger.warning(
+                "⚠️ Attestation failed (upload will proceed without it): %s",
+                exc,
+            )
+
     async def _update_database(
         self,
         context: PipelineContext,

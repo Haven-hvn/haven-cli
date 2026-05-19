@@ -22,7 +22,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Protocol, Self, Type
+from typing import Any, Protocol, Self, Type
 
 from haven_cli.services.evm_utils import sign_gate_request_typed_data
 
@@ -50,7 +50,28 @@ type GateError = variant {
   InvalidSignature : text; NonceAlreadyUsed;
 };
 type GateResult = variant { ok : record { encrypted_key : blob; verification_key : blob }; err : GateError; };
-service : { requestDecryptionKey : (GateRequest) -> (GateResult); getVetKDPublicKey : () -> (blob) query; }
+type AttestRequest = record {
+  chain : Chain; tokenAddress : text; threshold : nat; cidHash : text; evmAddress : text;
+  nonce : nat; signature : blob; eip712ChainId : nat; eip712VerifyingContract : text;
+};
+type Attestation = record {
+  evmAddress : text; chain : Chain; tokenAddress : text; threshold : nat;
+  balanceAtCheck : nat; cidHash : text; timestamp : nat;
+};
+type AttestResult = variant {
+  ok : record { attestation : Attestation; signature : blob };
+  err : variant {
+    InsufficientBalance : record { required : nat; actual : nat };
+    InvalidAddress : text; InvalidThreshold; EvmRpcError : text; VetKDError : text;
+    InvalidSignature : text; NonceAlreadyUsed;
+  };
+};
+service : {
+  requestDecryptionKey : (GateRequest) -> (GateResult);
+  getVetKDPublicKey : () -> (blob) query;
+  attestHolding : (AttestRequest) -> (AttestResult);
+  getAttestationPublicKey : () -> (blob) query;
+}
 """
 
 
@@ -524,3 +545,221 @@ def request_decryption_key(
     if isinstance(gate_result, dict) and "err" in gate_result:
         raise RuntimeError(f"Haven-AOL requestDecryptionKey failed: {gate_result['err']}")
     raise RuntimeError("Unexpected GateResult payload")
+
+
+def _sign_attest_request(
+    *,
+    private_key: str,
+    evm_address: str,
+    cid_hash: str,
+    nonce: int,
+    chain_id: int,
+    verifying_contract: str,
+) -> bytes:
+    """Create EIP-712 signature for attestation request.
+
+    Uses the AttestRequest type hash (separate from GateRequest to prevent
+    cross-endpoint replay).
+
+    Args:
+        private_key: EVM private key (hex, with or without 0x prefix)
+        evm_address: Wallet address being attested
+        cid_hash: SHA-256 hash of content CID (hex string, 64 chars)
+        nonce: Replay-prevention nonce
+        chain_id: EIP-712 domain chain ID
+        verifying_contract: EIP-712 domain verifying contract address
+
+    Returns:
+        65-byte EIP-712 signature (r || s || v)
+    """
+    try:
+        from eth_account import Account
+        from eth_account.messages import encode_typed_data
+    except ImportError as exc:
+        raise RuntimeError(
+            "eth-account is required for EIP-712 signing. Install haven-cli[blockchain]."
+        ) from exc
+
+    domain = {
+        "name": "HavenAOL",
+        "chainId": chain_id,
+        "verifyingContract": verifying_contract,
+    }
+
+    types = {
+        "EIP712Domain": [
+            {"name": "name", "type": "string"},
+            {"name": "chainId", "type": "uint256"},
+            {"name": "verifyingContract", "type": "address"},
+        ],
+        "AttestRequest": [
+            {"name": "evmAddress", "type": "address"},
+            {"name": "cidHash", "type": "bytes32"},
+            {"name": "nonce", "type": "uint256"},
+        ],
+    }
+
+    message = {
+        "evmAddress": evm_address,
+        "cidHash": bytes.fromhex(cid_hash),
+        "nonce": nonce,
+    }
+
+    signable = encode_typed_data(
+        domain_data=domain,
+        message_types=types,
+        message_data=message,
+    )
+    normalized_key = private_key.strip()
+    if not normalized_key.startswith("0x"):
+        normalized_key = f"0x{normalized_key}"
+    signed = Account.sign_message(signable, normalized_key)
+    return signed.signature
+
+
+@dataclass(frozen=True)
+class AttestationResponse:
+    """Response from attestHolding — attestation data + canister signature."""
+
+    evm_address: str
+    chain: str
+    token_address: str
+    threshold: int
+    balance_at_check: int
+    cid_hash: str
+    timestamp: int
+    signature: str  # hex-encoded Ed25519 signature
+
+
+def attest_holding(
+    *,
+    private_key: str,
+    chain: str,
+    token_address: str,
+    threshold: int,
+    cid_hash: str,
+    evm_address: str,
+) -> dict[str, Any]:
+    """Request a canister-signed attestation of token holding.
+
+    The canister verifies EVM balance and returns a t-Schnorr/Ed25519 signed
+    attestation proving the wallet held the token at call time.
+
+    Args:
+        private_key: EVM private key for EIP-712 signing
+        chain: EVM chain name ("EthMainnet", "EthSepolia", etc.)
+        token_address: Token contract address (0x...)
+        threshold: Minimum balance required
+        cid_hash: SHA-256 hash of content CID (binds attestation to entity)
+        evm_address: Wallet address being attested
+
+    Returns:
+        Dict with attestation fields + signature (hex-encoded)
+
+    Raises:
+        RuntimeError: On canister error (insufficient balance, invalid sig, etc.)
+    """
+    if threshold < 0:
+        raise ValueError(
+            "Gate threshold must be >= 0 (Haven-AOL canister rejects negative values)"
+        )
+
+    cfg = load_haven_aol_icp_config()
+    eip712_chain_id = int(os.environ.get("HAVEN_AOL_EIP712_CHAIN_ID", "1"))
+    eip712_verifying_contract = os.environ.get("HAVEN_AOL_EIP712_VERIFYING_CONTRACT", "").strip()
+    if not eip712_verifying_contract:
+        raise RuntimeError("HAVEN_AOL_EIP712_VERIFYING_CONTRACT is required")
+
+    # Generate unique nonce
+    nonce = (int(time.time_ns()) << 64) | int.from_bytes(secrets.token_bytes(8), "big")
+
+    # Build EIP-712 signature for attestation request
+    eip712_signature = _sign_attest_request(
+        private_key=private_key,
+        evm_address=evm_address,
+        cid_hash=cid_hash,
+        nonce=nonce,
+        chain_id=eip712_chain_id,
+        verifying_contract=eip712_verifying_contract,
+    )
+
+    # Set up ICP agent
+    Agent, Canister, Client, Identity = _icp_sdk()
+
+    try:
+        pem = open(cfg.identity_pem_path, "r", encoding="utf-8").read()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to read ICP identity PEM at {cfg.identity_pem_path!r}"
+        ) from exc
+
+    identity = Identity.from_pem(pem)
+    if getattr(identity, "anonymous", False):
+        raise RuntimeError("Anonymous ICP identity is not allowed for Haven-AOL requests")
+
+    client = Client(url=cfg.host)
+    agent = Agent(identity, client)
+    canister = Canister(agent, HAVEN_AOL_CANISTER_ID, candid_str=HAVEN_AOL_DID)
+
+    # Map chain string to Candid variant
+    chain_variant = {chain: None}
+
+    attest_request = {
+        "chain": chain_variant,
+        "tokenAddress": token_address,
+        "threshold": threshold,
+        "cidHash": cid_hash,
+        "evmAddress": evm_address,
+        "nonce": nonce,
+        "signature": bytes(eip712_signature),
+        "eip712ChainId": eip712_chain_id,
+        "eip712VerifyingContract": eip712_verifying_contract,
+    }
+
+    verify = _icp_verify_certificate()
+
+    def _call():
+        return canister.attestHolding(attest_request, verify_certificate=verify)
+
+    response = _retry_on_transport_error(_call, context="attestHolding")
+    attest_result = _first_return_slot(response, context="attestHolding")
+
+    if isinstance(attest_result, dict) and "ok" in attest_result:
+        ok_record = attest_result["ok"]
+        if not isinstance(ok_record, dict) or "attestation" not in ok_record or "signature" not in ok_record:
+            raise RuntimeError(
+                f"Unexpected AttestResult ok shape: expected record with "
+                f"attestation and signature, got {type(ok_record).__name__}"
+            )
+
+        attestation = ok_record["attestation"]
+        signature_bytes = candid_blob_to_bytes(
+            ok_record["signature"], context="attestHolding signature"
+        )
+
+        # Extract chain name from Candid variant (e.g. {"EthMainnet": None} -> "EthMainnet")
+        result_chain = chain
+        if isinstance(attestation.get("chain"), dict):
+            result_chain = next(iter(attestation["chain"]))
+
+        return {
+            "evmAddress": attestation["evmAddress"],
+            "chain": result_chain,
+            "tokenAddress": attestation["tokenAddress"],
+            "threshold": attestation["threshold"],
+            "balanceAtCheck": attestation["balanceAtCheck"],
+            "cidHash": attestation["cidHash"],
+            "timestamp": attestation["timestamp"],
+            "signature": signature_bytes.hex(),
+        }
+
+    if isinstance(attest_result, dict) and "err" in attest_result:
+        err = attest_result["err"]
+        # Format error for human readability
+        if isinstance(err, dict):
+            err_variant = next(iter(err))
+            err_detail = err[err_variant]
+            raise RuntimeError(f"attestHolding failed: {err_variant}: {err_detail}")
+        raise RuntimeError(f"attestHolding failed: {err}")
+
+    raise RuntimeError("Unexpected AttestResult payload")

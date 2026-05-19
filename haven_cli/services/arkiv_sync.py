@@ -350,7 +350,22 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
     if context.analysis_result and context.analysis_result.analysis_model:
         attributes["analysis_model"] = context.analysis_result.analysis_model
     
-    # Created timestamp
+    # ── Project namespace + type (enables community feed filtering) ──
+    attributes["project"] = "haven"
+    attributes["type"] = "video"
+    
+    # ── Numeric timestamp for range queries ──
+    attributes["created_at_ts"] = int(datetime.now(timezone.utc).timestamp())
+    
+    # ── Gate info in attributes (enables community feed queries) ──
+    if context.encryption_metadata:
+        gate = context.encryption_metadata.gate
+        if is_gate_metadata(gate):
+            attributes["gate_chain"] = gate["chain"]
+            attributes["gate_token"] = gate["tokenAddress"]
+            attributes["gate_threshold"] = int(gate.get("threshold", "1"))
+    
+    # Created timestamp (ISO for backward compat)
     attributes["created_at"] = datetime.now(timezone.utc).isoformat()
     
     # Set updated_at (for new uploads, same as created_at)
@@ -447,6 +462,19 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
             segment_data["recording_session_id"] = context.segment_metadata.recording_session_id
         
         payload["segment_metadata"] = segment_data
+    
+    # ── Attestation (canister-signed holding proof) ──
+    if context.attestation:
+        payload["attestation"] = {
+            "evmAddress": context.attestation["evmAddress"],
+            "chain": context.attestation["chain"],
+            "tokenAddress": context.attestation["tokenAddress"],
+            "threshold": context.attestation["threshold"],
+            "balanceAtCheck": context.attestation["balanceAtCheck"],
+            "cidHash": context.attestation["cidHash"],
+            "timestamp": context.attestation["timestamp"],
+            "signature": context.attestation["signature"],  # hex-encoded t-Schnorr/Ed25519 sig
+        }
     
     return payload
 

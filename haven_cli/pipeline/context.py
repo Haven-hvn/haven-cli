@@ -200,6 +200,7 @@ class PipelineContext:
     cid_encryption_metadata: Optional[CidEncryptionMetadata] = None
     segment_metadata: Optional[SegmentMetadata] = None
     arkiv_entity_key: Optional[str] = None
+    attestation: Optional[Dict[str, Any]] = None  # Canister-signed holding proof
     errors: List[Dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
