@@ -18,6 +18,7 @@ from haven_cli.crypto.haven_aol_local import (
     _validate_transport_keypair_consistency,
     _vetkd_unwrap_aes_key,
 )
+from haven_cli.services.haven_aol_icp import DecryptionKeyResponse
 import haven_cli.crypto.haven_aol_local as haven_aol_local
 
 
@@ -203,11 +204,13 @@ def test_decrypt_bytes_performs_full_vetkd_chain(monkeypatch) -> None:
         cid="QmDecryptTest",
     )
 
-    # Mock the ICP service calls
-    monkeypatch.setattr(haven_aol_local, "get_vetkd_public_key_b64", lambda: "AQIDBA==")
+    # Mock the ICP service call (returns bundled response)
     monkeypatch.setattr(
         haven_aol_local, "request_decryption_key",
-        lambda **kwargs: b"\x01\x02\x03\x04"
+        lambda **kwargs: DecryptionKeyResponse(
+            encrypted_key=b"\x01\x02\x03\x04",
+            verification_key=b"\x01\x02\x03\x04",
+        )
     )
 
     # Mock the VetKD unwrap to return a known 32-byte AES key
@@ -244,10 +247,12 @@ def test_decrypt_bytes_fails_on_bad_ciphertext(monkeypatch) -> None:
         cid="QmDecryptFail",
     )
 
-    monkeypatch.setattr(haven_aol_local, "get_vetkd_public_key_b64", lambda: "AQIDBA==")
     monkeypatch.setattr(
         haven_aol_local, "request_decryption_key",
-        lambda **kwargs: b"\x01\x02\x03\x04"
+        lambda **kwargs: DecryptionKeyResponse(
+            encrypted_key=b"\x01\x02\x03\x04",
+            verification_key=b"\x01\x02\x03\x04",
+        )
     )
 
     fake_aes_key = os.urandom(32)
@@ -277,10 +282,12 @@ def test_decrypt_bytes_fails_on_short_ciphertext(monkeypatch) -> None:
         cid="QmShort",
     )
 
-    monkeypatch.setattr(haven_aol_local, "get_vetkd_public_key_b64", lambda: "AQIDBA==")
     monkeypatch.setattr(
         haven_aol_local, "request_decryption_key",
-        lambda **kwargs: b"\x01\x02\x03\x04"
+        lambda **kwargs: DecryptionKeyResponse(
+            encrypted_key=b"\x01\x02\x03\x04",
+            verification_key=b"\x01\x02\x03\x04",
+        )
     )
 
     fake_aes_key = os.urandom(32)
@@ -307,10 +314,12 @@ def test_decrypt_file_streaming_performs_full_chain(tmp_path, monkeypatch) -> No
         cid="QmStreamDecryptTest",
     )
 
-    monkeypatch.setattr(haven_aol_local, "get_vetkd_public_key_b64", lambda: "AQIDBA==")
     monkeypatch.setattr(
         haven_aol_local, "request_decryption_key",
-        lambda **kwargs: b"\x01\x02\x03\x04"
+        lambda **kwargs: DecryptionKeyResponse(
+            encrypted_key=b"\x01\x02\x03\x04",
+            verification_key=b"\x01\x02\x03\x04",
+        )
     )
 
     # Create a properly encrypted streaming file
@@ -364,10 +373,12 @@ def test_decrypt_file_streaming_fails_on_corrupt_chunk(tmp_path, monkeypatch) ->
         cid="QmCorruptChunk",
     )
 
-    monkeypatch.setattr(haven_aol_local, "get_vetkd_public_key_b64", lambda: "AQIDBA==")
     monkeypatch.setattr(
         haven_aol_local, "request_decryption_key",
-        lambda **kwargs: b"\x01\x02\x03\x04"
+        lambda **kwargs: DecryptionKeyResponse(
+            encrypted_key=b"\x01\x02\x03\x04",
+            verification_key=b"\x01\x02\x03\x04",
+        )
     )
 
     fake_aes_key = os.urandom(32)
@@ -481,10 +492,12 @@ def test_decrypt_file_streaming_rejects_reordered_chunks(tmp_path, monkeypatch) 
         cid="QmReorderTest",
     )
 
-    monkeypatch.setattr(haven_aol_local, "get_vetkd_public_key_b64", lambda: "AQIDBA==")
     monkeypatch.setattr(
         haven_aol_local, "request_decryption_key",
-        lambda **kwargs: b"\x01\x02\x03\x04"
+        lambda **kwargs: DecryptionKeyResponse(
+            encrypted_key=b"\x01\x02\x03\x04",
+            verification_key=b"\x01\x02\x03\x04",
+        )
     )
 
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -538,10 +551,12 @@ def test_decrypt_file_streaming_rejects_duplicated_chunks(tmp_path, monkeypatch)
         cid="QmDuplicateTest",
     )
 
-    monkeypatch.setattr(haven_aol_local, "get_vetkd_public_key_b64", lambda: "AQIDBA==")
     monkeypatch.setattr(
         haven_aol_local, "request_decryption_key",
-        lambda **kwargs: b"\x01\x02\x03\x04"
+        lambda **kwargs: DecryptionKeyResponse(
+            encrypted_key=b"\x01\x02\x03\x04",
+            verification_key=b"\x01\x02\x03\x04",
+        )
     )
 
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -591,10 +606,12 @@ def test_decrypt_file_streaming_rejects_oversized_chunk(tmp_path, monkeypatch) -
         cid="QmOversizedChunk",
     )
 
-    monkeypatch.setattr(haven_aol_local, "get_vetkd_public_key_b64", lambda: "AQIDBA==")
     monkeypatch.setattr(
         haven_aol_local, "request_decryption_key",
-        lambda **kwargs: b"\x01\x02\x03\x04"
+        lambda **kwargs: DecryptionKeyResponse(
+            encrypted_key=b"\x01\x02\x03\x04",
+            verification_key=b"\x01\x02\x03\x04",
+        )
     )
 
     fake_aes_key = os.urandom(32)

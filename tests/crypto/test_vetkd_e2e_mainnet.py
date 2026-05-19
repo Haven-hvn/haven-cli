@@ -61,8 +61,8 @@ type GateError = variant {
   InvalidAddress : text; InvalidThreshold; EvmRpcError : text; VetKDError : text;
   InvalidSignature : text; NonceAlreadyUsed;
 };
-type GateResult = variant { ok : blob; err : GateError; };
-service : { requestDecryptionKey : (GateRequest) -> (GateResult); getVetKDPublicKey : () -> (blob); }
+type GateResult = variant { ok : record { encrypted_key : blob; verification_key : blob }; err : GateError; };
+service : { requestDecryptionKey : (GateRequest) -> (GateResult); getVetKDPublicKey : () -> (blob) query; }
 """
 
 
@@ -272,8 +272,11 @@ def encrypted_vet_key(ic_canister, eip712_proof, transport_keypair):
         f"Unexpected GateResult: {gate_result}"
     )
 
-    raw = gate_result["ok"]
-    encrypted_key = candid_blob_to_bytes(raw, context="requestDecryptionKey ok")
+    ok_record = gate_result["ok"]
+    assert isinstance(ok_record, dict) and "encrypted_key" in ok_record, (
+        f"Unexpected GateResult ok shape: {ok_record}"
+    )
+    encrypted_key = candid_blob_to_bytes(ok_record["encrypted_key"], context="requestDecryptionKey encrypted_key")
     assert isinstance(encrypted_key, (bytes, bytearray)), (
         f"Expected bytes-like, got {type(encrypted_key)}"
     )

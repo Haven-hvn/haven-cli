@@ -49,9 +49,17 @@ type GateError = variant {
   InvalidAddress : text; InvalidThreshold; EvmRpcError : text; VetKDError : text;
   InvalidSignature : text; NonceAlreadyUsed;
 };
-type GateResult = variant { ok : blob; err : GateError; };
-service : { requestDecryptionKey : (GateRequest) -> (GateResult); getVetKDPublicKey : () -> (blob); }
+type GateResult = variant { ok : record { encrypted_key : blob; verification_key : blob }; err : GateError; };
+service : { requestDecryptionKey : (GateRequest) -> (GateResult); getVetKDPublicKey : () -> (blob) query; }
 """
+
+
+@dataclass(frozen=True)
+class DecryptionKeyResponse:
+    """Response from requestDecryptionKey — bundled encrypted key + verification key."""
+
+    encrypted_key: bytes
+    verification_key: bytes
 
 
 @dataclass(frozen=True)
@@ -427,8 +435,11 @@ def request_decryption_key(
     token_address: str,
     threshold: int,
     cid: str,
-) -> bytes:
+) -> DecryptionKeyResponse:
     """Request an encrypted derived key from Haven-AOL canister.
+
+    Returns a ``DecryptionKeyResponse`` containing both the encrypted derived
+    key and the verification key (bundled in the canister response).
 
     This performs an authenticated user call and EIP-712 signature proof.
 
@@ -496,8 +507,19 @@ def request_decryption_key(
     response = _retry_on_transport_error(_call, context="requestDecryptionKey")
     gate_result = _first_return_slot(response, context="requestDecryptionKey")
     if isinstance(gate_result, dict) and "ok" in gate_result:
-        return candid_blob_to_bytes(
-            gate_result["ok"], context="requestDecryptionKey ok"
+        ok_record = gate_result["ok"]
+        if not isinstance(ok_record, dict) or "encrypted_key" not in ok_record or "verification_key" not in ok_record:
+            raise RuntimeError(
+                f"Unexpected GateResult ok shape: expected record with "
+                f"encrypted_key and verification_key, got {type(ok_record).__name__}"
+            )
+        return DecryptionKeyResponse(
+            encrypted_key=candid_blob_to_bytes(
+                ok_record["encrypted_key"], context="requestDecryptionKey encrypted_key"
+            ),
+            verification_key=candid_blob_to_bytes(
+                ok_record["verification_key"], context="requestDecryptionKey verification_key"
+            ),
         )
     if isinstance(gate_result, dict) and "err" in gate_result:
         raise RuntimeError(f"Haven-AOL requestDecryptionKey failed: {gate_result['err']}")

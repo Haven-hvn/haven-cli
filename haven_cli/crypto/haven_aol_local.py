@@ -21,7 +21,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from haven_cli.services.haven_aol_icp import get_vetkd_public_key_b64, request_decryption_key
+from haven_cli.services.haven_aol_icp import get_vetkd_public_key_b64, request_decryption_key, DecryptionKeyResponse
 
 VALID_CHAINS = frozenset(
     {
@@ -242,11 +242,10 @@ def decrypt_bytes(
     """Decrypt payload from Haven-AOL metadata.
 
     Performs the full ICP VetKD decrypt chain:
-      1. Fetch verification key from canister
-      2. Request encrypted derived key from canister (with EVM proof)
-      3. Transport-unwrap the encrypted key using local secret
-      4. IBE-decrypt the AES key
-      5. AES-GCM decrypt the payload
+      1. Request encrypted derived key + verification key from canister (bundled)
+      2. Transport-unwrap the encrypted key using local secret
+      3. IBE-decrypt the AES key
+      4. AES-GCM decrypt the payload
 
     Args:
         ciphertext_bytes: Encrypted payload ([12-byte IV][ciphertext+tag]).
@@ -262,26 +261,26 @@ def decrypt_bytes(
     """
     derivation_input = compute_derivation_input(gate)
 
-    # Step 1: Fetch verification key
-    verification_key_b64 = get_vetkd_public_key_b64()
-
-    # Step 2: Request encrypted derived key from canister
-    encrypted_canister_key = request_decryption_key(
+    # Step 1: Request encrypted derived key + verification key (bundled response)
+    response = request_decryption_key(
         chain=gate.chain,
         token_address=gate.token_address,
         threshold=gate.threshold,
         cid=gate.cid,
     )
 
-    # Steps 3-4: Transport unwrap + IBE decrypt to get AES key
+    # Use bundled verification key (no separate getVetKDPublicKey call needed)
+    verification_key_b64 = base64.b64encode(response.verification_key).decode("ascii")
+
+    # Steps 2-3: Transport unwrap + IBE decrypt to get AES key
     aes_key = _vetkd_unwrap_aes_key(
-        encrypted_canister_key=encrypted_canister_key,
+        encrypted_canister_key=response.encrypted_key,
         verification_key_b64=verification_key_b64,
         derivation_input=derivation_input,
         encrypted_aes_key_b64=encrypted_key_b64,
     )
 
-    # Step 5: AES-GCM decrypt
+    # Step 4: AES-GCM decrypt
     if len(ciphertext_bytes) < 12:
         raise RuntimeError("Ciphertext too short (missing IV)")
 
@@ -411,11 +410,10 @@ def decrypt_file_streaming(
     """Decrypt a file encrypted by encrypt_file_streaming.
 
     Performs the full ICP VetKD decrypt chain:
-      1. Fetch verification key from canister
-      2. Request encrypted derived key from canister (with EVM proof)
-      3. Transport-unwrap the encrypted key using local secret
-      4. IBE-decrypt the AES key
-      5. AES-GCM decrypt each chunk
+      1. Request encrypted derived key + verification key from canister (bundled)
+      2. Transport-unwrap the encrypted key using local secret
+      3. IBE-decrypt the AES key
+      4. AES-GCM decrypt each chunk
 
     Args:
         input_path: Path to encrypted file.
@@ -430,20 +428,20 @@ def decrypt_file_streaming(
     """
     derivation_input = compute_derivation_input(gate)
 
-    # Step 1: Fetch verification key
-    verification_key_b64 = get_vetkd_public_key_b64()
-
-    # Step 2: Request encrypted derived key from canister
-    encrypted_canister_key = request_decryption_key(
+    # Step 1: Request encrypted derived key + verification key (bundled response)
+    response = request_decryption_key(
         chain=gate.chain,
         token_address=gate.token_address,
         threshold=gate.threshold,
         cid=gate.cid,
     )
 
-    # Steps 3-4: Transport unwrap + IBE decrypt to get AES key
+    # Use bundled verification key (no separate getVetKDPublicKey call needed)
+    verification_key_b64 = base64.b64encode(response.verification_key).decode("ascii")
+
+    # Steps 2-3: Transport unwrap + IBE decrypt to get AES key
     aes_key = _vetkd_unwrap_aes_key(
-        encrypted_canister_key=encrypted_canister_key,
+        encrypted_canister_key=response.encrypted_key,
         verification_key_b64=verification_key_b64,
         derivation_input=derivation_input,
         encrypted_aes_key_b64=encrypted_key_b64,

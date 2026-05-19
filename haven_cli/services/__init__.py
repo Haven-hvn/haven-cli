@@ -16,6 +16,7 @@ from haven_cli.services.speed_history import (
 )
 from haven_cli.services.haven_aol_icp import (
     HAVEN_AOL_CANISTER_ID,
+    DecryptionKeyResponse,
     HavenAolIcpConfig,
     load_haven_aol_icp_config,
     get_vetkd_public_key_b64,
@@ -30,6 +31,7 @@ __all__ = [
     "get_speed_history_service",
     "reset_speed_history_service",
     "HAVEN_AOL_CANISTER_ID",
+    "DecryptionKeyResponse",
     "HavenAolIcpConfig",
     "load_haven_aol_icp_config",
     "get_vetkd_public_key_b64",

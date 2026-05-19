@@ -7,6 +7,7 @@ import pytest
 from haven_cli.services.evm_utils import GateRequestProof, build_gate_request_typed_data
 from haven_cli.services.haven_aol_icp import (
     HAVEN_AOL_CANISTER_ID,
+    DecryptionKeyResponse,
     _classify_transport_error,
     _extract_transport_error_detail,
     _icp_max_retries,
@@ -224,7 +225,7 @@ def test_request_decryption_key_rejects_negative_threshold(monkeypatch, tmp_path
         )
 
 
-def test_request_decryption_key_ok_blob_as_int_list(monkeypatch, tmp_path) -> None:
+def test_request_decryption_key_ok_record(monkeypatch, tmp_path) -> None:
     pem_path = tmp_path / "id.pem"
     pem_path.write_text("pem")
     monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
@@ -260,7 +261,7 @@ def test_request_decryption_key_ok_blob_as_int_list(monkeypatch, tmp_path) -> No
             pass
 
         def requestDecryptionKey(self, gate_request: object, *, verify_certificate: bool = True) -> object:
-            return [{"ok": [7, 8, 9]}]
+            return [{"ok": {"encrypted_key": [7, 8, 9], "verification_key": [1, 2, 3]}}]
 
     monkeypatch.setattr(
         haven_aol_icp_module,
@@ -274,7 +275,9 @@ def test_request_decryption_key_ok_blob_as_int_list(monkeypatch, tmp_path) -> No
         threshold=1,
         cid="cid",
     )
-    assert out == b"\x07\x08\x09"
+    assert isinstance(out, DecryptionKeyResponse)
+    assert out.encrypted_key == b"\x07\x08\x09"
+    assert out.verification_key == b"\x01\x02\x03"
 
 
 def test_request_decryption_key_propagates_canister_err(monkeypatch, tmp_path) -> None:
@@ -436,7 +439,7 @@ def test_request_decryption_key_bad_response_shape(monkeypatch, tmp_path) -> Non
         )
 
 
-def test_request_decryption_key_ok_invalid_blob_type(monkeypatch, tmp_path) -> None:
+def test_request_decryption_key_ok_invalid_shape(monkeypatch, tmp_path) -> None:
     pem_path = tmp_path / "id.pem"
     pem_path.write_text("pem")
     monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
@@ -480,7 +483,7 @@ def test_request_decryption_key_ok_invalid_blob_type(monkeypatch, tmp_path) -> N
         lambda: (FakeAgent, FakeCanister, FakeClient, FakeIdentity),
     )
 
-    with pytest.raises(RuntimeError, match="requestDecryptionKey ok"):
+    with pytest.raises(RuntimeError, match="Unexpected GateResult ok shape"):
         request_decryption_key(
             chain="EthMainnet",
             token_address="0x" + "c" * 40,
