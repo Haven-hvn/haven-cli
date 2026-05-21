@@ -580,36 +580,33 @@ def _sign_attest_request(
             "eth-account is required for EIP-712 signing. Install haven-cli[blockchain]."
         ) from exc
 
-    domain = {
-        "name": "HavenAOL",
-        "chainId": chain_id,
-        "verifyingContract": verifying_contract,
+    full_message = {
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"},
+            ],
+            "AttestRequest": [
+                {"name": "evmAddress", "type": "address"},
+                {"name": "cidHash", "type": "bytes32"},
+                {"name": "nonce", "type": "uint256"},
+            ],
+        },
+        "primaryType": "AttestRequest",
+        "domain": {
+            "name": "HavenAOL",
+            "chainId": chain_id,
+            "verifyingContract": verifying_contract,
+        },
+        "message": {
+            "evmAddress": evm_address,
+            "cidHash": bytes.fromhex(cid_hash),
+            "nonce": nonce,
+        },
     }
 
-    types = {
-        "EIP712Domain": [
-            {"name": "name", "type": "string"},
-            {"name": "chainId", "type": "uint256"},
-            {"name": "verifyingContract", "type": "address"},
-        ],
-        "AttestRequest": [
-            {"name": "evmAddress", "type": "address"},
-            {"name": "cidHash", "type": "bytes32"},
-            {"name": "nonce", "type": "uint256"},
-        ],
-    }
-
-    message = {
-        "evmAddress": evm_address,
-        "cidHash": bytes.fromhex(cid_hash),
-        "nonce": nonce,
-    }
-
-    signable = encode_typed_data(
-        domain_data=domain,
-        message_types=types,
-        message_data=message,
-    )
+    signable = encode_typed_data(full_message=full_message)
     normalized_key = private_key.strip()
     if not normalized_key.startswith("0x"):
         normalized_key = f"0x{normalized_key}"
