@@ -271,8 +271,9 @@ class SyncStep(ConditionalStep):
         The attestation proves the uploader held the required token at upload time.
         It is stored in ``context.attestation`` and included in the Arkiv payload.
 
-        Attestation is non-blocking: failure logs a warning but does not abort
-        the sync step. The upload proceeds without attestation in that case.
+        Attestation is non-blocking: failure logs an error (with traceback) but
+        does not abort the sync step. The upload proceeds without attestation in
+        that case.
         """
         # Only attest gated (encrypted) content
         if not context.encryption_metadata:
@@ -300,31 +301,68 @@ class SyncStep(ConditionalStep):
         ).hexdigest()
 
         try:
+            threshold = int(gate.get("threshold", "1"))
+        except (TypeError, ValueError) as exc:
+            logger.error(
+                "Attestation skipped: invalid gate threshold %r (%s)",
+                gate.get("threshold"),
+                exc,
+            )
+            return
+
+        if threshold <= 0:
+            # Canister rejects threshold == 0 with InvalidThreshold; skip rather
+            # than make a doomed request.
+            logger.warning(
+                "Attestation skipped: gate threshold must be > 0 (got %d)",
+                threshold,
+            )
+            return
+
+        try:
             from haven_cli.services.evm_utils import get_wallet_address_from_private_key
             from haven_cli.services.haven_aol_icp import attest_holding
 
             evm_address = get_wallet_address_from_private_key(private_key)
+            if evm_address == "unknown":
+                logger.error(
+                    "Attestation skipped: could not derive EVM address from HAVEN_PRIVATE_KEY"
+                )
+                return
+
+            logger.info(
+                "Requesting attestation: chain=%s token=%s threshold=%d cidHash=%s evmAddress=%s",
+                gate["chain"],
+                gate["tokenAddress"],
+                threshold,
+                cid_hash,
+                evm_address,
+            )
 
             attestation = attest_holding(
                 private_key=private_key,
                 chain=gate["chain"],
                 token_address=gate["tokenAddress"],
-                threshold=int(gate.get("threshold", "1")),
+                threshold=threshold,
                 cid_hash=cid_hash,
                 evm_address=evm_address,
             )
 
             context.attestation = attestation
             logger.info(
-                "✅ Got attestation for gate_token=%s",
+                "Got attestation for gate_token=%s balance=%s",
                 gate["tokenAddress"],
+                attestation.get("balanceAtCheck"),
             )
 
         except Exception as exc:
-            # Attestation failure should NOT block upload — it's a social feature
-            logger.warning(
-                "⚠️ Attestation failed (upload will proceed without it): %s",
+            # Attestation failure should NOT block upload — but it should be
+            # loudly visible. Previously this used logger.warning without
+            # exc_info, which made canister rejections nearly invisible.
+            logger.error(
+                "Attestation failed (upload will proceed without it): %s",
                 exc,
+                exc_info=True,
             )
 
     async def _update_database(

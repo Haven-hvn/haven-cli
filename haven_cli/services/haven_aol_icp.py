@@ -656,10 +656,26 @@ def attest_holding(
     Raises:
         RuntimeError: On canister error (insufficient balance, invalid sig, etc.)
     """
-    if threshold < 0:
+    if threshold <= 0:
+        # The Haven-AOL canister returns #InvalidThreshold for threshold == 0
+        # and would reject negative values. Validate at the boundary so we
+        # produce a clear error rather than a confusing canister rejection.
         raise ValueError(
-            "Gate threshold must be >= 0 (Haven-AOL canister rejects negative values)"
+            "Gate threshold must be > 0 for attestation (canister returns InvalidThreshold for 0)"
         )
+
+    # Normalize cid_hash: strip optional 0x prefix; canister expects 64-char hex.
+    normalized_cid_hash = cid_hash.strip()
+    if normalized_cid_hash.startswith("0x") or normalized_cid_hash.startswith("0X"):
+        normalized_cid_hash = normalized_cid_hash[2:]
+    if len(normalized_cid_hash) != 64:
+        raise ValueError(
+            f"cid_hash must be 64 hex chars (got {len(normalized_cid_hash)})"
+        )
+    try:
+        bytes.fromhex(normalized_cid_hash)
+    except ValueError as exc:
+        raise ValueError(f"cid_hash is not valid hex: {exc}") from exc
 
     cfg = load_haven_aol_icp_config()
     eip712_chain_id = int(os.environ.get("HAVEN_AOL_EIP712_CHAIN_ID", "1"))
@@ -674,11 +690,16 @@ def attest_holding(
     eip712_signature = _sign_attest_request(
         private_key=private_key,
         evm_address=evm_address,
-        cid_hash=cid_hash,
+        cid_hash=normalized_cid_hash,
         nonce=nonce,
         chain_id=eip712_chain_id,
         verifying_contract=eip712_verifying_contract,
     )
+    if len(eip712_signature) != 65:
+        # Canister enforces exactly 65 bytes (r || s || v).
+        raise RuntimeError(
+            f"EIP-712 attestation signature must be 65 bytes (got {len(eip712_signature)})"
+        )
 
     # Set up ICP agent
     Agent, Canister, Client, Identity = _icp_sdk()
@@ -705,13 +726,26 @@ def attest_holding(
         "chain": chain_variant,
         "tokenAddress": token_address,
         "threshold": threshold,
-        "cidHash": cid_hash,
+        "cidHash": normalized_cid_hash,
         "evmAddress": evm_address,
         "nonce": nonce,
         "signature": bytes(eip712_signature),
         "eip712ChainId": eip712_chain_id,
         "eip712VerifyingContract": eip712_verifying_contract,
     }
+    logger.info(
+        "attestHolding: chain=%s token=%s threshold=%d nonce=%d evmAddress=%s "
+        "cidHash=%s eip712ChainId=%d eip712VerifyingContract=%s sig_len=%d",
+        chain,
+        token_address,
+        threshold,
+        nonce,
+        evm_address,
+        normalized_cid_hash,
+        eip712_chain_id,
+        eip712_verifying_contract,
+        len(eip712_signature),
+    )
 
     verify = _icp_verify_certificate()
 
@@ -730,33 +764,54 @@ def attest_holding(
             )
 
         attestation = ok_record["attestation"]
+        # icp-py-core may wrap a returned record value as {"type":..., "value":...};
+        # unwrap defensively so field access below is uniform.
+        attestation = candid_return_item_to_value(attestation)
+        if not isinstance(attestation, dict):
+            raise RuntimeError(
+                f"Unexpected attestation payload type {type(attestation).__name__}"
+            )
+
         signature_bytes = candid_blob_to_bytes(
             ok_record["signature"], context="attestHolding signature"
         )
 
         # Extract chain name from Candid variant (e.g. {"EthMainnet": None} -> "EthMainnet")
         result_chain = chain
-        if isinstance(attestation.get("chain"), dict):
-            result_chain = next(iter(attestation["chain"]))
+        attestation_chain = attestation.get("chain")
+        if isinstance(attestation_chain, dict) and attestation_chain:
+            result_chain = next(iter(attestation_chain))
+
+        # Nat fields come back as int from icp-py-core; coerce defensively in case
+        # they are returned as strings.
+        def _as_int(value: Any, field: str) -> int:
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                return int(value)
+            raise RuntimeError(
+                f"Unexpected type for attestation.{field}: {type(value).__name__}"
+            )
 
         return {
             "evmAddress": attestation["evmAddress"],
             "chain": result_chain,
             "tokenAddress": attestation["tokenAddress"],
-            "threshold": attestation["threshold"],
-            "balanceAtCheck": attestation["balanceAtCheck"],
+            "threshold": _as_int(attestation["threshold"], "threshold"),
+            "balanceAtCheck": _as_int(attestation["balanceAtCheck"], "balanceAtCheck"),
             "cidHash": attestation["cidHash"],
-            "timestamp": attestation["timestamp"],
+            "timestamp": _as_int(attestation["timestamp"], "timestamp"),
             "signature": signature_bytes.hex(),
         }
 
     if isinstance(attest_result, dict) and "err" in attest_result:
         err = attest_result["err"]
-        # Format error for human readability
-        if isinstance(err, dict):
+        # Unwrap icp-py-core's {"type": ..., "value": ...} wrapping if present.
+        err = candid_return_item_to_value(err)
+        if isinstance(err, dict) and err:
             err_variant = next(iter(err))
             err_detail = err[err_variant]
-            raise RuntimeError(f"attestHolding failed: {err_variant}: {err_detail}")
-        raise RuntimeError(f"attestHolding failed: {err}")
+            raise RuntimeError(f"attestHolding failed: {err_variant}: {err_detail!r}")
+        raise RuntimeError(f"attestHolding failed: {err!r}")
 
-    raise RuntimeError("Unexpected AttestResult payload")
+    raise RuntimeError(f"Unexpected AttestResult payload: {attest_result!r}")

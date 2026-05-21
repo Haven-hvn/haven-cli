@@ -12,6 +12,8 @@ from haven_cli.services.haven_aol_icp import (
     _extract_transport_error_detail,
     _icp_max_retries,
     _icp_retry_base_delay,
+    _sign_attest_request,
+    attest_holding,
     candid_blob_to_bytes,
     candid_return_item_to_value,
     get_vetkd_public_key_b64,
@@ -783,3 +785,182 @@ def test_get_vetkd_public_key_retries_exhausted(monkeypatch, tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="after 3 attempt"):
         get_vetkd_public_key_b64()
+
+
+# ---------------------------------------------------------------------------
+# Tests for attest_holding (canister-signed attestation)
+# ---------------------------------------------------------------------------
+
+
+_ATTEST_TEST_PRIVATE_KEY = "0x" + "11" * 32
+_ATTEST_TEST_CID_HASH = "ab" * 32
+_ATTEST_TEST_VERIFYING_CONTRACT = "0x" + "00" * 20
+
+
+def _attest_env(monkeypatch, tmp_path) -> None:
+    pem_path = tmp_path / "id.pem"
+    pem_path.write_text("pem")
+    monkeypatch.setenv("HAVEN_ICP_IDENTITY_PEM_PATH", str(pem_path))
+    monkeypatch.setenv("HAVEN_AOL_EIP712_CHAIN_ID", "1")
+    monkeypatch.setenv("HAVEN_AOL_EIP712_VERIFYING_CONTRACT", _ATTEST_TEST_VERIFYING_CONTRACT)
+
+
+def _install_fake_attest_canister(monkeypatch, attest_response):
+    class FakeIdentity:
+        anonymous = False
+
+        @staticmethod
+        def from_pem(pem: str):
+            return FakeIdentity()
+
+    class FakeClient:
+        def __init__(self, url: str = "") -> None:
+            self.url = url
+
+    class FakeAgent:
+        def __init__(self, identity, client):
+            self.identity = identity
+            self.client = client
+
+    class FakeCanister:
+        def __init__(self, agent, canister_id, candid_str=None):
+            self.last_request = None
+
+        def attestHolding(self, req, *, verify_certificate=True):
+            self.last_request = req
+            return attest_response
+
+    monkeypatch.setattr(
+        haven_aol_icp_module,
+        "_import_icp_core",
+        lambda: (FakeAgent, FakeCanister, FakeClient, FakeIdentity),
+    )
+
+
+def test_sign_attest_request_returns_65_byte_signature() -> None:
+    sig = _sign_attest_request(
+        private_key=_ATTEST_TEST_PRIVATE_KEY,
+        evm_address="0x" + "aa" * 20,
+        cid_hash=_ATTEST_TEST_CID_HASH,
+        nonce=42,
+        chain_id=1,
+        verifying_contract=_ATTEST_TEST_VERIFYING_CONTRACT,
+    )
+    assert len(sig) == 65
+    # Last byte is the EIP-155 recovery id; backend requires 27 or 28.
+    assert sig[-1] in (27, 28)
+
+
+def test_attest_holding_rejects_zero_threshold(monkeypatch, tmp_path) -> None:
+    _attest_env(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="threshold must be > 0"):
+        attest_holding(
+            private_key=_ATTEST_TEST_PRIVATE_KEY,
+            chain="EthMainnet",
+            token_address="0x" + "c" * 40,
+            threshold=0,
+            cid_hash=_ATTEST_TEST_CID_HASH,
+            evm_address="0x" + "aa" * 20,
+        )
+
+
+def test_attest_holding_rejects_bad_cid_hash_length(monkeypatch, tmp_path) -> None:
+    _attest_env(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="cid_hash must be 64 hex chars"):
+        attest_holding(
+            private_key=_ATTEST_TEST_PRIVATE_KEY,
+            chain="EthMainnet",
+            token_address="0x" + "c" * 40,
+            threshold=1,
+            cid_hash="abcd",
+            evm_address="0x" + "aa" * 20,
+        )
+
+
+def test_attest_holding_strips_0x_from_cid_hash(monkeypatch, tmp_path) -> None:
+    _attest_env(monkeypatch, tmp_path)
+    _install_fake_attest_canister(
+        monkeypatch,
+        attest_response=[
+            {
+                "ok": {
+                    "attestation": {
+                        "evmAddress": "0x" + "aa" * 20,
+                        "chain": {"EthMainnet": None},
+                        "tokenAddress": "0x" + "c" * 40,
+                        "threshold": 1,
+                        "balanceAtCheck": 5,
+                        "cidHash": _ATTEST_TEST_CID_HASH,
+                        "timestamp": 1700000000,
+                    },
+                    "signature": [1, 2, 3],
+                }
+            }
+        ],
+    )
+
+    out = attest_holding(
+        private_key=_ATTEST_TEST_PRIVATE_KEY,
+        chain="EthMainnet",
+        token_address="0x" + "c" * 40,
+        threshold=1,
+        cid_hash="0x" + _ATTEST_TEST_CID_HASH,
+        evm_address="0x" + "aa" * 20,
+    )
+    assert out["cidHash"] == _ATTEST_TEST_CID_HASH
+    assert out["signature"] == "010203"
+    assert out["balanceAtCheck"] == 5
+    assert out["chain"] == "EthMainnet"
+
+
+def test_attest_holding_surfaces_canister_err(monkeypatch, tmp_path) -> None:
+    _attest_env(monkeypatch, tmp_path)
+    _install_fake_attest_canister(
+        monkeypatch,
+        attest_response=[{"err": {"InvalidSignature": "ecrecover failed"}}],
+    )
+
+    with pytest.raises(RuntimeError, match="InvalidSignature.*ecrecover"):
+        attest_holding(
+            private_key=_ATTEST_TEST_PRIVATE_KEY,
+            chain="EthMainnet",
+            token_address="0x" + "c" * 40,
+            threshold=1,
+            cid_hash=_ATTEST_TEST_CID_HASH,
+            evm_address="0x" + "aa" * 20,
+        )
+
+
+def test_attest_holding_surfaces_insufficient_balance(monkeypatch, tmp_path) -> None:
+    _attest_env(monkeypatch, tmp_path)
+    _install_fake_attest_canister(
+        monkeypatch,
+        attest_response=[
+            {"err": {"InsufficientBalance": {"required": 1, "actual": 0}}}
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="InsufficientBalance"):
+        attest_holding(
+            private_key=_ATTEST_TEST_PRIVATE_KEY,
+            chain="EthMainnet",
+            token_address="0x" + "c" * 40,
+            threshold=1,
+            cid_hash=_ATTEST_TEST_CID_HASH,
+            evm_address="0x" + "aa" * 20,
+        )
+
+
+def test_attest_holding_unexpected_payload(monkeypatch, tmp_path) -> None:
+    _attest_env(monkeypatch, tmp_path)
+    _install_fake_attest_canister(monkeypatch, attest_response=["unexpected"])
+
+    with pytest.raises(RuntimeError, match="Unexpected AttestResult payload"):
+        attest_holding(
+            private_key=_ATTEST_TEST_PRIVATE_KEY,
+            chain="EthMainnet",
+            token_address="0x" + "c" * 40,
+            threshold=1,
+            cid_hash=_ATTEST_TEST_CID_HASH,
+            evm_address="0x" + "aa" * 20,
+        )
