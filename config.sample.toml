@@ -89,6 +89,15 @@ max_concurrent_videos = 4
 retry_attempts = 3
 retry_delay = 5.0
 
+# Batch Sync Settings
+# When enabled, Haven-AOL attestation and Arkiv entity creation are batched
+# in the background instead of running inline after each upload.
+# Upload throughput is unaffected — only the post-upload sync is deferred.
+batch_sync_enabled = false
+batch_sync_size = 10              # Number of videos accumulated before a batch flush
+batch_sync_flush_timeout = 30.0   # Seconds before a partial batch is flushed
+batch_sync_max_pending = 50       # Backpressure threshold (advisory)
+
 # Multiplexer endpoints configuration (TOML array of tables)
 # This MUST come after all other [pipeline] keys
 # Default: local LLM server at localhost:1234/v1

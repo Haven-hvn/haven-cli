@@ -195,6 +195,14 @@ class PipelineConfig:
     retry_attempts: int = 3
     retry_delay: float = 5.0
     
+    # Batch Sync (accumulate uploads, attest + create entities in batches)
+    # When enabled, attestation and Arkiv entity creation are deferred and
+    # performed in configurable batches rather than per-video inline.
+    batch_sync_enabled: bool = False
+    batch_sync_size: int = 10          # Number of videos per batch
+    batch_sync_flush_timeout: float = 30.0  # Seconds before partial-batch flush
+    batch_sync_max_pending: int = 50   # Max buffered items (backpressure threshold)
+    
     # Cleanup (remove local files after successful upload)
     cleanup_enabled: bool = False
 
@@ -523,6 +531,25 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     if env_val := os.environ.get(f"{prefix}CLEANUP_ENABLED"):
         config.pipeline.cleanup_enabled = env_val.lower() in ("true", "1", "yes")
     
+    # Batch sync settings
+    if env_val := os.environ.get(f"{prefix}BATCH_SYNC_ENABLED"):
+        config.pipeline.batch_sync_enabled = env_val.lower() in ("true", "1", "yes")
+    if env_val := os.environ.get(f"{prefix}BATCH_SYNC_SIZE"):
+        try:
+            config.pipeline.batch_sync_size = int(env_val)
+        except ValueError:
+            pass
+    if env_val := os.environ.get(f"{prefix}BATCH_SYNC_FLUSH_TIMEOUT"):
+        try:
+            config.pipeline.batch_sync_flush_timeout = float(env_val)
+        except ValueError:
+            pass
+    if env_val := os.environ.get(f"{prefix}BATCH_SYNC_MAX_PENDING"):
+        try:
+            config.pipeline.batch_sync_max_pending = int(env_val)
+        except ValueError:
+            pass
+    
     # Scheduler settings
     if env_val := os.environ.get(f"{prefix}SCHEDULER_ENABLED"):
         config.scheduler.enabled = env_val.lower() in ("true", "1", "yes")
@@ -669,6 +696,12 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f"cleanup_enabled = {str(config.pipeline.cleanup_enabled).lower()}",
         f"max_concurrent_videos = {config.pipeline.max_concurrent_videos}",
         f"retry_attempts = {config.pipeline.retry_attempts}",
+        "",
+        "# Batch Sync — accumulate uploads and attest + create Arkiv entities in batches",
+        f"batch_sync_enabled = {str(config.pipeline.batch_sync_enabled).lower()}",
+        f"batch_sync_size = {config.pipeline.batch_sync_size}",
+        f"batch_sync_flush_timeout = {config.pipeline.batch_sync_flush_timeout}",
+        f"batch_sync_max_pending = {config.pipeline.batch_sync_max_pending}",
         "",
         "[scheduler]",
         f"enabled = {str(config.scheduler.enabled).lower()}",

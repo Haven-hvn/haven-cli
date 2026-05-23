@@ -35,6 +35,12 @@ VALID_CHAINS = frozenset(
 
 _TOKEN_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
+# Module-level cache for the VetKD derived public key (BLS12-381 G2 point).
+# This key is constant for the process lifetime — it depends only on
+# master_key + canister_id + context("accessol_v1") and does not vary per
+# file, CID, or gate configuration. Process restart naturally clears.
+_cached_derived_public_key: bytes | None = None
+
 
 @dataclass(frozen=True)
 class GateParams:
@@ -512,6 +518,34 @@ def decrypt_file_streaming(
             expected_chunk_index += 1
 
 
+def _get_or_cache_derived_public_key() -> bytes:
+    """Return the cached VetKD derived public key, fetching on first call.
+
+    The key is constant for the process lifetime (depends only on
+    master_key + canister_id + context). Caches the deserialized bytes
+    to avoid both redundant ICP calls and redundant deserialization.
+    """
+    global _cached_derived_public_key
+    if _cached_derived_public_key is not None:
+        return _cached_derived_public_key
+
+    try:
+        import vetkd_py
+    except ImportError as exc:
+        raise RuntimeError(
+            "vetkd_py package is required for Haven-AOL IBE encryption. "
+            "Install it from the vetkd_py/ directory: pip install ./vetkd_py"
+        ) from exc
+
+    verification_key_b64 = get_vetkd_public_key_b64()
+    verification_key_bytes = base64.b64decode(verification_key_b64)
+    derived_public_key = vetkd_py.deserialize_derived_public_key(verification_key_bytes)
+
+    _cached_derived_public_key = derived_public_key
+    logger.debug("VetKD derived public key cached (first fetch)")
+    return derived_public_key
+
+
 def _ibe_encrypt_aes_key(aes_key: bytes, derivation_input: bytes) -> bytes:
     """Encrypt AES key using Haven-AOL IBE verification key.
 
@@ -531,13 +565,7 @@ def _ibe_encrypt_aes_key(aes_key: bytes, derivation_input: bytes) -> bytes:
             "Install it from the vetkd_py/ directory: pip install ./vetkd_py"
         ) from exc
 
-    verification_key_b64 = get_vetkd_public_key_b64()
-    verification_key_bytes = base64.b64decode(verification_key_b64)
-
-    # Validate the verification key from the canister and use it as the
-    # derived public key. This is the normal runtime path — the canister
-    # returns the fully-derived key so we just validate it.
-    derived_public_key = vetkd_py.deserialize_derived_public_key(verification_key_bytes)
+    derived_public_key = _get_or_cache_derived_public_key()
 
     return vetkd_py.ibe_encrypt(
         derived_public_key_bytes=derived_public_key,

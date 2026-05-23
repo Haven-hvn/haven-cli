@@ -422,7 +422,7 @@ class PipelineBuilder:
     def with_default_steps(self) -> "PipelineBuilder":
         """Add all default pipeline steps.
         
-        Adds: ingest → analyze → encrypt → upload → sync → cleanup
+        Adds: ingest → analyze → encrypt → upload → cleanup → sync
         
         Returns:
             Self for method chaining
@@ -433,7 +433,25 @@ class PipelineBuilder:
             .with_analysis()
             .with_encryption()
             .with_upload()
+            .with_cleanup()
             .with_sync()
+        )
+    
+    def with_upload_phase_steps(self) -> "PipelineBuilder":
+        """Add upload-phase-only steps (no sync).
+        
+        Registers: ingest → analyze → encrypt → upload → cleanup
+        Sync is handled by BatchSyncProcessor via FlushQueue.
+        
+        Returns:
+            Self for method chaining
+        """
+        return (
+            self
+            .with_ingest()
+            .with_analysis()
+            .with_encryption()
+            .with_upload()
             .with_cleanup()
         )
     
@@ -520,7 +538,49 @@ def create_default_pipeline(
     builder.with_analysis(enabled=vlm_enabled)
     builder.with_encryption(enabled=encryption_enabled)
     builder.with_upload() if upload_enabled else None  # Upload step is always added but can be skipped via context
-    builder.with_sync(enabled=sync_enabled)
     builder.with_cleanup(enabled=cleanup_enabled)
+    builder.with_sync(enabled=sync_enabled)
     
     return builder.build()
+
+
+def create_batched_pipeline(
+    max_concurrent: int = 1,
+    batch_size: int = 10,
+    config: Optional[Dict[str, Any]] = None,
+) -> tuple["PipelineManager", "BatchAccumulator", "FlushQueue"]:
+    """Create a pipeline with batched background sync.
+
+    Returns:
+        - PipelineManager configured for upload-phase only
+        - BatchAccumulator for collecting completed contexts
+        - FlushQueue running BatchSyncProcessor in background
+    """
+    from haven_cli.pipeline.batch_accumulator import BatchAccumulator
+    from haven_cli.pipeline.batch_sync import BatchSyncProcessor
+    from haven_cli.pipeline.flush_queue import FlushQueue
+    from haven_cli.services.arkiv_sync import ArkivSyncConfig, build_arkiv_config
+
+    builder = PipelineBuilder().with_max_concurrent(max_concurrent)
+    if config:
+        builder.with_config(config)
+    builder.with_upload_phase_steps()
+    manager = builder.build()
+
+    accumulator = BatchAccumulator(batch_size=batch_size)
+
+    # Build Arkiv config from environment/config
+    arkiv_config = build_arkiv_config(
+        private_key=(config or {}).get("arkiv_private_key"),
+        rpc_url=(config or {}).get("arkiv_rpc_url"),
+        enabled=(config or {}).get("arkiv_sync_enabled", True),
+    )
+
+    processor = BatchSyncProcessor(
+        arkiv_config=arkiv_config,
+        private_key=(config or {}).get("arkiv_private_key"),
+    )
+
+    queue: FlushQueue = FlushQueue(processor=processor)
+
+    return manager, accumulator, queue

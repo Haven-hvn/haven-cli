@@ -1169,3 +1169,125 @@ class TestArkivSyncClient:
         with patch("builtins.__import__", side_effect=ImportError("No module named 'arkiv'")):
             with pytest.raises(ImportError, match="arkiv package is required"):
                 client._get_client()
+
+
+
+# ---------------------------------------------------------------------------
+# Tests for batch_sync_contexts
+# ---------------------------------------------------------------------------
+
+
+class TestBatchSyncContexts:
+    """Tests for ArkivSyncClient.batch_sync_contexts."""
+
+    def _make_context(self, cid: str = "bafytest123") -> PipelineContext:
+        ctx = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            upload_result=UploadResult(
+                video_path="/tmp/test.mp4",
+                root_cid=cid,
+                piece_cid=TEST_PIECE_CID,
+            ),
+            video_metadata=VideoMetadata(path="/tmp/test.mp4", title="Test Video"),
+        )
+        return ctx
+
+    def test_returns_empty_when_disabled(self):
+        config = ArkivSyncConfig(enabled=False, private_key=None, rpc_url="")
+        client = ArkivSyncClient(config)
+        result = client.batch_sync_contexts([self._make_context()])
+        assert result == []
+
+    def test_returns_empty_for_empty_list(self):
+        config = ArkivSyncConfig(enabled=True, private_key="0x" + "11" * 32, rpc_url="https://test.rpc")
+        client = ArkivSyncClient(config)
+        result = client.batch_sync_contexts([])
+        assert result == []
+
+    def test_batch_creates_entities_single_tx(self):
+        """All entities share the same transaction hash."""
+        config = ArkivSyncConfig(
+            enabled=True,
+            private_key="0x" + "11" * 32,
+            rpc_url="https://test.rpc",
+        )
+        client = ArkivSyncClient(config)
+
+        # Mock the arkiv SDK
+        mock_entity_key_1 = MagicMock()
+        mock_entity_key_1.__str__ = lambda self: "entity-key-1"
+        mock_entity_key_2 = MagicMock()
+        mock_entity_key_2.__str__ = lambda self: "entity-key-2"
+
+        mock_receipt = MagicMock()
+        mock_receipt.tx_hash = "0xdeadbeef" + "00" * 28
+
+        mock_arkiv_client = MagicMock()
+        mock_arkiv_client.arkiv.execute.return_value = [
+            (mock_entity_key_1, mock_receipt),
+            (mock_entity_key_2, mock_receipt),
+        ]
+        client._client = mock_arkiv_client
+
+        contexts = [
+            self._make_context("bafycid1"),
+            self._make_context("bafycid2"),
+        ]
+
+        # Patch arkiv.types import inside the method
+        mock_attributes = MagicMock(side_effect=lambda x: x)
+        mock_operation = MagicMock()
+        mock_operation.create = MagicMock(return_value=MagicMock())
+
+        with patch.dict("sys.modules", {
+            "arkiv": MagicMock(),
+            "arkiv.types": MagicMock(Attributes=mock_attributes, Operation=mock_operation),
+        }):
+            results = client.batch_sync_contexts(contexts)
+
+        assert len(results) == 2
+        assert results[0]["entity_key"] == "entity-key-1"
+        assert results[1]["entity_key"] == "entity-key-2"
+        # All share same tx hash
+        tx_hash = "0xdeadbeef" + "00" * 28
+        assert results[0]["transaction_hash"] == tx_hash
+        assert results[1]["transaction_hash"] == tx_hash
+
+    def test_batch_each_entity_has_unique_key(self):
+        """Each entity in the batch gets a unique key."""
+        config = ArkivSyncConfig(
+            enabled=True,
+            private_key="0x" + "11" * 32,
+            rpc_url="https://test.rpc",
+        )
+        client = ArkivSyncClient(config)
+
+        keys = [MagicMock() for _ in range(3)]
+        for i, k in enumerate(keys):
+            k.__str__ = lambda self, idx=i: f"entity-key-{idx}"
+
+        mock_receipt = MagicMock()
+        mock_receipt.tx_hash = "0xabc123" + "00" * 29
+
+        mock_arkiv_client = MagicMock()
+        mock_arkiv_client.arkiv.execute.return_value = [
+            (keys[0], mock_receipt),
+            (keys[1], mock_receipt),
+            (keys[2], mock_receipt),
+        ]
+        client._client = mock_arkiv_client
+
+        contexts = [self._make_context(f"bafycid{i}") for i in range(3)]
+
+        mock_attributes = MagicMock(side_effect=lambda x: x)
+        mock_operation = MagicMock()
+        mock_operation.create = MagicMock(return_value=MagicMock())
+
+        with patch.dict("sys.modules", {
+            "arkiv": MagicMock(),
+            "arkiv.types": MagicMock(Attributes=mock_attributes, Operation=mock_operation),
+        }):
+            results = client.batch_sync_contexts(contexts)
+
+        entity_keys = [r["entity_key"] for r in results]
+        assert len(set(entity_keys)) == 3  # All unique

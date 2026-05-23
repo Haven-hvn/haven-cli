@@ -217,6 +217,7 @@ def run_job(
     
     async def execute() -> None:
         # Initialize JS Bridge for blockchain operations
+        config = get_config()
         try:
             debug_mode = (
                 os.environ.get("DEBUG") == "1"
@@ -230,12 +231,23 @@ def run_job(
         except Exception as e:
             console.print(f"[yellow]Warning: JS Bridge initialization failed: {e}[/yellow]")
         
-        # Create pipeline manager with config
-        config = get_config()
-        pipeline_manager = create_default_pipeline(
-            max_concurrent=4,
-            config=config.__dict__,
-        )
+        # Create pipeline manager with config — batched or default
+        batch_sync_enabled = getattr(config.pipeline, "batch_sync_enabled", False)
+        sync_enabled = getattr(config.pipeline, "sync_enabled", False)
+        
+        if batch_sync_enabled and sync_enabled:
+            from haven_cli.pipeline.manager import create_batched_pipeline
+            batch_size = getattr(config.pipeline, "batch_sync_size", 10)
+            pipeline_manager, _accumulator, _flush_queue = create_batched_pipeline(
+                max_concurrent=4,
+                batch_size=batch_size,
+                config=config.__dict__,
+            )
+        else:
+            pipeline_manager = create_default_pipeline(
+                max_concurrent=4,
+                config=config.__dict__,
+            )
         
         # Update scheduler with pipeline manager
         scheduler._pipeline_manager = pipeline_manager

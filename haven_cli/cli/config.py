@@ -388,6 +388,10 @@ def show_config(
             ("max_concurrent_videos", str(config.pipeline.max_concurrent_videos), False),
             ("retry_attempts", str(config.pipeline.retry_attempts), False),
             ("retry_delay", str(config.pipeline.retry_delay), False),
+            ("batch_sync_enabled", str(config.pipeline.batch_sync_enabled), False),
+            ("batch_sync_size", str(config.pipeline.batch_sync_size), False),
+            ("batch_sync_flush_timeout", str(config.pipeline.batch_sync_flush_timeout), False),
+            ("batch_sync_max_pending", str(config.pipeline.batch_sync_max_pending), False),
         ],
         "scheduler": [
             ("enabled", str(config.scheduler.enabled), False),
@@ -635,6 +639,34 @@ def init_config(
             default=str(config.pipeline.max_concurrent_videos)
         )
         config.pipeline.max_concurrent_videos = int(max_concurrent)
+        
+        console.print()
+        console.print("[bold cyan]Batch Sync[/bold cyan]")
+        console.print(
+            "  [dim]When enabled, attestation and Arkiv entity creation are batched[/dim]"
+        )
+        console.print(
+            "  [dim]in the background instead of per-video inline. Upload speed is unaffected.[/dim]"
+        )
+        batch_sync_enabled = typer.confirm(
+            "  Enable batch sync?",
+            default=config.pipeline.batch_sync_enabled,
+        )
+        config.pipeline.batch_sync_enabled = batch_sync_enabled
+        if batch_sync_enabled:
+            batch_size = typer.prompt(
+                "  Batch size (videos per flush)",
+                default=str(config.pipeline.batch_sync_size),
+            )
+            config.pipeline.batch_sync_size = int(batch_size)
+            flush_timeout = typer.prompt(
+                "  Flush timeout in seconds (partial batch)",
+                default=str(config.pipeline.batch_sync_flush_timeout),
+            )
+            config.pipeline.batch_sync_flush_timeout = float(flush_timeout)
+        console.print(
+            f"  [green]✓[/green] batch_sync_enabled = {str(batch_sync_enabled).lower()}"
+        )
         
         console.print()
         console.print("[bold cyan]Scheduler Configuration[/bold cyan]")

@@ -181,7 +181,7 @@ def upload(
 
     from haven_cli.config import load_config
     from haven_cli.pipeline.context import PipelineContext
-    from haven_cli.pipeline.manager import create_default_pipeline
+    from haven_cli.pipeline.manager import create_default_pipeline, create_batched_pipeline
 
     config = load_config(config_file)
     
@@ -290,8 +290,22 @@ def upload(
         options=options,
     )
     
-    # Initialize pipeline manager with all default steps
-    pipeline_manager = create_default_pipeline(config=config.__dict__ if config else None)
+    # Determine whether to use batched pipeline
+    batch_sync_enabled = get_config_value("batch_sync_enabled", False)
+    
+    # Initialize pipeline manager
+    if batch_sync_enabled and sync_enabled:
+        batch_size = get_config_value("batch_sync_size", 10)
+        pipeline_manager, accumulator, flush_queue = create_batched_pipeline(
+            max_concurrent=1,
+            batch_size=batch_size,
+            config=config.__dict__ if config else None,
+        )
+        logger.info("Using batched pipeline (batch_sync_size=%d)", batch_size)
+    else:
+        pipeline_manager = create_default_pipeline(config=config.__dict__ if config else None)
+        accumulator = None
+        flush_queue = None
     
     async def run_pipeline() -> None:
         from haven_cli.js_runtime.manager import JSBridgeManager
@@ -304,6 +318,10 @@ def upload(
             network_mode=config.blockchain.effective_filecoin_network_mode,
             debug=debug_mode,
         )
+        
+        # Start flush queue if batched mode
+        if flush_queue is not None:
+            await flush_queue.start()
         
         with Progress(
             SpinnerColumn(),
@@ -320,10 +338,22 @@ def upload(
                 
                 if result.success:
                     console.print(f"[green]✓[/green] Upload complete: {result.cid or 'N/A'}")
+                    
+                    # If batched mode, add to accumulator and flush immediately
+                    # (single-file upload — drain immediately so user sees sync result)
+                    if accumulator is not None and flush_queue is not None:
+                        await accumulator.add(context)
+                        batch = await accumulator.drain()
+                        if batch:
+                            await flush_queue.enqueue(batch)
+                        console.print("[dim]Batch sync: queued for attestation + entity creation[/dim]")
                 else:
                     console.print(f"[red]✗[/red] Upload failed: {result.error}")
                     raise typer.Exit(code=1)
             finally:
+                # Stop flush queue and wait for in-flight processing
+                if flush_queue is not None:
+                    await flush_queue.stop()
                 # CRITICAL: Shutdown JS Bridge Manager to prevent hang
                 # The background health check task keeps the event loop alive
                 logger.debug("Shutting down JS Bridge Manager...")

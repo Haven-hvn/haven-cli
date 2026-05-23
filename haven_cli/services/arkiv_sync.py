@@ -732,6 +732,97 @@ class ArkivSyncClient:
             raise
 
 
+    def batch_sync_contexts(
+        self,
+        contexts: list[PipelineContext],
+    ) -> list[dict[str, Any]]:
+        """Create multiple Arkiv entities in a single execute() transaction.
+
+        Args:
+            contexts: List of PipelineContexts with upload_result populated.
+
+        Returns:
+            List of dicts with entity_key + transaction_hash, one per context.
+            All share the same transaction_hash (single tx).
+
+        Raises:
+            InsufficientGasError: If wallet has insufficient gas
+            Exception: For other sync errors
+        """
+        if not self.config.enabled:
+            logger.info("Arkiv sync is disabled, skipping batch")
+            return []
+
+        if not contexts:
+            return []
+
+        try:
+            from arkiv.types import Attributes, Operation
+
+            client = self._get_client()
+
+            # Build operations list for batch execute
+            operations: list[Any] = []
+            for ctx in contexts:
+                payload = _build_payload(ctx)
+                attributes = _build_attributes(ctx)
+                payload_bytes = json.dumps(payload).encode("utf-8")
+                operations.append(
+                    Operation.create(
+                        payload=payload_bytes,
+                        content_type="application/json",
+                        attributes=Attributes(attributes),
+                        expires_in=self.config.expires_in,
+                    )
+                )
+
+            # Execute all operations in a single transaction
+            results_raw = client.arkiv.execute(operations)
+
+            # Parse results — execute returns list of (EntityKey, receipt) tuples
+            # All share the same transaction since it's a single tx
+            results: list[dict[str, Any]] = []
+            transaction_hash = ""
+
+            for item in results_raw:
+                if isinstance(item, tuple) and len(item) == 2:
+                    entity_key, receipt = item
+                else:
+                    entity_key = item
+                    receipt = None
+
+                if not transaction_hash and receipt:
+                    transaction_hash = _extract_transaction_hash(receipt) or ""
+
+                results.append({
+                    "entity_key": str(entity_key),
+                    "transaction_hash": transaction_hash,
+                })
+
+            # Backfill transaction_hash for all results (single tx)
+            if transaction_hash:
+                for r in results:
+                    r["transaction_hash"] = transaction_hash
+
+            logger.info(
+                "✅ Batch created %d Arkiv entities in 1 transaction (tx=%s)",
+                len(results),
+                transaction_hash or "unknown",
+            )
+            return results
+
+        except Exception as exc:
+            if isinstance(exc, Exception) and is_insufficient_funds_error(exc):
+                raise handle_evm_gas_error(
+                    exc,
+                    self.config.private_key,
+                    self.config.rpc_url,
+                    context="Arkiv batch sync"
+                )
+            logger.error("❌ Arkiv batch sync failed: %s", exc, exc_info=True)
+            raise
+
+
 def is_insufficient_funds_error(error: Exception) -> bool:
     """
     Check if an error indicates insufficient funds for gas.

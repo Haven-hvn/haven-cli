@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from haven_cli.config import HavenConfig
-from haven_cli.pipeline.manager import PipelineManager, create_default_pipeline
+from haven_cli.pipeline.manager import PipelineManager, create_default_pipeline, create_batched_pipeline
+from haven_cli.pipeline.batch_accumulator import BatchAccumulator
+from haven_cli.pipeline.flush_queue import FlushQueue
 from haven_cli.scheduler.job_scheduler import JobScheduler
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,8 @@ class HavenDaemon:
         self._config = config
         self._max_concurrent = max_concurrent
         self._pipeline_manager: Optional[PipelineManager] = None
+        self._accumulator: Optional[BatchAccumulator] = None
+        self._flush_queue: Optional[FlushQueue] = None
         self._scheduler: Optional[JobScheduler] = None
         self._running = False
         self._shutdown_event = asyncio.Event()
@@ -101,12 +105,29 @@ class HavenDaemon:
         await JSBridgeManager.get_instance().get_bridge()
         logger.info("JS Bridge initialized")
         
-        # Initialize pipeline manager with default steps
-        self._pipeline_manager = create_default_pipeline(
-            max_concurrent=self._max_concurrent,
-            config=self._config.__dict__,
-        )
-        logger.info(f"Pipeline manager initialized with {len(self._pipeline_manager.steps)} steps")
+        # Initialize pipeline manager — batched or default based on config
+        batch_sync_enabled = getattr(config.pipeline, "batch_sync_enabled", False)
+        sync_enabled = getattr(config.pipeline, "sync_enabled", False)
+        
+        if batch_sync_enabled and sync_enabled:
+            batch_size = getattr(config.pipeline, "batch_sync_size", 10)
+            self._pipeline_manager, self._accumulator, self._flush_queue = create_batched_pipeline(
+                max_concurrent=self._max_concurrent,
+                batch_size=batch_size,
+                config=self._config.__dict__,
+            )
+            await self._flush_queue.start()
+            logger.info(
+                "Batched pipeline initialized (batch_size=%d, steps=%d)",
+                batch_size,
+                len(self._pipeline_manager.steps),
+            )
+        else:
+            self._pipeline_manager = create_default_pipeline(
+                max_concurrent=self._max_concurrent,
+                config=self._config.__dict__,
+            )
+            logger.info(f"Pipeline manager initialized with {len(self._pipeline_manager.steps)} steps")
         
         # Initialize scheduler
         self._scheduler = JobScheduler(
@@ -138,6 +159,18 @@ class HavenDaemon:
                 logger.info("Job scheduler stopped")
             except Exception as e:
                 logger.warning(f"Error stopping scheduler: {e}")
+        
+        # Drain accumulator and stop flush queue (batched mode)
+        if self._accumulator is not None and self._flush_queue is not None:
+            try:
+                remaining = await self._accumulator.drain()
+                if remaining:
+                    logger.info("Draining %d pending contexts to flush queue", len(remaining))
+                    await self._flush_queue.enqueue(remaining)
+                await self._flush_queue.stop()
+                logger.info("Flush queue stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping flush queue: {e}")
         
         # Shutdown JS bridge
         from haven_cli.js_runtime.manager import JSBridgeManager
