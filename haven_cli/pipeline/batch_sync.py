@@ -164,9 +164,11 @@ class BatchSyncProcessor:
             except ValueError as exc:
                 raise PermanentError(f"Attestation config error: {exc}") from exc
             except Exception as exc:
-                # Transient — let FlushQueue retry
-                logger.error("Batch attestation failed: %s", exc, exc_info=True)
-                raise
+                # Attestation failure should NOT block entity creation.
+                # Log and continue — entities will be created without attestation.
+                logger.error(
+                    "Batch attestation failed for chunk (skipped): %s", exc, exc_info=True,
+                )
 
     def _create_entities(self, batch: list[PipelineContext]) -> list[dict[str, Any]]:
         """Create Arkiv entities for all contexts in the batch."""

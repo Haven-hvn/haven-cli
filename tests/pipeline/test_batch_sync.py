@@ -195,17 +195,29 @@ class TestBatchSyncProcessor:
                 await processor(contexts)
 
     @pytest.mark.asyncio
-    async def test_transient_attestation_error_propagates(self):
-        """Network errors from attestation propagate for retry."""
+    async def test_transient_attestation_error_does_not_block(self):
+        """Network errors from attestation should NOT block entity creation.
+
+        Attestation failure is logged and skipped; entities are still created
+        without attestation (matching single-attest behavior in sync_step).
+        """
         processor = BatchSyncProcessor(
             arkiv_config=_make_config(), private_key="0x" + "a" * 64
         )
         contexts = [_make_context(0, encrypted=True)]
 
-        with patch("haven_cli.pipeline.batch_sync.batch_attest_holding", side_effect=RuntimeError("timeout")), \
+        with patch.object(processor, "_create_entities") as mock_create, \
+             patch("haven_cli.pipeline.batch_sync.batch_attest_holding", side_effect=RuntimeError("timeout")), \
              patch("haven_cli.pipeline.batch_sync.get_wallet_address_from_private_key", return_value="0x1234"):
-            with pytest.raises(RuntimeError, match="timeout"):
-                await processor(contexts)
+            mock_create.return_value = [
+                {"entity_key": "key_0", "transaction_hash": "0xabc"}
+            ]
+            await processor(contexts)
+
+        # Entity creation proceeds despite attestation failure
+        mock_create.assert_called_once_with(contexts)
+        assert processor.processed_batches == 1
+        assert processor.total_entities_created == 1
 
     @pytest.mark.asyncio
     async def test_entity_creation_permanent_error(self):
