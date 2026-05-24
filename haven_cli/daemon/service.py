@@ -68,6 +68,7 @@ class HavenDaemon:
         self._pipeline_manager: Optional[PipelineManager] = None
         self._accumulator: Optional[BatchAccumulator] = None
         self._flush_queue: Optional[FlushQueue] = None
+        self._flush_loop_task: Optional[asyncio.Task] = None
         self._scheduler: Optional[JobScheduler] = None
         self._running = False
         self._shutdown_event = asyncio.Event()
@@ -129,19 +130,56 @@ class HavenDaemon:
             )
             logger.info(f"Pipeline manager initialized with {len(self._pipeline_manager.steps)} steps")
         
-        # Initialize scheduler
+        # Initialize scheduler (pass accumulator for batched sync mode)
         self._scheduler = JobScheduler(
             pipeline_manager=self._pipeline_manager,
             config=self._config.__dict__,
+            accumulator=self._accumulator,
         )
         
         # Start scheduler
         await self._scheduler.start()
         logger.info("Job scheduler started")
         
+        # Start background flush loop (batched mode)
+        if self._accumulator is not None and self._flush_queue is not None:
+            self._flush_loop_task = asyncio.create_task(self._flush_loop())
+            logger.info("Batch flush loop started")
+        
         self._running = True
         logger.info("Haven daemon started successfully")
     
+    async def _flush_loop(self) -> None:
+        """Background loop: poll the accumulator and enqueue ready batches.
+
+        This runs continuously while the daemon is alive. It calls
+        accumulator.flush() which blocks until either:
+        - batch_size items are buffered (immediate flush), or
+        - flush_timeout elapses with a non-empty buffer (partial flush).
+
+        Each flushed batch is enqueued to the FlushQueue for processing
+        by BatchSyncProcessor (attestation + entity creation).
+        """
+        assert self._accumulator is not None
+        assert self._flush_queue is not None
+
+        logger.debug("Flush loop running")
+        while self._running:
+            try:
+                batch = await self._accumulator.flush()
+                if batch:
+                    await self._flush_queue.enqueue(batch)
+                    logger.info(
+                        "Flushed batch of %d contexts to sync queue",
+                        len(batch),
+                    )
+            except Exception as exc:
+                logger.error("Flush loop error: %s", exc, exc_info=True)
+                # Brief sleep to avoid tight-loop on persistent errors
+                await asyncio.sleep(1.0)
+
+        logger.debug("Flush loop exiting")
+
     async def stop(self) -> None:
         """Stop the daemon services.
         
@@ -151,6 +189,15 @@ class HavenDaemon:
         logger.info("Stopping Haven daemon...")
         
         self._running = False
+        
+        # Cancel flush loop
+        if self._flush_loop_task is not None and not self._flush_loop_task.done():
+            self._flush_loop_task.cancel()
+            try:
+                await self._flush_loop_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("Flush loop stopped")
         
         # Stop scheduler
         if self._scheduler:

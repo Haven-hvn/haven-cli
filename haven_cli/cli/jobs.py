@@ -1,11 +1,14 @@
 """Haven jobs command - Manage scheduled jobs."""
 
+import logging
 import os
 from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Manage scheduled jobs for plugin polling.")
 console = Console()
@@ -235,24 +238,68 @@ def run_job(
         batch_sync_enabled = getattr(config.pipeline, "batch_sync_enabled", False)
         sync_enabled = getattr(config.pipeline, "sync_enabled", False)
         
+        accumulator = None
+        flush_queue = None
+        
         if batch_sync_enabled and sync_enabled:
             from haven_cli.pipeline.manager import create_batched_pipeline
             batch_size = getattr(config.pipeline, "batch_sync_size", 10)
-            pipeline_manager, _accumulator, _flush_queue = create_batched_pipeline(
+            pipeline_manager, accumulator, flush_queue = create_batched_pipeline(
                 max_concurrent=4,
                 batch_size=batch_size,
                 config=config.__dict__,
             )
+            await flush_queue.start()
         else:
             pipeline_manager = create_default_pipeline(
                 max_concurrent=4,
                 config=config.__dict__,
             )
         
-        # Update scheduler with pipeline manager
+        # Update scheduler with pipeline manager and accumulator
         scheduler._pipeline_manager = pipeline_manager
+        scheduler._accumulator = accumulator
         
-        result = await scheduler.run_job_now(job.job_id)
+        # Start background flush loop for batched sync
+        async def flush_loop():
+            """Poll accumulator and enqueue ready batches."""
+            while True:
+                try:
+                    batch = await accumulator.flush()
+                    if batch:
+                        await flush_queue.enqueue(batch)
+                        console.print(
+                            f"[dim]Batch sync: flushed {len(batch)} contexts for attestation + entity creation[/dim]"
+                        )
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.error("Flush loop error: %s", exc)
+                    await asyncio.sleep(1.0)
+        
+        flush_task = None
+        if accumulator is not None and flush_queue is not None:
+            flush_task = asyncio.create_task(flush_loop())
+        
+        try:
+            result = await scheduler.run_job_now(job.job_id)
+        finally:
+            # Stop flush loop and drain remaining
+            if flush_task is not None:
+                flush_task.cancel()
+                try:
+                    await flush_task
+                except asyncio.CancelledError:
+                    pass
+            
+            if accumulator is not None and flush_queue is not None:
+                remaining = await accumulator.drain()
+                if remaining:
+                    await flush_queue.enqueue(remaining)
+                    console.print(
+                        f"[dim]Batch sync: draining final {len(remaining)} contexts[/dim]"
+                    )
+                await flush_queue.stop()
         
         # Shutdown JS Bridge
         try:

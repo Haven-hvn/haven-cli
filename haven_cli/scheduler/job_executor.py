@@ -76,6 +76,7 @@ class JobExecutor:
     2. Filtering sources based on on_success action
     3. Calling plugin.archive() for each source
     4. Enqueuing archived content to the pipeline
+    5. Feeding completed contexts to BatchAccumulator (batched mode)
     
     Example:
         executor = JobExecutor(pipeline_manager, config)
@@ -86,15 +87,18 @@ class JobExecutor:
         self,
         pipeline_manager: Optional[Any] = None,
         config: Optional[Dict[str, Any]] = None,
+        accumulator: Optional[Any] = None,
     ) -> None:
         """Initialize the job executor.
         
         Args:
             pipeline_manager: PipelineManager for processing archived content
             config: Executor configuration
+            accumulator: Optional BatchAccumulator for batched sync mode
         """
         self._pipeline_manager = pipeline_manager
         self._config = config or {}
+        self._accumulator = accumulator
         
         # Initialize source tracker for persistent known source storage
         data_dir = Path(self._config.get("data_dir", Path.home() / ".haven" / "scheduler"))
@@ -429,6 +433,9 @@ class JobExecutor:
     ) -> None:
         """Process pipeline with error logging.
         
+        After successful upload-phase processing, feeds the context to the
+        BatchAccumulator (if configured) so batch sync can pick it up.
+        
         Args:
             context: The pipeline context to process
             job_id: ID of the job that triggered this processing
@@ -437,6 +444,13 @@ class JobExecutor:
             result = await self._pipeline_manager.process(context)
             if result.success:
                 logger.info(f"Pipeline completed for {context.source_path}")
+                # Feed completed context to batch accumulator for deferred sync
+                if self._accumulator is not None:
+                    await self._accumulator.add(context)
+                    logger.debug(
+                        "Added context to batch accumulator (%d pending)",
+                        self._accumulator.pending_count,
+                    )
             else:
                 logger.error(f"Pipeline failed: {result.error}")
         except Exception as e:

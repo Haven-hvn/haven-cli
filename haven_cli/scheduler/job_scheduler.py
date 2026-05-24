@@ -207,15 +207,18 @@ class JobScheduler:
         self,
         pipeline_manager: Optional[Any] = None,
         config: Optional[Dict[str, Any]] = None,
+        accumulator: Optional[Any] = None,
     ) -> None:
         """Initialize the job scheduler.
 
         Args:
             pipeline_manager: PipelineManager for processing archived content
             config: Scheduler configuration
+            accumulator: Optional BatchAccumulator for batched sync mode
         """
         self._pipeline_manager = pipeline_manager
         self._config = config or {}
+        self._accumulator = accumulator
         self._jobs: Dict[UUID, RecurringJob] = {}
         self._scheduler: Optional[AsyncIOScheduler] = None
         self._running = False
@@ -798,10 +801,11 @@ class JobScheduler:
         started_at = datetime.now(timezone.utc)
 
         try:
-            # Create executor
+            # Create executor (pass accumulator for batched sync mode)
             executor = JobExecutor(
                 pipeline_manager=self._pipeline_manager,
                 config=self._config,
+                accumulator=self._accumulator,
             )
 
             # Execute job
