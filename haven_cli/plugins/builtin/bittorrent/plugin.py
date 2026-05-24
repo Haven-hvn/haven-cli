@@ -864,40 +864,30 @@ class BitTorrentPlugin(ArchiverPlugin):
                 )
             
             if largest_video_index == -1:
-                # No video file found at all, check for any file within size limits
-                logger.warning("No video file found, checking for largest file within size limits")
-                largest_file_index = -1
-                largest_file_size = 0
+                # No video file found — fail rather than downloading non-video archives
+                # TODO: Support extracting video from archives (e.g., .rar, .zip) if
+                #       the torrent contains a single archive wrapping the video file.
+                logger.warning("No video file found in torrent")
                 
-                for i in range(files.num_files()):
-                    file_size = files.file_size(i)
-                    if min_video_size <= file_size <= max_video_size and file_size > largest_file_size:
-                        largest_file_size = file_size
-                        largest_file_index = i
+                # Clean up the torrent handle
+                async with self._session_lock:
+                    try:
+                        await self._run_in_executor(
+                            self._session.remove_torrent,
+                            handle,
+                            timeout=10.0
+                        )
+                        if infohash in self._active_downloads:
+                            del self._active_downloads[infohash]
+                    except Exception:
+                        pass
                 
-                if largest_file_index == -1:
-                    # Clean up the torrent handle
-                    async with self._session_lock:
-                        try:
-                            await self._run_in_executor(
-                                self._session.remove_torrent,
-                                handle,
-                                timeout=10.0
-                            )
-                            if infohash in self._active_downloads:
-                                del self._active_downloads[infohash]
-                        except Exception:
-                            pass
-                    
-                    # Format max size appropriately (MB if < 1 GB, otherwise GB)
-                    max_size_str = f"{max_video_size / (1024**3):.1f} GB" if max_video_size >= 1024**3 else f"{max_video_size / (1024**2):.0f} MB"
-                    return ArchiveResult(
-                        success=False,
-                        error=f"No files within size limits ({min_video_size / (1024**2):.0f} MB - {max_size_str})"
-                    )
-                
-                largest_video_index = largest_file_index
-                largest_video_size = largest_file_size
+                return ArchiveResult(
+                    success=False,
+                    error=f"No supported video files found in torrent. "
+                          f"Only video files ({', '.join(self._bt_config.video_extensions)}) are supported. "
+                          f"Archive extraction (rar, zip) is not yet supported."
+                )
             
             # Set file priorities (in executor)
             logger.info(f"Selecting file: {files.file_path(largest_video_index)} ({largest_video_size} bytes)")
