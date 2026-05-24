@@ -757,52 +757,36 @@ class ArkivSyncClient:
             return []
 
         try:
-            from arkiv.types import Attributes, Operation
+            from arkiv.types import Attributes
 
             client = self._get_client()
 
-            # Build operations list for batch execute
-            operations: list[Any] = []
-            for ctx in contexts:
-                payload = _build_payload(ctx)
-                attributes = _build_attributes(ctx)
-                payload_bytes = json.dumps(payload).encode("utf-8")
-                operations.append(
-                    Operation.create(
+            # Build and execute batch via BatchBuilder (arkiv-sdk >= 1.0.0b3)
+            with client.arkiv.batch() as batch:
+                for ctx in contexts:
+                    payload = _build_payload(ctx)
+                    attributes = _build_attributes(ctx)
+                    payload_bytes = json.dumps(payload).encode("utf-8")
+                    batch.create_entity(
                         payload=payload_bytes,
                         content_type="application/json",
                         attributes=Attributes(attributes),
                         expires_in=self.config.expires_in,
                     )
-                )
 
-            # Execute all operations in a single transaction
-            results_raw = client.arkiv.execute(operations)
+            # Receipt contains .creates list of CreateEvent(key, owner, expiration)
+            receipt = batch.receipt
+            if receipt is None:
+                raise RuntimeError("Batch execute returned no receipt")
 
-            # Parse results — execute returns list of (EntityKey, receipt) tuples
-            # All share the same transaction since it's a single tx
+            transaction_hash = _extract_transaction_hash(receipt) or ""
+
             results: list[dict[str, Any]] = []
-            transaction_hash = ""
-
-            for item in results_raw:
-                if isinstance(item, tuple) and len(item) == 2:
-                    entity_key, receipt = item
-                else:
-                    entity_key = item
-                    receipt = None
-
-                if not transaction_hash and receipt:
-                    transaction_hash = _extract_transaction_hash(receipt) or ""
-
+            for create_event in receipt.creates:
                 results.append({
-                    "entity_key": str(entity_key),
+                    "entity_key": str(create_event.key),
                     "transaction_hash": transaction_hash,
                 })
-
-            # Backfill transaction_hash for all results (single tx)
-            if transaction_hash:
-                for r in results:
-                    r["transaction_hash"] = transaction_hash
 
             logger.info(
                 "✅ Batch created %d Arkiv entities in 1 transaction (tx=%s)",

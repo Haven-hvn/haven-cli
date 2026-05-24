@@ -1213,20 +1213,28 @@ class TestBatchSyncContexts:
         )
         client = ArkivSyncClient(config)
 
-        # Mock the arkiv SDK
+        # Mock the arkiv SDK — new BatchBuilder API
         mock_entity_key_1 = MagicMock()
         mock_entity_key_1.__str__ = lambda self: "entity-key-1"
         mock_entity_key_2 = MagicMock()
         mock_entity_key_2.__str__ = lambda self: "entity-key-2"
 
+        mock_create_event_1 = MagicMock()
+        mock_create_event_1.key = mock_entity_key_1
+        mock_create_event_2 = MagicMock()
+        mock_create_event_2.key = mock_entity_key_2
+
         mock_receipt = MagicMock()
         mock_receipt.tx_hash = "0xdeadbeef" + "00" * 28
+        mock_receipt.creates = [mock_create_event_1, mock_create_event_2]
+
+        mock_batch = MagicMock()
+        mock_batch.receipt = mock_receipt
+        mock_batch.create_entity.return_value = mock_batch  # fluent
 
         mock_arkiv_client = MagicMock()
-        mock_arkiv_client.arkiv.execute.return_value = [
-            (mock_entity_key_1, mock_receipt),
-            (mock_entity_key_2, mock_receipt),
-        ]
+        mock_arkiv_client.arkiv.batch.return_value.__enter__ = MagicMock(return_value=mock_batch)
+        mock_arkiv_client.arkiv.batch.return_value.__exit__ = MagicMock(return_value=False)
         client._client = mock_arkiv_client
 
         contexts = [
@@ -1234,14 +1242,11 @@ class TestBatchSyncContexts:
             self._make_context("bafycid2"),
         ]
 
-        # Patch arkiv.types import inside the method
         mock_attributes = MagicMock(side_effect=lambda x: x)
-        mock_operation = MagicMock()
-        mock_operation.create = MagicMock(return_value=MagicMock())
 
         with patch.dict("sys.modules", {
             "arkiv": MagicMock(),
-            "arkiv.types": MagicMock(Attributes=mock_attributes, Operation=mock_operation),
+            "arkiv.types": MagicMock(Attributes=mock_attributes),
         }):
             results = client.batch_sync_contexts(contexts)
 
@@ -1266,26 +1271,30 @@ class TestBatchSyncContexts:
         for i, k in enumerate(keys):
             k.__str__ = lambda self, idx=i: f"entity-key-{idx}"
 
+        create_events = [MagicMock() for _ in range(3)]
+        for i, evt in enumerate(create_events):
+            evt.key = keys[i]
+
         mock_receipt = MagicMock()
         mock_receipt.tx_hash = "0xabc123" + "00" * 29
+        mock_receipt.creates = create_events
+
+        mock_batch = MagicMock()
+        mock_batch.receipt = mock_receipt
+        mock_batch.create_entity.return_value = mock_batch  # fluent
 
         mock_arkiv_client = MagicMock()
-        mock_arkiv_client.arkiv.execute.return_value = [
-            (keys[0], mock_receipt),
-            (keys[1], mock_receipt),
-            (keys[2], mock_receipt),
-        ]
+        mock_arkiv_client.arkiv.batch.return_value.__enter__ = MagicMock(return_value=mock_batch)
+        mock_arkiv_client.arkiv.batch.return_value.__exit__ = MagicMock(return_value=False)
         client._client = mock_arkiv_client
 
         contexts = [self._make_context(f"bafycid{i}") for i in range(3)]
 
         mock_attributes = MagicMock(side_effect=lambda x: x)
-        mock_operation = MagicMock()
-        mock_operation.create = MagicMock(return_value=MagicMock())
 
         with patch.dict("sys.modules", {
             "arkiv": MagicMock(),
-            "arkiv.types": MagicMock(Attributes=mock_attributes, Operation=mock_operation),
+            "arkiv.types": MagicMock(Attributes=mock_attributes),
         }):
             results = client.batch_sync_contexts(contexts)
 
