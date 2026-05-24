@@ -45,6 +45,26 @@ class VideoTechnicalMetadata:
     has_audio: bool = False
 
 
+VIDEO_EXTENSIONS = frozenset({
+    ".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".qt",
+    ".wmv", ".flv", ".f4v", ".ogv", ".ogg", ".3gp", ".3g2",
+    ".ts", ".mts", ".m2ts", ".avchd",
+})
+
+
+def is_video_file(path: Path) -> bool:
+    """Check if a file path has a known video extension.
+
+    Args:
+        path: Path to check
+
+    Returns:
+        True if the file extension is a known video format
+    """
+    ext = path.suffix.lower()
+    return ext in VIDEO_EXTENSIONS
+
+
 # Cache for ffprobe results to avoid re-extraction
 _ffprobe_cache: dict[str, dict[str, Any]] = {}
 

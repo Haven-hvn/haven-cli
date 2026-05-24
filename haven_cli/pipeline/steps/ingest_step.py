@@ -17,6 +17,7 @@ from haven_cli.database.models import Download, TorrentDownload
 
 logger = logging.getLogger(__name__)
 from haven_cli.media import detect_mime_type, extract_video_metadata
+from haven_cli.media.metadata import is_video_file
 from haven_cli.media.exceptions import VideoMetadataError
 from haven_cli.media.phash import calculate_video_phash, VideoHashError
 from haven_cli.pipeline.context import PipelineContext, VideoMetadata
@@ -79,6 +80,14 @@ class IngestStep(PipelineStep):
                     message=f"Path is not a file: {video_path}",
                     path=str(video_path),
                 ),
+            )
+        
+        # Check if file is a supported video format before invoking ffprobe
+        if not is_video_file(video_path):
+            print(f"Skipping non-video file: {video_path}")
+            return StepResult.skip(
+                self.name,
+                reason=f"File is not a supported video format: {video_path}",
             )
         
         try:
