@@ -803,6 +803,15 @@ class ArkivSyncClient:
                     self.config.rpc_url,
                     context="Arkiv batch sync"
                 )
+            elif is_non_golem_base_transaction_error(exc):
+                logger.error(
+                    "❌ Arkiv batch sync failed: RPC rejected transaction (not Golem Base encoded). "
+                    "Upgrade arkiv-sdk to >=%s for Braga testnet. "
+                    "Current installs must use RLP storage transactions, not legacy "
+                    "contract.execute().transact. Error: %s",
+                    MIN_ARKIV_SDK_VERSION,
+                    exc,
+                )
             logger.error("❌ Arkiv batch sync failed: %s", exc, exc_info=True)
             raise
 
