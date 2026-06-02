@@ -44,4 +44,3 @@ logs/
 
 # Environment
 .env
-.env.*
