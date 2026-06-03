@@ -76,6 +76,7 @@ async def extract_frames(
                 try:
                     # Open and convert to requested format
                     img = Image.open(result)
+                    img.load()  # Load pixel data into memory
                     if output_format and img.mode != output_format:
                         img = img.convert(output_format)
                     frames.append(img)
