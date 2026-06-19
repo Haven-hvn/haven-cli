@@ -449,7 +449,6 @@ async def upload_video_to_haven(
     private_key: str,
     is_encrypted: bool = False,
     vlm_json_cid: Optional[str] = None,
-    lit_metadata: Optional[dict] = None,
 ) -> str:
     """
     Upload a video to Haven via Arkiv.

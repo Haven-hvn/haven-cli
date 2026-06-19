@@ -17,7 +17,7 @@
 
 | Aspect | Finding |
 |--------|---------|
-| **Old encryption (Lit Protocol / `hybrid-crypto.ts`)** | Gets stuck/OOM-killed on large files. Requires network Lit nodes + capacity credits. |
+| **Old encryption (Lit Protocol / `hybrid-crypto.ts`)** | Removed — replaced by Haven-AOL VetKD. |
 | **New encryption (`haven_aol_local.py`)** | Cryptographically correct, but `encrypt_bytes()` loads the entire file into memory → OOM on 920MB file with 1.9GB RAM. |
 | **Streaming fix (proposed)** | Works correctly. 677 MB/s encrypt, 553 MB/s decrypt, **3.3 MB peak memory**. SHA-256 verified round-trip. |
 | **Root cause of pipeline getting stuck** | OOM killer terminates the process during encryption of large files. `dmesg` confirms: `Out of memory: Killed process 15926 (haven) anon-rss:1519272kB`. |
@@ -26,19 +26,7 @@
 
 ## 2. Architecture Overview
 
-### 2.1 Old Mechanism (TypeScript / Lit Protocol)
-
-**Files:** `js-services/hybrid-crypto.ts`, `js-services/crypto/lit-client.ts`
-
-The old system used a **hybrid encryption** scheme:
-1. Generate a random AES-256 key locally
-2. Encrypt file data with AES-256-GCM
-3. Encrypt the AES key using **Lit Protocol BLS-IBE** (decentralized access control)
-4. Store encrypted key + access control conditions as metadata
-
-**Why it got stuck:** The Lit Protocol client (`initLitClient()`) connects to `naga` mainnet nodes and requires capacity credits for encryption operations. The JS runtime bridge adds complexity. Multiple processes in logs show `maximum number of running instances reached (1)` — the daemon was already stuck before the OOM.
-
-### 2.2 New Mechanism (Python / Haven-AOL Local)
+### 2.1 Current Mechanism (Python / Haven-AOL Local)
 
 **Files:** `haven_cli/crypto/haven_aol_local.py`, `haven_cli/pipeline/steps/encrypt_step.py`
 
@@ -136,14 +124,6 @@ Two distinct problems, both fatal:
 
 **Problem 1 — OOM (primary):** The `encrypt_bytes()` function in `haven_aol_local.py` is an in-memory implementation. For the 920MB test file, it requires ~2+ GB RAM. The system has 1.9GB. The OOM killer terminates the process silently (exit code 137).
 
-Evidence from `dmesg`:
-```
-oom-kill: task=haven, pid=15926, anon-rss:1519272kB
-oom-kill: task=python3, pid=18239, anon-rss:1622304kB
-```
-
-**Problem 2 — Old Lit Protocol path (historical):** The TypeScript `hybrid-crypto.ts` implementation requires network access to Lit Protocol nodes and capacity credits. The daemon logs show stuck scheduler jobs (`maximum number of running instances reached (1)`), suggesting the old path could hang on network timeouts.
-
 ### Memory Math
 
 | Component | Size |
@@ -216,14 +196,6 @@ for i in range(8):
     per_iv[i + 4] ^= idx_bytes[i]
 ```
 This ensures unique (key, IV) pairs for each chunk, which is required for GCM security. The first 4 bytes of the IV remain constant (the "salt" portion), and the counter portion is modified per chunk.
-
-### 6.4 Old vs New Encryption — Compatibility
-
-The old `hybrid-crypto.ts` format and the new `haven_aol_local.py` format are **not compatible**:
-- Old: Lit Protocol encrypted key, `hybrid-v1` metadata with `accessControlConditions`
-- New: XOR-wrapped key, `gate` metadata with `chain/tokenAddress/threshold/cid`
-
-The streaming format is now the only supported pipeline path. No backward-compatibility or migration strategy is required.
 
 ---
 

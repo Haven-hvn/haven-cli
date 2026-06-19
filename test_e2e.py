@@ -303,59 +303,6 @@ async def test_js_runtime():
         return False
 
 
-async def test_lit_encryption():
-    """Test 6: LIT Protocol Encryption"""
-    log_section("TEST 6: LIT Protocol Encryption")
-    
-    try:
-        from haven_cli.config import get_config
-        from haven_cli.js_runtime.manager import get_bridge
-        
-        config = get_config()
-        
-        logger.info(f"LIT Network: {config.blockchain.get_lit_network()}")
-        logger.info(f"Encryption Enabled: {config.pipeline.encryption_enabled}")
-        
-        # Check private key
-        private_key_path = Path(".privatekey")
-        if private_key_path.exists():
-            private_key = private_key_path.read_text().strip()
-            logger.info(f"Private key loaded: {private_key[:8]}...{private_key[-8:]}")
-        else:
-            raise Exception("Private key file (.privatekey) not found")
-        
-        # Initialize JS bridge for LIT (async)
-        bridge = await get_bridge()
-        
-        logger.info("JS Bridge initialized, testing LIT connection...")
-        
-        # Test LIT network connection
-        try:
-            result = await bridge.call("lit", {
-                "action": "test_connection",
-                "network": config.blockchain.get_lit_network(),
-            })
-            connection_success = result.get("success", False) if result else False
-        except Exception as call_error:
-            logger.warning(f"LIT call not available: {call_error}")
-            result = None
-            connection_success = False
-        
-        log_result("LIT Protocol Encryption", True, {
-            "network": config.blockchain.get_lit_network(),
-            "js_bridge": "initialized",
-            "connection_test": connection_success,
-            "note": "LIT service may need to be started separately" if not connection_success else "OK",
-        })
-        return True
-        
-    except Exception as e:
-        logger.exception(f"LIT Encryption test failed: {e}")
-        test_results["errors"].append(f"LIT Encryption: {str(e)}")
-        log_result("LIT Protocol Encryption", False, {"error": str(e)})
-        return False
-
-
 async def test_filecoin_upload():
     """Test 7: Filecoin Upload (via Synapse)"""
     log_section("TEST 7: Filecoin Upload")
@@ -491,7 +438,6 @@ async def run_all_tests():
     results.append(await test_bittorrent_plugin())
     results.append(await test_vlm_analysis())
     results.append(await test_js_runtime())
-    results.append(await test_lit_encryption())
     results.append(await test_filecoin_upload())
     results.append(await test_arkiv_sync())
     results.append(await test_scheduler())

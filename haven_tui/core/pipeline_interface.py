@@ -11,7 +11,7 @@ import asyncio
 import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine, Dict, List, Optional, TypeVar, Union
+from typing import Any, Callable, Coroutine, Dict, List, Optional, TypeVar, Union, TYPE_CHECKING
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -31,7 +31,8 @@ from haven_cli.database.repositories import (
     PipelineSnapshotRepository,
     DownloadRepository,
 )
-from haven_cli.plugins.manager import PluginManager, get_plugin_manager
+if TYPE_CHECKING:
+    from haven_cli.plugins.manager import PluginManager, get_plugin_manager
 
 
 @dataclass
@@ -472,6 +473,7 @@ class PipelineInterface:
         
         # Initialize plugin manager if not provided
         if self._plugin_manager is None:
+            from haven_cli.plugins.manager import get_plugin_manager
             self._plugin_manager = get_plugin_manager()
         
         return self
