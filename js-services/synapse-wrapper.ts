@@ -34,7 +34,7 @@ import {
 } from 'filecoin-pin/core/upload';
 import type { Synapse } from '@filoz/synapse-sdk';
 import {
-  asPieceCID,
+  tryFrom,
   chainResolver,
   filbeamResolver,
   resolvePieceUrl,
@@ -544,7 +544,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
     pieceCid: string,
     catalogOwner?: string
   ): Promise<string> {
-    const parsed = asPieceCID(pieceCid);
+    const parsed = tryFrom(pieceCid);
     if (parsed == null) {
       throw new Error(`Invalid piece CID: ${pieceCid}`);
     }
