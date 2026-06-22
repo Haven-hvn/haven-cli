@@ -11,8 +11,8 @@ name = "vetkd_py"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module"] }
-ic-vetkeys = "0.7"
+pyo3 = { version = "=0.29.0", features = ["extension-module"] }
+ic-vetkeys = "=0.7.0"
 # VetKDKeyId / VetKDCurve must match ic-vetkeys (via ic-cdk-management-canister).
-ic-management-canister-types = "0.7"
-rand = "0.8"
+ic-management-canister-types = "=0.8.0"
+rand = "=0.10.1"
