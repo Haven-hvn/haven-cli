@@ -169,16 +169,27 @@ class VideoListWidget(DataTable):
         self.show_cursor = True
         
     def compose(self):
-        """Set up the table columns."""
-        for key, label, width, visible in self.COLUMNS:
-            if visible:
-                self.add_column(label, key=key, width=width)
+        """Compose the widget.
+
+        ``DataTable`` is a leaf widget — it doesn't yield children. Column
+        setup belongs in ``on_mount`` (see I13 / C2 in the proposal); calling
+        ``add_column`` from ``compose`` happens to work today but is fragile
+        because Textual reserves the right to call ``compose`` more than
+        once, which would raise on the duplicate column key.
+        """
         return []
-    
+
     def on_mount(self) -> None:
-        """Handle mount event - do initial data load."""
-        # Initial data load after widget is mounted
+        """Handle mount event - install columns and do initial data load."""
+        # Install columns once, idempotently. We guard with ``self.columns``
+        # so that if Textual ever invokes on_mount twice (or if the widget
+        # is re-mounted) we don't blow up on duplicate keys.
+        if not self.columns:
+            for key, label, width, visible in self.COLUMNS:
+                if visible:
+                    self.add_column(label, key=key, width=width)
         self.refresh_data()
+
     
     def _format_progress_bar(self, progress: float, width: int = 10) -> str:
         """Format a progress bar using Unicode block characters.
@@ -533,47 +544,139 @@ class VideoListWidget(DataTable):
             return self.controller.get_sort_description()
         return ""
     
+    # Maps key (e.g. "title") -> column index in the table. Built lazily on
+    # first _update_table call so we don't have to depend on construction
+    # order of the COLUMNS list.
+    _column_index: ClassVar[Optional[dict[str, int]]] = None
+
+    @classmethod
+    def _build_column_index(cls) -> dict[str, int]:
+        """Compute the visible-column-index map once and cache it on the class."""
+        if cls._column_index is None:
+            cls._column_index = {
+                key: i
+                for i, (key, _label, _width, visible) in enumerate(
+                    [c for c in cls.COLUMNS if c[3]]
+                )
+                for key, *_ in [(key,)]  # noqa: E501 - keep the tuple flat
+            }
+            # The list comprehension above is convoluted because COLUMNS holds
+            # all columns whether visible or not. Rebuild simply:
+            cls._column_index = {}
+            visible_idx = 0
+            for key, _label, _width, visible in cls.COLUMNS:
+                if visible:
+                    cls._column_index[key] = visible_idx
+                    visible_idx += 1
+        return cls._column_index
+
+    def _row_cells(self, row: VideoRow) -> list[str]:
+        """Render a VideoRow into the ordered cell list the table expects."""
+        progress_bar = self._format_progress_bar(row.progress)
+        stage_style = self._get_stage_style(row.stage, row.status)
+        sel_indicator = ""
+        if self.batch_operations and self.batch_operations.is_selected(row.video_id):
+            sel_indicator = "✓"
+        skip_reason_display = (
+            f"[warning]{row.skip_reason}[/warning]" if row.skip_reason else ""
+        )
+        return [
+            str(row.index),
+            sel_indicator,
+            row.title,
+            f"[{stage_style}]{row.stage}[/{stage_style}]",
+            progress_bar,
+            row.speed,
+            row.plugin,
+            row.size,
+            row.eta,
+            row.started_at,
+            skip_reason_display,
+        ]
+
     def _update_table(self) -> None:
-        """Update the table with current video rows."""
-        # Clear existing rows
-        self.clear()
-        
-        # Add rows
+        """Update the table by diffing against the previous render.
+
+        The previous implementation called ``self.clear()`` and then re-added
+        every row on every refresh tick (~2s). At even moderate row counts
+        this caused visible flicker, scrolled the cursor away from the user's
+        selected row whenever sort order shifted (e.g. when a video flipped
+        from active → completed), and was wasted work because in steady state
+        only a handful of cells actually change per tick.
+
+        New strategy:
+
+        * Add new rows by ``video_id`` key.
+        * Remove rows whose ``video_id`` is no longer in the model.
+        * For surviving rows, compare the cell tuple against what we
+          rendered last tick and only call ``update_cell`` for the cells
+          that changed. The DataTable preserves cursor position across this
+          path.
+
+        Falls back to clear-and-rebuild on any error (Textual API drift,
+        missing keys, etc.) so a regression here can't lock the UI into a
+        broken state.
+        """
+        column_index = self._build_column_index()
+        new_cells_by_key: dict[str, list[str]] = {}
+        new_order: list[str] = []
         for row in self._video_rows:
-            progress_bar = self._format_progress_bar(row.progress)
-            
-            # Apply styling based on stage and status
-            stage_style = self._get_stage_style(row.stage, row.status)
-            
-            # Selection indicator
-            sel_indicator = ""
-            if self.batch_operations and self.batch_operations.is_selected(row.video_id):
-                sel_indicator = "✓"
-            
-            # Format skip reason with warning style if present
-            skip_reason_display = ""
-            if row.skip_reason:
-                skip_reason_display = f"[warning]{row.skip_reason}[/warning]"
-            
-            cells = [
-                str(row.index),
-                sel_indicator,
-                row.title,
-                f"[{stage_style}]{row.stage}[/{stage_style}]",
-                progress_bar,
-                row.speed,
-                row.plugin,
-                row.size,
-                row.eta,
-                row.started_at,
-                skip_reason_display,
-            ]
-            
-            # Add row with metadata for selection
-            self.add_row(
-                *cells,
-                key=str(row.video_id),
-            )
+            key = str(row.video_id)
+            new_order.append(key)
+            new_cells_by_key[key] = self._row_cells(row)
+
+        # First tick after compose: nothing tracked yet, just build it fresh.
+        previous_cells: dict[str, list[str]] = getattr(
+            self, "_last_cells_by_key", {}
+        )
+
+        try:
+            existing_keys = set(previous_cells.keys())
+            new_keys = set(new_cells_by_key.keys())
+
+            # Remove rows that disappeared. Wrap in try/except per-row in case
+            # the table internals don't recognize the key (e.g. after a
+            # crash-driven full clear last tick).
+            for gone_key in existing_keys - new_keys:
+                try:
+                    self.remove_row(gone_key)
+                except Exception:
+                    pass
+
+            # Add rows that are new.
+            for added_key in new_keys - existing_keys:
+                self.add_row(*new_cells_by_key[added_key], key=added_key)
+
+            # Update cells that actually changed for surviving rows.
+            for key in existing_keys & new_keys:
+                old = previous_cells[key]
+                new = new_cells_by_key[key]
+                if old == new:
+                    continue
+                for col_key, col_idx in column_index.items():
+                    if col_idx >= len(new) or col_idx >= len(old):
+                        continue
+                    if old[col_idx] != new[col_idx]:
+                        try:
+                            self.update_cell(key, col_key, new[col_idx])
+                        except Exception:
+                            # If update_cell fails (e.g. the row is mid-removal),
+                            # fall through to a full rebuild on the next tick by
+                            # clearing the cache.
+                            previous_cells = {}
+                            break
+
+            self._last_cells_by_key = new_cells_by_key
+            self._row_order = new_order
+        except Exception:
+            # Defensive fallback: anything weird → full rebuild. We must keep
+            # the table consistent with the model.
+            self.clear()
+            for key in new_order:
+                self.add_row(*new_cells_by_key[key], key=key)
+            self._last_cells_by_key = new_cells_by_key
+            self._row_order = new_order
+
     
     def get_selected_video_id(self) -> Optional[int]:
         """Get the ID of the currently selected video.
@@ -745,7 +848,7 @@ class VideoListFooter(Static):
         **kwargs: Any
     ) -> None:
         """Initialize the footer.
-        
+
         Args:
             show_graph: Whether the speed graph is currently visible
             batch_mode: Whether batch mode is active
@@ -756,6 +859,27 @@ class VideoListFooter(Static):
         self._show_graph = show_graph
         self._batch_mode = batch_mode
         self._selection_count = selection_count
+        # Refresh-health metrics (C5 in the proposal). When the polling
+        # path stops working — as it did before Milestones A and B — the
+        # footer's "last refresh" stamp won't advance, so users can see
+        # at a glance that something is wrong instead of staring at a
+        # frozen table and assuming the pipeline died.
+        self._last_refresh_at: Optional[datetime] = None
+        self._last_refresh_duration_ms: Optional[float] = None
+        self._refresh_error_count: int = 0
+
+    def set_refresh_health(
+        self,
+        last_refresh_at: Optional[datetime],
+        duration_ms: Optional[float],
+        error_count: int,
+    ) -> None:
+        """Update the refresh-health indicator and re-render the footer."""
+        self._last_refresh_at = last_refresh_at
+        self._last_refresh_duration_ms = duration_ms
+        self._refresh_error_count = error_count
+        self._update_content()
+
     
     def compose(self):
         """Set up the footer content - returns empty as content is set via update()."""
@@ -802,11 +926,50 @@ class VideoListFooter(Static):
         else:
             # Normal mode footer
             graph_indicator = "ON" if self._show_graph else "OFF"
-            self.update(
+            health = self._format_refresh_health()
+            base = (
                 f"[q] Quit  [r] Refresh  [d] Details  "
                 f"[g] Graph ({graph_indicator})  [v] Analytics  [l] Event Log  "
                 f"[f/c/x] Filter  [s] Sort  [b] Batch  [?] Help"
             )
+            if health:
+                self.update(f"{base}  •  {health}")
+            else:
+                self.update(base)
+
+    def _format_refresh_health(self) -> str:
+        """Render the refresh-health string for the right side of the footer.
+
+        Examples::
+
+            "Refreshed 0.4s ago • 12 ms"
+            "Refreshed 30m ago • 12 ms • 3 err"
+
+        Returns an empty string if we don't have any data yet.
+        """
+        if self._last_refresh_at is None:
+            return ""
+
+        age = (datetime.now(timezone.utc) - self._last_refresh_at).total_seconds()
+        if age < 0:
+            # Clock skew between threads — pretend it just happened.
+            age = 0
+        if age < 10:
+            age_str = f"{age:.1f}s"
+        elif age < 60:
+            age_str = f"{age:.0f}s"
+        elif age < 3600:
+            age_str = f"{age / 60:.0f}m"
+        else:
+            age_str = f"{age / 3600:.0f}h"
+
+        parts = [f"Refreshed {age_str} ago"]
+        if self._last_refresh_duration_ms is not None:
+            parts.append(f"{self._last_refresh_duration_ms:.0f} ms")
+        if self._refresh_error_count > 0:
+            parts.append(f"{self._refresh_error_count} err")
+        return " • ".join(parts)
+
 
 
 class VideoListScreen(Screen):
@@ -907,6 +1070,12 @@ class VideoListScreen(Screen):
         self._batch_operations: Optional[BatchOperations] = None
         if state_manager and pipeline_interface:
             self._batch_operations = BatchOperations(state_manager, pipeline_interface)
+
+        # Refresh-health bookkeeping for the footer indicator (C5).
+        self._last_refresh_at: Optional[datetime] = None
+        self._last_refresh_duration_ms: Optional[float] = None
+        self._refresh_error_count: int = 0
+
     
     def compose(self):
         """Compose the screen layout."""
@@ -936,8 +1105,11 @@ class VideoListScreen(Screen):
         """Handle mount event - start auto-refresh timer."""
         self._start_refresh_timer()
         self._update_header()
-        # Initial data load - use a small delay to ensure DataTable is ready
-        self.call_later(self._refresh_data)
+        # Initial data load. ``_refresh_data`` is now a coroutine, so we
+        # dispatch it through the worker pool. ``call_later`` would be wrong
+        # here because it expects a callback, not a coroutine.
+        self._trigger_refresh()
+
     
     def on_unmount(self) -> None:
         """Handle unmount event - stop timer."""
@@ -958,27 +1130,86 @@ class VideoListScreen(Screen):
             self._refresh_timer = None
     
     def _auto_refresh(self) -> None:
-        """Perform auto-refresh if enabled."""
+        """Perform auto-refresh if enabled.
+
+        We dispatch the refresh through ``run_worker(exclusive=True)`` so
+        that if a previous tick is still running (slow DB, big result set,
+        whatever) we drop the new tick instead of stacking them up. Without
+        ``exclusive=True`` Textual would happily queue refreshes and a slow
+        period would lead to a thundering herd when things sped back up.
+        """
         if self.auto_refresh:
-            self._refresh_data()
-    
-    def _refresh_data(self) -> None:
-        """Refresh the video list data."""
+            self.run_worker(
+                self._refresh_data(),
+                name="video_list_refresh",
+                exclusive=True,
+                group="video_list_refresh",
+            )
+
+    async def _refresh_data(self) -> None:
+        """Refresh the video list data.
+
+        Bug being fixed (see I3 / A3 in TUI_IMPROVEMENTS_PROPOSAL.md):
+
+            asyncio.create_task(self.state_manager.refresh_from_database())
+            video_list.refresh_data()  # reads state RIGHT NOW
+
+        That fired the DB read into the background and then immediately
+        rendered the (still-stale) in-memory state. Each tick the user saw
+        the *previous* tick's data — even after the per-tick session change
+        in PipelineInterface gave us fresh DB results.
+
+        The fix is to make this method a coroutine that awaits the database
+        refresh before touching the table, then update the UI synchronously.
+        Combined with ``run_worker(exclusive=True)`` in the caller, this
+        gives us at most one in-flight refresh and guarantees the table
+        reflects what the state manager knows.
+
+        We also record refresh duration and bump the error counter so
+        the footer can show ``Refreshed 0.4s ago • 12 ms • 0 err``
+        (Milestone C5).
+        """
+        import logging
+        import time
+
+        start = time.perf_counter()
+        success = False
+
         try:
-            # First, refresh state from database to get latest data
             if self.state_manager is not None:
-                # Use create_task to run the async refresh in the background
-                import asyncio
-                asyncio.create_task(self.state_manager.refresh_from_database())
-            
+                await self.state_manager.refresh_from_database()
+
             video_list = self.query_one(VideoListWidget)
             video_list.refresh_data()
             self._update_header()
             self._update_speed_graph()
-        except Exception as e:
-            # Log error but don't crash
-            import logging
-            logging.getLogger(__name__).error(f"Error refreshing data: {e}")
+            success = True
+        except Exception as e:  # pragma: no cover - defensive
+            logging.getLogger(__name__).warning(
+                "VideoListScreen refresh failed: %s", e
+            )
+            self._refresh_error_count += 1
+        finally:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            self._last_refresh_duration_ms = elapsed_ms
+            if success:
+                self._last_refresh_at = datetime.now(timezone.utc)
+            self._update_footer_health()
+
+    def _update_footer_health(self) -> None:
+        """Push the latest refresh-health stats into the footer."""
+        try:
+            footer = self.query_one(VideoListFooter)
+            footer.set_refresh_health(
+                self._last_refresh_at,
+                self._last_refresh_duration_ms,
+                self._refresh_error_count,
+            )
+        except Exception:
+            # Footer not mounted yet — fine, will catch up on next tick.
+            pass
+
+
     
     def _update_header(self) -> None:
         """Update the header with current stats."""
@@ -1042,9 +1273,20 @@ class VideoListScreen(Screen):
             self.app.notify(f"Selected {len(video_ids)} videos", timeout=2.0)
     
     def action_refresh(self) -> None:
-        """Manual refresh action."""
-        self._refresh_data()
+        """Manual refresh action.
+
+        ``_refresh_data`` is now a coroutine; we dispatch it through the
+        same exclusive worker that ``_auto_refresh`` uses so a manual `r`
+        and an in-flight tick don't double up on the database.
+        """
+        self.run_worker(
+            self._refresh_data(),
+            name="video_list_refresh",
+            exclusive=True,
+            group="video_list_refresh",
+        )
         self.app.notify("Refreshed", timeout=1.0)
+
     
     def action_toggle_auto_refresh(self) -> None:
         """Toggle auto-refresh on/off."""
@@ -1262,8 +1504,8 @@ class VideoListScreen(Screen):
                 self._batch_operations.clear_selection()
         
         self._update_footer()
-        self._refresh_data()
-    
+        self._trigger_refresh()
+
     def action_exit_batch_mode(self) -> None:
         """Exit batch mode."""
         if self.batch_mode:
@@ -1271,8 +1513,9 @@ class VideoListScreen(Screen):
             if self._batch_operations:
                 self._batch_operations.clear_selection()
             self._update_footer()
-            self._refresh_data()
+            self._trigger_refresh()
             self.app.notify("Batch mode OFF", timeout=2.0)
+
     
     def action_select_all(self) -> None:
         """Select all visible videos."""
@@ -1324,10 +1567,11 @@ class VideoListScreen(Screen):
             
             self._batch_operations.clear_selection()
             self._update_footer()
-            self._refresh_data()
-            
+            await self._refresh_data()
+
         except Exception as e:
             self.app.notify(f"Batch retry failed: {e}", severity="error", timeout=3.0)
+
     
     def action_batch_remove(self) -> None:
         """Remove selected videos from queue."""
@@ -1365,10 +1609,11 @@ class VideoListScreen(Screen):
                 )
             
             self._update_footer()
-            self._refresh_data()
-            
+            await self._refresh_data()
+
         except Exception as e:
             self.app.notify(f"Batch remove failed: {e}", severity="error", timeout=3.0)
+
     
     def action_batch_export(self) -> None:
         """Export selected videos to JSON file."""
@@ -1440,24 +1685,34 @@ class VideoListScreen(Screen):
         except Exception:
             pass  # Footer may not be available yet
     
-    def _refresh_data(self) -> None:
-        """Refresh the video list data."""
+    # Note: a previous revision had a second, sync ``_refresh_data`` method
+    # right here that shadowed the async one defined earlier in the class
+    # (Python keeps the *last* definition). That's why the original race
+    # bug persisted even though the upper definition looked correct in
+    # isolation. The duplicate has been removed.
+
+    def _trigger_refresh(self) -> None:
+        """Schedule a non-blocking refresh from sync action handlers.
+
+        Synchronous Textual action methods can't ``await`` so we dispatch
+        the async ``_refresh_data`` through the same exclusive worker that
+        the auto-refresh timer uses. This keeps refreshes serialized and
+        prevents two reads from racing each other.
+        """
         try:
-            # First, refresh state from database to get latest data
-            if self.state_manager is not None:
-                # Use create_task to run the async refresh in the background
-                import asyncio
-                asyncio.create_task(self.state_manager.refresh_from_database())
-            
-            video_list = self.query_one(VideoListWidget)
-            video_list.refresh_data()
-            self._update_header()
-            self._update_speed_graph()
+            self.run_worker(
+                self._refresh_data(),
+                name="video_list_refresh",
+                exclusive=True,
+                group="video_list_refresh",
+            )
         except Exception:
-            pass  # Widget may not be available yet
+            # If we're being torn down or the screen isn't mounted, skip.
+            pass
 
 
 class VideoListView:
+
     """Main video list view - the primary TUI interface.
     
     This class provides a high-level interface for the video list view,
@@ -1516,9 +1771,15 @@ class VideoListView:
         return self.screen
     
     def refresh(self) -> None:
-        """Refresh the video list display."""
+        """Refresh the video list display.
+
+        ``_refresh_data`` is now a coroutine, so we go through the screen's
+        sync trigger helper rather than awaiting it from this synchronous
+        wrapper.
+        """
         if self.screen is not None:
-            self.screen._refresh_data()
+            self.screen._trigger_refresh()
+
     
     def get_selected_video_id(self) -> Optional[int]:
         """Get the currently selected video ID.

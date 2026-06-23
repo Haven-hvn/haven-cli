@@ -923,3 +923,80 @@ class TorrentDownload(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class PipelineEvent(Base):
+    """Durable, append-only tail of pipeline events for cross-process delivery.
+
+    The in-process ``EventBus`` defined in ``haven_cli.pipeline.events`` lives
+    inside whichever Python process happens to import it. The daemon process
+    (``haven run daemon``) and the TUI process (``haven tui``) are distinct
+    processes; their buses are completely separate, which means progress
+    events emitted on the daemon's bus never reach the TUI.
+
+    To bridge the gap we persist a copy of every event the daemon emits into
+    this table. The TUI process then tails the table by ``id`` and replays
+    the events through its local bus, where ``StateManager`` is already
+    subscribed. This was added in Milestone B of the TUI improvements
+    proposal — see ``docs/TUI_IMPROVEMENTS_PROPOSAL.md`` R2 / B1.
+
+    Notes on schema choices:
+
+    * ``id`` is an autoincrement integer that doubles as a monotonic
+      sequence number. Consumers track the last ``id`` they processed and
+      ask for ``id > last_id`` on the next poll.
+    * ``payload_json`` is the event payload as JSON. We store it as a
+      string rather than a JSON column so SQLite doesn't try to interpret
+      it on every read; the consumer parses on demand.
+    * Indexed by ``(id)`` (primary key, implicit) and ``(ts, event_type)``
+      for the event log screen's filter queries.
+
+    The table is written by the writer (daemon) and read by readers (TUI
+    instances). Under WAL — enabled by ``haven_cli/database/connection.py``
+    — readers don't block the writer and the TUI sees newly-committed rows
+    as soon as the daemon's transaction commits.
+    """
+
+    __tablename__ = "pipeline_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # Wall-clock timestamp the event was published. UTC.
+    ts: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    # ``EventType.name`` — e.g. ``DOWNLOAD_PROGRESS``. We store the *name*
+    # rather than the integer value because Python ``Enum.auto()`` values
+    # are not stable across reorderings of the enum, and we don't want to
+    # tie the on-disk format to source ordering.
+    event_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+
+    # ``Event.correlation_id`` UUID stringified. Optional. Lets the event
+    # log screen group related events (one video's whole pipeline run).
+    correlation_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+
+    # The component that produced the event (e.g. "DownloadStep",
+    # "PipelineInterface"). Useful for debugging.
+    source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # JSON-encoded payload. We don't validate or normalize on the writer
+    # side — the consumer is responsible for parsing.
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    __table_args__ = (
+        Index("ix_pipeline_events_ts_type", "ts", "event_type"),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "ts": self.ts.isoformat() if self.ts else None,
+            "event_type": self.event_type,
+            "correlation_id": self.correlation_id,
+            "source": self.source,
+            "payload_json": self.payload_json,
+        }
+

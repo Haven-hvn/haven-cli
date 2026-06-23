@@ -93,16 +93,49 @@ def init_engine(config: Optional[HavenConfig] = None) -> Engine:
         echo=False,  # Set to True for SQL debugging
     )
     
-    # Enable foreign key support for SQLite
+    # Enable foreign key support for SQLite + WAL/concurrency tuning.
+    #
+    # WAL mode is critical for the daemon + TUI deployment topology:
+    # the daemon writes from one process while the TUI reads from another.
+    # Without WAL, an open reader transaction in the TUI prevents writers
+    # from making progress AND pins the TUI's view of the database to a
+    # frozen snapshot, which is one of the two root causes of "have to
+    # restart the TUI to see updates" (see docs/TUI_IMPROVEMENTS_PROPOSAL.md
+    # R1). WAL gives readers a consistent snapshot per-statement without
+    # blocking writers.
     @event.listens_for(_engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
-        """Enable SQLite foreign key support."""
+        """Enable SQLite foreign keys, WAL mode, and reasonable concurrency
+        defaults for every new connection.
+        """
         cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+            # journal_mode is per-database, not per-connection, but issuing
+            # the pragma on every connect is cheap and idempotent and ensures
+            # databases created without WAL get upgraded the first time we
+            # touch them.
+            cursor.execute("PRAGMA journal_mode=WAL")
+            # synchronous=NORMAL is the standard pairing with WAL: durable
+            # against crashes (just not power-loss-since-last-checkpoint),
+            # dramatically faster than FULL.
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            # Wait up to 5s for write locks instead of erroring immediately;
+            # the TUI does many short reads and the daemon does many short
+            # writes, so brief contention is normal.
+            cursor.execute("PRAGMA busy_timeout=5000")
+            # Negative cache_size = KiB; -64000 = ~64 MiB page cache. Cheap.
+            cursor.execute("PRAGMA cache_size=-64000")
+            # Memory-mapped I/O up to 256 MiB for read-heavy workloads.
+            cursor.execute("PRAGMA mmap_size=268435456")
+            # Store temp tables/indexes in memory (they're small).
+            cursor.execute("PRAGMA temp_store=MEMORY")
+        finally:
+            cursor.close()
     
     logger.debug(f"Database engine initialized: {config.database_url}")
     return _engine
+
 
 
 def get_session_maker(config: Optional[HavenConfig] = None) -> sessionmaker:

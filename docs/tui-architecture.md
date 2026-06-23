@@ -2,6 +2,28 @@
 
 Technical documentation of the Haven TUI architecture, data flow, and component design.
 
+> **Recent changes (Milestones A & B from
+> [`TUI_IMPROVEMENTS_PROPOSAL.md`](./TUI_IMPROVEMENTS_PROPOSAL.md))**
+>
+> The architecture described below was significantly reworked to fix the
+> "TUI looks frozen until I close and reopen it" bug. The two structural
+> changes are:
+>
+> 1. **No more long-lived SQLAlchemy session.** `PipelineInterface` now
+>    holds a `sessionmaker` factory and every public method opens a
+>    short-lived session, so each refresh tick sees the latest committed
+>    data instead of a frozen snapshot. The SQLite engine also runs in
+>    WAL mode now (`haven_cli/database/connection.py`).
+> 2. **Cross-process events via a tail table.** The daemon writes every
+>    event it publishes to a new `pipeline_events` SQLite table; the TUI
+>    runs a `SqliteEventConsumer` that tails that table and replays
+>    events onto its in-process bus. `StateManager` is subscribed to
+>    that bus, so cross-process progress now flows end-to-end.
+>
+> If you're updating this document, treat the rest of it as the
+> *current* architecture; the two notes above just summarise the
+> transition.
+
 ## Table of Contents
 
 1. [System Overview](#system-overview)
@@ -14,6 +36,7 @@ Technical documentation of the Haven TUI architecture, data flow, and component 
 8. [Data Access Layer](#data-access-layer)
 9. [Plugin Integration](#plugin-integration)
 10. [Configuration System](#configuration-system)
+11. [Cross-process Event Flow (Milestone B)](#cross-process-event-flow-milestone-b)
 
 ---
 
@@ -23,20 +46,23 @@ Haven TUI is a Terminal User Interface built on the [Textual](https://textual.te
 
 ### Key Design Principles
 
-- **Reactive UI**: Components update automatically when underlying data changes
-- **Repository Pattern**: Data access abstracted through repository interfaces
-- **Event-Driven**: Real-time updates via database event consumption
-- **Modular Views**: Separate screens for different views (list, detail, analytics)
+- **Reactive UI**: Components update automatically when underlying data changes.
+- **Repository Pattern**: Data access abstracted through repository interfaces. Repositories are stateless w.r.t. session lifetime — the app passes them a session factory, not a session.
+- **Cross-process event delivery**: The daemon's in-process `EventBus` is mirrored to a `pipeline_events` SQLite table that the TUI tails. `StateManager` is subscribed to the TUI-side bus and only sees events after the consumer replays them.
+- **Modular Views**: Separate screens for different views (list, detail, analytics).
+- **Short-lived database sessions**: Every read or write opens its own session and closes it before returning. We do **not** hold a long-lived `Session` because under SQLite that pins a frozen reader snapshot — see Milestone A in the proposal.
 
 ### Technology Stack
 
 | Layer | Technology |
 |-------|------------|
 | UI Framework | Textual (Python) |
-| Database | SQLite |
-| Event Consumption | SQLAlchemy + polling |
+| Database | SQLite (WAL mode) |
+| Event Consumption | `pipeline_events` table tail + in-process `EventBus` |
 | Graphing | plotille (ASCII) / fallback |
 | Styling | CSS (Textual flavor) |
+| Logging | rotating file handler at `~/.local/share/haven/tui.log` (`HAVEN_TUI_DEBUG=1` for DEBUG) |
+
 
 ---
 
@@ -795,3 +821,109 @@ metrics.record_query_time(query_name, duration_ms)
 # Track memory usage
 metrics.record_memory_usage(bytes_used)
 ```
+
+---
+
+## Cross-process Event Flow (Milestone B)
+
+The TUI is normally launched as ``haven tui`` while the pipeline runs
+as ``haven run daemon``. These are separate Python processes. The
+in-process ``EventBus`` defined in ``haven_cli.pipeline.events`` is a
+process-local singleton, so events emitted on the daemon's bus do not
+naturally reach the TUI.
+
+To bridge the gap we use a small SQLite tail table:
+
+```
+                              ┌──────────────────────────┐
+                              │     SQLite database      │
+  ┌───────────────────────┐   │                          │   ┌───────────────────────────┐
+  │   haven run daemon    │   │   pipeline_events table  │   │        haven tui          │
+  │                       │   │                          │   │                           │
+  │  EventBus.publish(e)  │──▶│  INSERT (id auto-incr)   │──▶│  SqliteEventConsumer      │
+  │   ├─ in-proc handlers │   │                          │   │   ├─ tail by last_id      │
+  │   └─ persistent_sink  │   │  PRAGMA data_version     │   │   ├─ data_version pragma  │
+  │      (make_sqlite_…)  │   │  bumps on every commit   │   │   └─ EventBus.publish(e)  │
+  │                       │   │                          │   │                           │
+  └───────────────────────┘   └──────────────────────────┘   │       ↓                   │
+                                                              │  StateManager handlers    │
+                                                              │  (pre-existing)           │
+                                                              └───────────────────────────┘
+```
+
+### Writer side
+
+* ``EventBus.attach_persistent_sink(make_sqlite_event_sink())`` is
+  called once during ``HavenDaemon.start()``. The sink is invoked
+  inside ``EventBus.publish`` after the in-process fan-out, runs in
+  the default thread executor (so the writer's event loop isn't
+  blocked on disk I/O), and writes one row per event with
+  ``event_type``, ``correlation_id``, ``source`` and a JSON-encoded
+  payload.
+* ``Base.metadata.create_all`` in the daemon ensures the table exists
+  even on a fresh database. The table is also created on demand by
+  the consumer if the daemon hasn't run yet.
+
+### Reader side
+
+* The TUI app constructs ``SqliteEventConsumer`` with the
+  pipeline-interface session factory and the local event bus, then
+  ``await consumer.start()``.
+* The consumer polls every 250 ms by default. On each tick it asks
+  ``PRAGMA data_version`` first; if nothing has changed since last
+  tick it returns immediately without doing a SELECT, keeping idle
+  CPU near zero.
+* Otherwise it does ``SELECT … WHERE id > last_id ORDER BY id LIMIT
+  500``, parses each row back into an ``Event`` (including unknown
+  ``event_type`` values, which are skipped but still advance the
+  cursor), and ``await bus.publish(event)`` for each. The local bus is
+  the same singleton ``StateManager`` subscribed to via
+  ``PipelineInterface.on_event``, so existing TUI state-update
+  handlers fire as if the events had been emitted in-process.
+* On startup ``last_id`` is set to ``MAX(id)`` so the TUI doesn't
+  replay yesterday's progress events. Pass ``catch_up_seconds`` to
+  the consumer constructor if a short lookback is desired.
+
+### WAL is required
+
+This whole flow assumes WAL (`journal_mode=WAL`). Without WAL the
+daemon's writer transaction would block the TUI's reads (or
+vice-versa), and a long-running TUI read could starve the daemon's
+event commits. ``haven_cli/database/connection.py`` enables WAL on
+every new connection alongside ``synchronous=NORMAL`` and a 5-second
+busy timeout.
+
+### Failure modes and mitigations
+
+| Failure | Effect | Mitigation |
+|---------|--------|------------|
+| Sink write fails | One event row missing | Sink logs warning; bus subscribers already received the event in the daemon. |
+| Consumer cannot create the table | Cross-process events silently disabled | TUI falls back to polling; user still sees fresh data within `display.refresh_rate`. |
+| TUI starts before daemon | `pipeline_events` doesn't exist yet | Consumer's `_fetch_batch` swallows `OperationalError` and runs `Base.metadata.create_all`. |
+| TUI is older than daemon | Unknown `event_type` names appear | Consumer logs and skips, but advances `last_id` so it doesn't replay forever. |
+| Database wiped while TUI is running | Cursor stale | Consumer detects table going missing on next poll, re-creates it, resets cursor to 0. |
+
+### Tuning knobs
+
+* ``poll_interval_seconds`` – default 0.25. Smaller is more CPU; larger
+  is more latency.
+* ``max_batch`` – default 500. Caps rows fetched per tick so a backlog
+  doesn't stall the UI.
+* ``HAVEN_TUI_DEBUG=1`` – enables DEBUG-level logging in
+  ``~/.local/share/haven/tui.log`` so you can see exactly which
+  events are being replayed.
+
+### Observability
+
+The footer of the video list screen now shows a refresh-health
+indicator (Milestone C5):
+
+```
+[q] Quit  [r] Refresh  …  •  Refreshed 0.4s ago • 12 ms
+```
+
+If the polling path stops working — for instance because someone
+re-introduces the long-lived session bug — the "ago" stamp will stop
+advancing and the user will see the symptom immediately rather than
+staring at frozen progress bars and assuming the pipeline died.
+

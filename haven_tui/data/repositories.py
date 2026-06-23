@@ -678,7 +678,14 @@ class JobHistoryRepository:
 
 
 class SpeedHistoryRepository:
-    """Repository for speed history queries (for graphing)."""
+    """Repository for speed history queries (for graphing).
+
+    This repository is owned by the TUI app and persists for the lifetime of
+    the TUI process, but it does NOT hold a long-lived SQLAlchemy session
+    (which would pin a stale read snapshot — see TUI_IMPROVEMENTS_PROPOSAL.md
+    R1). Instead it holds a ``sessionmaker`` factory and opens a short-lived
+    session per call, so each query sees the latest committed data.
+    """
 
     def __init__(
         self,
@@ -686,24 +693,103 @@ class SpeedHistoryRepository:
         db_url: Optional[str] = None,
         max_history_seconds: int = 300,
     ):
-        """Initialize repository with database session or URL.
+        """Initialize repository with a session, sessionmaker, or db_url.
+
+        The repository supports three construction modes:
+
+        1. ``session=`` — use a caller-provided session for every query. This
+           is the legacy mode and is appropriate for short-lived call sites
+           (e.g. a single screen render) where the caller owns the session.
+        2. ``db_url=`` — build a private ``sessionmaker`` bound to the
+           configured engine and open a fresh session per query. This is the
+           recommended mode for the TUI app, which lives for many hours.
+        3. Neither — raises ``ValueError``.
+
+        Previously the ``db_url`` path mistakenly assigned a
+        ``_GeneratorContextManager`` (the result of ``get_db_session()``) to
+        ``self.session``, so every query method threw at runtime. We now build
+        a real factory.
 
         Args:
-            session: SQLAlchemy session (optional if db_url provided)
-            db_url: Database URL string (optional if session provided)
-            max_history_seconds: Maximum history to keep in seconds (default 300 = 5 min)
+            session: SQLAlchemy session (optional if db_url provided).
+            db_url: Database URL string (optional if session provided). Note
+                that we only consult the URL to confirm the global haven-cli
+                engine has been initialized; the actual binding comes from
+                ``get_session_maker``.
+            max_history_seconds: Maximum history to keep in seconds
+                (default 300 = 5 min).
         """
+        # Either we hold a single session, or we hold a factory that mints
+        # short-lived sessions on demand. Never both.
+        self._session: Optional[Session] = None
+        self._session_factory = None  # sessionmaker-compatible callable
+
         if session is not None:
-            self.session = session
+            self._session = session
         elif db_url is not None:
-            # Create session from db_url
-            from haven_cli.database.connection import get_db_session
-            self.session = get_db_session()
-            self._owns_session = True
+            # Build a real sessionmaker from haven-cli's global engine. We
+            # ignore the literal db_url string here because haven-cli already
+            # owns engine initialization through HavenConfig; passing a
+            # stray URL would risk creating a second engine pointed at a
+            # different database file.
+            from haven_cli.database.connection import get_session_maker
+
+            self._session_factory = get_session_maker()
         else:
             raise ValueError("Either session or db_url must be provided")
-        
+
         self.max_history_seconds = max_history_seconds
+
+    # Backwards-compatible attribute for callers that still poke .session
+    # directly. When we own a factory it returns a fresh session each access,
+    # which is fine for one-shot uses but each caller MUST close the session
+    # they receive (or use _session_scope() which handles it for them).
+    @property
+    def session(self) -> Session:
+        """Return a usable session.
+
+        If the repository was constructed with a caller-owned session, the
+        same instance is returned every time. Otherwise a new short-lived
+        session is created from the factory.
+        """
+        if self._session is not None:
+            return self._session
+        if self._session_factory is not None:
+            return self._session_factory()
+        raise RuntimeError("SpeedHistoryRepository is not configured")
+
+    @session.setter
+    def session(self, value: Session) -> None:
+        """Allow tests to swap in a session."""
+        self._session = value
+
+    def _session_scope(self):
+        """Context manager that yields a session and cleans up if we own it.
+
+        Internal helper — query methods should call this so they don't leak
+        connections when running in factory mode.
+        """
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _scope():
+            if self._session is not None:
+                # Caller-owned: do not close.
+                yield self._session
+                return
+            assert self._session_factory is not None
+            session = self._session_factory()
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+        return _scope()
+
 
     def get_speed_history(
         self,

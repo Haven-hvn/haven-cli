@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
+
 
 from haven_cli.pipeline.events import (
     Event,

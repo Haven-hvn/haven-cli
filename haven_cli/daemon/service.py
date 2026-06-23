@@ -19,7 +19,9 @@ from haven_cli.config import HavenConfig
 from haven_cli.pipeline.manager import PipelineManager, create_default_pipeline, create_batched_pipeline
 from haven_cli.pipeline.batch_accumulator import BatchAccumulator
 from haven_cli.pipeline.flush_queue import FlushQueue
+from haven_cli.pipeline.events import get_event_bus, make_sqlite_event_sink
 from haven_cli.scheduler.job_scheduler import JobScheduler
+
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +107,34 @@ class HavenDaemon:
         
         await JSBridgeManager.get_instance().get_bridge()
         logger.info("JS Bridge initialized")
-        
+
+        # Attach the SQLite event sink so progress events emitted on this
+        # process's bus are durably written to ``pipeline_events`` for
+        # cross-process consumers (notably ``haven tui``). See
+        # docs/TUI_IMPROVEMENTS_PROPOSAL.md R2 / B1 / B2.
+        try:
+            # Make sure the table exists on first run. ``create_all`` is
+            # idempotent — it only creates missing tables.
+            from haven_cli.database.connection import init_engine
+            from haven_cli.database.models import Base
+
+            engine = init_engine(self._config)
+            Base.metadata.create_all(bind=engine)
+
+            get_event_bus().attach_persistent_sink(make_sqlite_event_sink())
+            logger.info("Event bus persistent sink (pipeline_events) attached")
+        except Exception as e:  # pragma: no cover - defensive
+            # Persistence failure must not prevent the daemon from running.
+            # Without the sink the TUI falls back to its polling path,
+            # which still works (just at lower fidelity).
+            logger.warning(
+                "Could not attach pipeline_events sink: %s; cross-process "
+                "TUI updates will rely on polling.",
+                e,
+            )
+
         # Initialize pipeline manager — batched or default based on config
+
         batch_sync_enabled = getattr(config.pipeline, "batch_sync_enabled", False)
         sync_enabled = getattr(config.pipeline, "sync_enabled", False)
         
