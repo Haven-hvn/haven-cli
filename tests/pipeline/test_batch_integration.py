@@ -56,6 +56,36 @@ def _make_context(
     return ctx
 
 
+def _ctx_cid_hash(ctx: PipelineContext) -> str:
+    """SHA-256 of the root_cid string — matches batch_sync._attest_batch."""
+    assert ctx.upload_result is not None
+    return hashlib.sha256(ctx.upload_result.root_cid.encode()).hexdigest()
+
+
+def _v2_attestation_for(ctx: PipelineContext, *, batch_size: int) -> dict[str, Any]:
+    """Build a v2-shaped Merkle attestation dict for a single context.
+
+    Produces the shape that ``batch_attest_holding`` returns post-Merkle-root
+    rewrite: per-leaf dict with shared batch metadata + ``merkleProof`` /
+    ``merkleRoot`` / ``rootSignature``. Empty proof is fine for tests that
+    only exercise CLI plumbing (Merkle proof correctness is covered by
+    haven-aol's TC-8 fixtures).
+    """
+    return {
+        "evmAddress":     "0x1234",
+        "chain":          "ethereum",
+        "tokenAddress":   "0x" + "b" * 40,
+        "threshold":      1,
+        "balanceAtCheck": 100,
+        "timestamp":      1_700_000_000,
+        "cidCount":       batch_size,
+        "cidHash":        _ctx_cid_hash(ctx),
+        "merkleProof":    [],
+        "merkleRoot":     "11" * 32,
+        "rootSignature":  "22" * 64,
+    }
+
+
 class TestHappyPathTenFiles:
     """Scenario 1: 10 files through batched pipeline."""
 
@@ -74,7 +104,7 @@ class TestHappyPathTenFiles:
         assert len(batch) == 10
 
         mock_attestations = [
-            {"balanceAtCheck": "100", "signature": f"sig{i}"} for i in range(10)
+            _v2_attestation_for(ctx, batch_size=10) for ctx in batch
         ]
 
         with patch.object(processor, "_create_entities") as mock_create, \
@@ -143,8 +173,9 @@ class TestMixedContentBatch:
         batch = await accumulator.flush()
         assert len(batch) == 10
 
+        # batch_attest_holding only sees the 5 *gated* contexts (batch[:5]).
         mock_attestations = [
-            {"balanceAtCheck": "100", "signature": f"sig{i}"} for i in range(5)
+            _v2_attestation_for(ctx, batch_size=5) for ctx in batch[:5]
         ]
 
         with patch.object(processor, "_create_entities") as mock_create, \
@@ -189,7 +220,18 @@ class TestLargeBatchAttestationChunking:
         assert len(batch) == 25
 
         def mock_attest_fn(**kwargs):
-            return [{"balanceAtCheck": "1", "signature": "s"}] * len(kwargs["cid_hashes"])
+            cid_hashes = kwargs["cid_hashes"]
+            return [
+                {
+                    "evmAddress": "0x1234", "chain": "ethereum",
+                    "tokenAddress": "0x" + "b" * 40, "threshold": 1,
+                    "balanceAtCheck": 1, "timestamp": 1_700_000_000,
+                    "cidCount": len(cid_hashes),
+                    "cidHash": h, "merkleProof": [],
+                    "merkleRoot": "11" * 32, "rootSignature": "22" * 64,
+                }
+                for h in cid_hashes
+            ]
 
         with patch.object(processor, "_create_entities") as mock_create, \
              patch("haven_cli.pipeline.batch_sync.batch_attest_holding", side_effect=mock_attest_fn) as mock_attest, \

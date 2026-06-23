@@ -98,14 +98,32 @@ class TestBatchSyncProcessor:
 
     @pytest.mark.asyncio
     async def test_gated_batch_calls_attestation(self):
-        """Encrypted contexts should trigger batch_attest_holding."""
+        """Encrypted contexts should trigger batch_attest_holding (v2 Merkle)."""
         processor = BatchSyncProcessor(
             arkiv_config=_make_config(), private_key="0x" + "a" * 64
         )
         contexts = [_make_context(i, encrypted=True) for i in range(3)]
+        cid_hashes = [
+            hashlib.sha256(c.upload_result.root_cid.encode()).hexdigest()  # type: ignore[union-attr]
+            for c in contexts
+        ]
 
+        # v2: each leaf carries shared batch metadata + per-leaf merkleProof.
         mock_attestations = [
-            {"balanceAtCheck": "100", "signature": f"sig{i}"} for i in range(3)
+            {
+                "evmAddress": "0x1234",
+                "chain": "ethereum",
+                "tokenAddress": "0x" + "b" * 40,
+                "threshold": 1,
+                "balanceAtCheck": 100,
+                "timestamp": 1700000000,
+                "cidCount": 3,
+                "cidHash": cid_hashes[i],
+                "merkleProof": [],
+                "merkleRoot": "11" * 32,
+                "rootSignature": "22" * 64,
+            }
+            for i in range(3)
         ]
 
         with patch.object(processor, "_create_entities") as mock_create, \
@@ -118,13 +136,13 @@ class TestBatchSyncProcessor:
             await processor(contexts)
 
             mock_attest.assert_called_once()
-            # Verify attestations were assigned
+            # Verify attestations were assigned in submission order.
             for i, ctx in enumerate(contexts):
                 assert ctx.attestation == mock_attestations[i]
 
     @pytest.mark.asyncio
     async def test_mixed_batch_only_attests_gated(self):
-        """Mixed batch: only encrypted items get attestation."""
+        """Mixed batch: only encrypted items get attestation (v2 Merkle)."""
         processor = BatchSyncProcessor(
             arkiv_config=_make_config(), private_key="0x" + "a" * 64
         )
@@ -133,10 +151,19 @@ class TestBatchSyncProcessor:
             _make_context(1, encrypted=False),
             _make_context(2, encrypted=True),
         ]
-
+        gated_cid_hashes = [
+            hashlib.sha256(contexts[0].upload_result.root_cid.encode()).hexdigest(),  # type: ignore[union-attr]
+            hashlib.sha256(contexts[2].upload_result.root_cid.encode()).hexdigest(),  # type: ignore[union-attr]
+        ]
         mock_attestations = [
-            {"balanceAtCheck": "100", "signature": "sig0"},
-            {"balanceAtCheck": "100", "signature": "sig2"},
+            {
+                "evmAddress": "0x1234", "chain": "ethereum",
+                "tokenAddress": "0x" + "b" * 40, "threshold": 1,
+                "balanceAtCheck": 100, "timestamp": 1700000000, "cidCount": 2,
+                "cidHash": h, "merkleProof": [],
+                "merkleRoot": "11" * 32, "rootSignature": "22" * 64,
+            }
+            for h in gated_cid_hashes
         ]
 
         with patch.object(processor, "_create_entities") as mock_create, \
@@ -156,14 +183,24 @@ class TestBatchSyncProcessor:
 
     @pytest.mark.asyncio
     async def test_attestation_chunking_over_20(self):
-        """Batches > 20 gated items should chunk attestation calls."""
+        """Batches > 20 gated items should chunk attestation calls (v2 Merkle)."""
         processor = BatchSyncProcessor(
             arkiv_config=_make_config(), private_key="0x" + "a" * 64
         )
         contexts = [_make_context(i, encrypted=True) for i in range(25)]
 
         def mock_attest_fn(**kwargs):
-            return [{"balanceAtCheck": "1", "signature": "s"}] * len(kwargs["cid_hashes"])
+            return [
+                {
+                    "evmAddress": "0x1234", "chain": "ethereum",
+                    "tokenAddress": "0x" + "b" * 40, "threshold": 1,
+                    "balanceAtCheck": 1, "timestamp": 1700000000,
+                    "cidCount": len(kwargs["cid_hashes"]),
+                    "cidHash": h, "merkleProof": [],
+                    "merkleRoot": "11" * 32, "rootSignature": "22" * 64,
+                }
+                for h in kwargs["cid_hashes"]
+            ]
 
         with patch.object(processor, "_create_entities") as mock_create, \
              patch("haven_cli.pipeline.batch_sync.batch_attest_holding", side_effect=mock_attest_fn) as mock_attest, \

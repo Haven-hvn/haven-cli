@@ -39,7 +39,9 @@ class _HavenAolIdentity(Protocol):
 
 
 HAVEN_AOL_CANISTER_ID = "dciac-uaaaa-aaaad-qlzuq-cai"
-HAVEN_AOL_MAX_PER_CALL = 20  # Max cidHashes per batchAttestHolding call
+HAVEN_AOL_MAX_PER_CALL = 20  # Max cidHashes per batchAttestHolding call (1 page of haven-dapp feed)
+# v2: batchAttestHolding now signs ONE Merkle root over all leaves (RFC 6962 domain separation)
+# and returns per-leaf proofs in submission order. See docs/ipld-batch-attestation-proposal-v2.md.
 HAVEN_AOL_DID = """type Chain = variant { EthMainnet; EthSepolia; ArbitrumOne; BaseMainnet; OptimismMainnet; };
 type GateRequest = record {
   chain : Chain; tokenAddress : text; threshold : nat; cid : text; evmAddress : text;
@@ -48,7 +50,7 @@ type GateRequest = record {
 type GateError = variant {
   InsufficientBalance : record { required : nat; actual : nat };
   InvalidAddress : text; InvalidThreshold; EvmRpcError : text; VetKDError : text;
-  InvalidSignature : text; NonceAlreadyUsed;
+  InvalidSignature : text; NonceAlreadyUsed; BatchTooLarge : nat;
 };
 type GateResult = variant { ok : record { encrypted_key : blob; verification_key : blob }; err : GateError; };
 type AttestRequest = record {
@@ -67,23 +69,26 @@ type AttestResult = variant {
     InvalidSignature : text; NonceAlreadyUsed;
   };
 };
-type BatchAttestRequest = record {
+type MerkleAttestRequest = record {
   chain : Chain; tokenAddress : text; threshold : nat; cidHashes : vec text; evmAddress : text;
   nonce : nat; signature : blob; eip712ChainId : nat; eip712VerifyingContract : text;
 };
-type BatchAttestResult = variant {
-  ok : vec record { attestation : Attestation; signature : blob };
-  err : variant {
-    InsufficientBalance : record { required : nat; actual : nat };
-    InvalidAddress : text; InvalidThreshold; EvmRpcError : text; VetKDError : text;
-    InvalidSignature : text; NonceAlreadyUsed; BatchTooLarge : nat;
-  };
+type MerkleSide = variant { left; right };
+type MerkleProofEntry = record { side : MerkleSide; hash : blob };
+type MerkleAttestLeaf = record { cidHash : text; merkleProof : vec MerkleProofEntry };
+type MerkleAttestation = record {
+  evmAddress : text; chain : Chain; tokenAddress : text; threshold : nat;
+  balanceAtCheck : nat; timestamp : nat; cidCount : nat;
+  merkleRoot : blob;
+  leaves : vec MerkleAttestLeaf;
+  rootSignature : blob;
 };
+type MerkleAttestResult = variant { ok : MerkleAttestation; err : GateError };
 service : {
   requestDecryptionKey : (GateRequest) -> (GateResult);
   getVetKDPublicKey : () -> (blob) query;
   attestHolding : (AttestRequest) -> (AttestResult);
-  batchAttestHolding : (BatchAttestRequest) -> (BatchAttestResult);
+  batchAttestHolding : (MerkleAttestRequest) -> (MerkleAttestResult);
   getAttestationPublicKey : () -> (blob) query;
 }
 """
@@ -831,7 +836,7 @@ def attest_holding(
     raise RuntimeError(f"Unexpected AttestResult payload: {attest_result!r}")
 
 
-def _sign_batch_attest_request(
+def _sign_merkle_attest_request(
     *,
     private_key: str,
     evm_address: str,
@@ -840,25 +845,21 @@ def _sign_batch_attest_request(
     chain_id: int,
     verifying_contract: str,
 ) -> bytes:
-    """Create EIP-712 signature for batch attestation request.
+    """Create EIP-712 signature for the v2 Merkle batch attestation request.
 
-    Primary type: BatchAttestRequest(address evmAddress,bytes32[] cidHashes,uint256 nonce)
-    cidHashes encoded as: keccak256(abi.encodePacked(cidHash_1, cidHash_2, ...))
+    Primary type: ``MerkleAttestRequest(address evmAddress,bytes32[] cidHashes,uint256 nonce)``.
+
+    Note: the EIP-712 signature is verified by the canister over the
+    **submitted order** of cidHashes. The canister sorts internally before
+    building the Merkle tree, but verification of this signature comes first.
     """
     try:
         from eth_account import Account
         from eth_account.messages import encode_typed_data
-        from eth_abi import encode as abi_encode
-        from web3 import Web3
     except ImportError as exc:
         raise RuntimeError(
-            "eth-account, eth-abi, and web3 are required for batch EIP-712 signing. "
-            "Install haven-cli[blockchain]."
+            "eth-account is required for EIP-712 signing. Install haven-cli[blockchain]."
         ) from exc
-
-    # Encode cidHashes array as keccak256(abi.encodePacked(bytes32, bytes32, ...))
-    packed = b"".join(bytes.fromhex(h) for h in cid_hashes)
-    cid_hashes_hash = Web3.keccak(packed)
 
     full_message = {
         "types": {
@@ -867,13 +868,13 @@ def _sign_batch_attest_request(
                 {"name": "chainId", "type": "uint256"},
                 {"name": "verifyingContract", "type": "address"},
             ],
-            "BatchAttestRequest": [
+            "MerkleAttestRequest": [
                 {"name": "evmAddress", "type": "address"},
                 {"name": "cidHashes", "type": "bytes32[]"},
                 {"name": "nonce", "type": "uint256"},
             ],
         },
-        "primaryType": "BatchAttestRequest",
+        "primaryType": "MerkleAttestRequest",
         "domain": {
             "name": "HavenAOL",
             "chainId": chain_id,
@@ -903,14 +904,36 @@ def batch_attest_holding(
     cid_hashes: list[str],
     evm_address: str,
 ) -> list[dict[str, Any]]:
-    """Request batch attestation for multiple CIDs in one canister call.
+    """Request a single Merkle-root canister attestation for ``cid_hashes``.
 
-    Returns list of attestation dicts (same format as attest_holding() return value),
-    one per cidHash, in the same order as input.
+    v2 (Merkle root signing): the canister signs **one** Schnorr signature
+    over a Merkle root computed from all leaves and returns per-leaf proofs in
+    submission order. See ``docs/ipld-batch-attestation-proposal-v2.md`` for
+    the full specification.
+
+    Args:
+        private_key: EVM private key used to sign the EIP-712 request.
+        chain:       EVM chain name ("EthMainnet", etc.).
+        token_address: Gate token contract.
+        threshold:   Minimum balance the canister must verify.
+        cid_hashes:  Submission-order list of 64-hex CID hashes (1..20).
+        evm_address: Wallet address being attested.
+
+    Returns:
+        List of attestation dicts, one per input ``cid_hashes`` entry, in
+        **submission order**. Each dict has the v2 batch-attestation shape:
+
+        ``{evmAddress, chain, tokenAddress, threshold, balanceAtCheck,
+        timestamp, cidCount, cidHash, merkleProof, merkleRoot, rootSignature}``
+
+        - ``merkleProof`` is a list of ``{"side": "left"|"right", "hash": <hex>}``.
+        - ``merkleRoot`` and ``rootSignature`` are lowercase hex (no ``0x``).
+        - ``cidCount`` is the number of real (pre-pad) leaves in the batch.
 
     Raises:
-        ValueError: If cid_hashes is empty or >20, or invalid hex
-        RuntimeError: On canister error (InsufficientBalance, InvalidSignature, etc.)
+        ValueError:   If ``cid_hashes`` is empty/>20, or contains invalid hex.
+        RuntimeError: On canister error, malformed response, or order mismatch
+                      between submitted ``cid_hashes`` and returned leaves.
     """
     if not cid_hashes:
         raise ValueError("cid_hashes must not be empty")
@@ -923,7 +946,7 @@ def batch_attest_holding(
             "Gate threshold must be > 0 for attestation (canister returns InvalidThreshold for 0)"
         )
 
-    # Validate and normalize each cidHash
+    # Validate and normalize each cidHash (lowercase, no 0x prefix, 64 hex chars).
     normalized_hashes: list[str] = []
     for i, h in enumerate(cid_hashes):
         h = h.strip()
@@ -935,7 +958,7 @@ def batch_attest_holding(
             bytes.fromhex(h)
         except ValueError as exc:
             raise ValueError(f"cid_hashes[{i}] is not valid hex: {exc}") from exc
-        normalized_hashes.append(h)
+        normalized_hashes.append(h.lower())
 
     cfg = load_haven_aol_icp_config()
     eip712_chain_id = int(os.environ.get("HAVEN_AOL_EIP712_CHAIN_ID", "1"))
@@ -943,11 +966,10 @@ def batch_attest_holding(
     if not eip712_verifying_contract:
         raise RuntimeError("HAVEN_AOL_EIP712_VERIFYING_CONTRACT is required")
 
-    # Generate unique nonce
+    # Generate unique nonce.
     nonce = (int(time.time_ns()) << 64) | int.from_bytes(secrets.token_bytes(8), "big")
 
-    # Build EIP-712 signature for batch attestation request
-    eip712_signature = _sign_batch_attest_request(
+    eip712_signature = _sign_merkle_attest_request(
         private_key=private_key,
         evm_address=evm_address,
         cid_hashes=normalized_hashes,
@@ -957,10 +979,10 @@ def batch_attest_holding(
     )
     if len(eip712_signature) != 65:
         raise RuntimeError(
-            f"EIP-712 batch attestation signature must be 65 bytes (got {len(eip712_signature)})"
+            f"EIP-712 MerkleAttestRequest signature must be 65 bytes (got {len(eip712_signature)})"
         )
 
-    # Set up ICP agent
+    # Set up ICP agent.
     Agent, Canister, Client, Identity = _icp_sdk()
 
     try:
@@ -980,7 +1002,7 @@ def batch_attest_holding(
 
     chain_variant = {chain: None}
 
-    batch_request = {
+    merkle_request = {
         "chain": chain_variant,
         "tokenAddress": token_address,
         "threshold": threshold,
@@ -992,8 +1014,8 @@ def batch_attest_holding(
         "eip712VerifyingContract": eip712_verifying_contract,
     }
     logger.info(
-        "batchAttestHolding: chain=%s token=%s threshold=%d nonce=%d evmAddress=%s "
-        "cidHashes_count=%d eip712ChainId=%d",
+        "batchAttestHolding (Merkle v2): chain=%s token=%s threshold=%d nonce=%d "
+        "evmAddress=%s cidHashes_count=%d eip712ChainId=%d",
         chain,
         token_address,
         threshold,
@@ -1006,70 +1028,124 @@ def batch_attest_holding(
     verify = _icp_verify_certificate()
 
     def _call():
-        return canister.batchAttestHolding(batch_request, verify_certificate=verify)
+        return canister.batchAttestHolding(merkle_request, verify_certificate=verify)
 
     response = _retry_on_transport_error(_call, context="batchAttestHolding")
-    batch_result = _first_return_slot(response, context="batchAttestHolding")
+    merkle_result = _first_return_slot(response, context="batchAttestHolding")
 
-    if isinstance(batch_result, dict) and "ok" in batch_result:
-        ok_list = batch_result["ok"]
-        if not isinstance(ok_list, list):
-            raise RuntimeError(
-                f"Unexpected BatchAttestResult ok shape: expected list, got {type(ok_list).__name__}"
-            )
-
-        results: list[dict[str, Any]] = []
-        for item in ok_list:
-            item = candid_return_item_to_value(item)
-            if not isinstance(item, dict) or "attestation" not in item or "signature" not in item:
-                raise RuntimeError(
-                    f"Unexpected batch attestation item shape: {type(item).__name__}"
-                )
-
-            attestation = candid_return_item_to_value(item["attestation"])
-            if not isinstance(attestation, dict):
-                raise RuntimeError(
-                    f"Unexpected attestation payload type {type(attestation).__name__}"
-                )
-
-            signature_bytes = candid_blob_to_bytes(
-                item["signature"], context="batchAttestHolding signature"
-            )
-
-            result_chain = chain
-            attestation_chain = attestation.get("chain")
-            if isinstance(attestation_chain, dict) and attestation_chain:
-                result_chain = next(iter(attestation_chain))
-
-            def _as_int(value: Any, field: str) -> int:
-                if isinstance(value, int):
-                    return value
-                if isinstance(value, str):
-                    return int(value)
-                raise RuntimeError(
-                    f"Unexpected type for attestation.{field}: {type(value).__name__}"
-                )
-
-            results.append({
-                "evmAddress": attestation["evmAddress"],
-                "chain": result_chain,
-                "tokenAddress": attestation["tokenAddress"],
-                "threshold": _as_int(attestation["threshold"], "threshold"),
-                "balanceAtCheck": _as_int(attestation["balanceAtCheck"], "balanceAtCheck"),
-                "cidHash": attestation["cidHash"],
-                "timestamp": _as_int(attestation["timestamp"], "timestamp"),
-                "signature": signature_bytes.hex(),
-            })
-
-        return results
-
-    if isinstance(batch_result, dict) and "err" in batch_result:
-        err = batch_result["err"]
-        err = candid_return_item_to_value(err)
+    if isinstance(merkle_result, dict) and "err" in merkle_result:
+        err = candid_return_item_to_value(merkle_result["err"])
         if isinstance(err, dict) and err:
             err_variant = next(iter(err))
             err_detail = err[err_variant]
             raise RuntimeError(f"batchAttestHolding failed: {err_variant}: {err_detail!r}")
         raise RuntimeError(f"batchAttestHolding failed: {err!r}")
 
-    raise RuntimeError(f"Unexpected BatchAttestResult payload: {batch_result!r}")
+    if not (isinstance(merkle_result, dict) and "ok" in merkle_result):
+        raise RuntimeError(f"Unexpected MerkleAttestResult payload: {merkle_result!r}")
+
+    ok = candid_return_item_to_value(merkle_result["ok"])
+    if not isinstance(ok, dict):
+        raise RuntimeError(
+            f"Unexpected MerkleAttestation payload type {type(ok).__name__}"
+        )
+
+    def _as_int(value: Any, field: str) -> int:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            return int(value)
+        raise RuntimeError(
+            f"Unexpected type for MerkleAttestation.{field}: {type(value).__name__}"
+        )
+
+    # Extract chain string from Candid variant.
+    result_chain = chain
+    chain_variant_out = ok.get("chain")
+    if isinstance(chain_variant_out, dict) and chain_variant_out:
+        result_chain = next(iter(chain_variant_out))
+
+    merkle_root_hex = candid_blob_to_bytes(
+        ok["merkleRoot"], context="batchAttestHolding merkleRoot"
+    ).hex()
+    root_signature_hex = candid_blob_to_bytes(
+        ok["rootSignature"], context="batchAttestHolding rootSignature"
+    ).hex()
+
+    shared = {
+        "evmAddress":     ok["evmAddress"],
+        "chain":          result_chain,
+        "tokenAddress":   ok["tokenAddress"],
+        "threshold":      _as_int(ok["threshold"], "threshold"),
+        "balanceAtCheck": _as_int(ok["balanceAtCheck"], "balanceAtCheck"),
+        "timestamp":      _as_int(ok["timestamp"], "timestamp"),
+        "cidCount":       _as_int(ok["cidCount"], "cidCount"),
+        "merkleRoot":     merkle_root_hex,
+        "rootSignature":  root_signature_hex,
+    }
+
+    leaves_raw = ok.get("leaves")
+    if not isinstance(leaves_raw, list):
+        raise RuntimeError(
+            f"Unexpected MerkleAttestation.leaves payload type {type(leaves_raw).__name__}"
+        )
+    if len(leaves_raw) != len(normalized_hashes):
+        raise RuntimeError(
+            f"batchAttestHolding returned {len(leaves_raw)} leaves "
+            f"for {len(normalized_hashes)} submitted cidHashes"
+        )
+
+    results: list[dict[str, Any]] = []
+    for i, leaf_raw in enumerate(leaves_raw):
+        leaf = candid_return_item_to_value(leaf_raw)
+        if not isinstance(leaf, dict) or "cidHash" not in leaf or "merkleProof" not in leaf:
+            raise RuntimeError(
+                f"Unexpected MerkleAttestLeaf shape at index {i}: {type(leaf).__name__}"
+            )
+        leaf_cid_hash = leaf["cidHash"]
+        if not isinstance(leaf_cid_hash, str):
+            raise RuntimeError(
+                f"MerkleAttestLeaf[{i}].cidHash must be str, got {type(leaf_cid_hash).__name__}"
+            )
+        # Canister echoes back submitted order; assert byte-for-byte match.
+        if leaf_cid_hash.lower() != normalized_hashes[i]:
+            raise RuntimeError(
+                f"Attestation cidHash mismatch at index {i}: canister returned "
+                f"{leaf_cid_hash!r}, expected {normalized_hashes[i]!r}"
+            )
+
+        proof_raw = leaf["merkleProof"]
+        if not isinstance(proof_raw, list):
+            raise RuntimeError(
+                f"MerkleAttestLeaf[{i}].merkleProof must be list, got {type(proof_raw).__name__}"
+            )
+        proof: list[dict[str, str]] = []
+        for j, step_raw in enumerate(proof_raw):
+            step = candid_return_item_to_value(step_raw)
+            if not isinstance(step, dict) or "side" not in step or "hash" not in step:
+                raise RuntimeError(
+                    f"MerkleAttestLeaf[{i}].merkleProof[{j}] has unexpected shape"
+                )
+            side_variant = step["side"]
+            if not (isinstance(side_variant, dict) and side_variant):
+                raise RuntimeError(
+                    f"MerkleAttestLeaf[{i}].merkleProof[{j}].side must be a Candid variant"
+                )
+            side_label = next(iter(side_variant))
+            if side_label not in ("left", "right"):
+                raise RuntimeError(
+                    f"MerkleAttestLeaf[{i}].merkleProof[{j}].side must be left|right, "
+                    f"got {side_label!r}"
+                )
+            sibling_hex = candid_blob_to_bytes(
+                step["hash"], context=f"merkleProof[{i}][{j}].hash"
+            ).hex()
+            proof.append({"side": side_label, "hash": sibling_hex})
+
+        results.append({
+            **shared,
+            "cidHash":     leaf_cid_hash,
+            "merkleProof": proof,
+        })
+
+    return results

@@ -200,7 +200,14 @@ class PipelineContext:
     cid_encryption_metadata: Optional[CidEncryptionMetadata] = None
     segment_metadata: Optional[SegmentMetadata] = None
     arkiv_entity_key: Optional[str] = None
-    attestation: Optional[Dict[str, Any]] = None  # Canister-signed holding proof
+    # Canister-signed holding proof. Two shapes are accepted:
+    #   • Single-CID  (attest_holding):       {evmAddress, chain, tokenAddress,
+    #         threshold, balanceAtCheck, cidHash, timestamp, signature}
+    #   • Merkle batch (batch_attest_holding, v2):  same shared fields PLUS
+    #         {cidCount, merkleProof, merkleRoot, rootSignature}.
+    # arkiv_sync._build_payload() discriminates the two via presence of
+    # `merkleProof`. See docs/ipld-batch-attestation-proposal-v2.md.
+    attestation: Optional[Dict[str, Any]] = None
     errors: List[Dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

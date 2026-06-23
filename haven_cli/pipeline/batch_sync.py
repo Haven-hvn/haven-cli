@@ -155,14 +155,29 @@ class BatchSyncProcessor:
                     chain=gate["chain"],
                     token_address=gate["tokenAddress"],
                     threshold=threshold,
-                    cid_hashes=cid_hashes,
+                    cid_hashes=cid_hashes,           # submission order
                     evm_address=evm_address,
                 )
-                # Assign attestations back to contexts
-                for ctx, att in zip(chunk, attestations):
+                # v2 (Merkle root signing): canister returns one attestation dict per
+                # submitted cidHash, in submission order. Defense-in-depth assertions
+                # below catch any future canister bug before context.attestation is set.
+                if len(attestations) != len(chunk):
+                    raise PermanentError(
+                        f"batch_attest_holding returned {len(attestations)} attestations "
+                        f"for {len(chunk)} contexts"
+                    )
+                for ctx, att, expected_hash in zip(chunk, attestations, cid_hashes):
+                    if att.get("cidHash") != expected_hash:
+                        raise PermanentError(
+                            f"Attestation cidHash mismatch — got {att.get('cidHash')!r}, "
+                            f"expected {expected_hash!r}"
+                        )
                     ctx.attestation = att
             except ValueError as exc:
                 raise PermanentError(f"Attestation config error: {exc}") from exc
+            except PermanentError:
+                # Don't swallow PermanentError — propagate so the batch fails loudly.
+                raise
             except Exception as exc:
                 # Attestation failure should NOT block entity creation.
                 # Log and continue — entities will be created without attestation.

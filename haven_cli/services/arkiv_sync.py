@@ -464,17 +464,40 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
         payload["segment_metadata"] = segment_data
     
     # ── Attestation (canister-signed holding proof) ──
+    #
+    # Two payload shapes are emitted, distinguished by presence of "merkleProof":
+    #
+    #   • Single-CID  (sync_step._request_attestation → attest_holding):
+    #         { …shared fields…, cidHash, signature }
+    #
+    #   • Merkle batch (batch_sync._attest_batch → batch_attest_holding, v2):
+    #         { …shared fields…, cidCount, cidHash, merkleProof, merkleRoot,
+    #           rootSignature }
+    #
+    # The dapp distinguishes the two via `isMerkleAttestation` (presence of
+    # `merkleProof`); both shapes are accepted. See
+    # docs/ipld-batch-attestation-proposal-v2.md §3.
     if context.attestation:
-        payload["attestation"] = {
-            "evmAddress": context.attestation["evmAddress"],
-            "chain": context.attestation["chain"],
-            "tokenAddress": context.attestation["tokenAddress"],
-            "threshold": context.attestation["threshold"],
-            "balanceAtCheck": context.attestation["balanceAtCheck"],
-            "cidHash": context.attestation["cidHash"],
-            "timestamp": context.attestation["timestamp"],
-            "signature": context.attestation["signature"],  # hex-encoded t-Schnorr/Ed25519 sig
+        a = context.attestation
+        attestation_payload: dict[str, Any] = {
+            "evmAddress":     a["evmAddress"],
+            "chain":          a["chain"],
+            "tokenAddress":   a["tokenAddress"],
+            "threshold":      a["threshold"],
+            "balanceAtCheck": a["balanceAtCheck"],
+            "cidHash":        a["cidHash"],
+            "timestamp":      a["timestamp"],
         }
+        if "merkleProof" in a:
+            # v2 Merkle batch attestation.
+            attestation_payload["cidCount"]      = a["cidCount"]
+            attestation_payload["merkleProof"]   = a["merkleProof"]
+            attestation_payload["merkleRoot"]    = a["merkleRoot"]
+            attestation_payload["rootSignature"] = a["rootSignature"]
+        else:
+            # Legacy single-CID attestation from attest_holding().
+            attestation_payload["signature"] = a["signature"]
+        payload["attestation"] = attestation_payload
     
     return payload
 

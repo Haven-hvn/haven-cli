@@ -967,12 +967,13 @@ def test_attest_holding_unexpected_payload(monkeypatch, tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests for batch attestation (_sign_batch_attest_request + batch_attest_holding)
+# Tests for v2 Merkle batch attestation
+# (_sign_merkle_attest_request + batch_attest_holding → MerkleAttestResult)
 # ---------------------------------------------------------------------------
 
 from haven_cli.services.haven_aol_icp import (
     HAVEN_AOL_MAX_PER_CALL,
-    _sign_batch_attest_request,
+    _sign_merkle_attest_request,
     batch_attest_holding,
 )
 
@@ -981,8 +982,8 @@ def test_haven_aol_max_per_call_constant() -> None:
     assert HAVEN_AOL_MAX_PER_CALL == 20
 
 
-def test_sign_batch_attest_request_returns_65_byte_signature() -> None:
-    sig = _sign_batch_attest_request(
+def test_sign_merkle_attest_request_returns_65_byte_signature() -> None:
+    sig = _sign_merkle_attest_request(
         private_key=_ATTEST_TEST_PRIVATE_KEY,
         evm_address="0x" + "aa" * 20,
         cid_hashes=["ab" * 32, "cd" * 32],
@@ -994,8 +995,8 @@ def test_sign_batch_attest_request_returns_65_byte_signature() -> None:
     assert sig[-1] in (27, 28)
 
 
-def test_sign_batch_attest_request_single_hash() -> None:
-    sig = _sign_batch_attest_request(
+def test_sign_merkle_attest_request_single_hash() -> None:
+    sig = _sign_merkle_attest_request(
         private_key=_ATTEST_TEST_PRIVATE_KEY,
         evm_address="0x" + "aa" * 20,
         cid_hashes=["ab" * 32],
@@ -1006,7 +1007,7 @@ def test_sign_batch_attest_request_single_hash() -> None:
     assert len(sig) == 65
 
 
-def test_sign_batch_attest_request_deterministic() -> None:
+def test_sign_merkle_attest_request_deterministic() -> None:
     """Same inputs produce same signature."""
     kwargs = dict(
         private_key=_ATTEST_TEST_PRIVATE_KEY,
@@ -1016,12 +1017,12 @@ def test_sign_batch_attest_request_deterministic() -> None:
         chain_id=1,
         verifying_contract=_ATTEST_TEST_VERIFYING_CONTRACT,
     )
-    sig1 = _sign_batch_attest_request(**kwargs)
-    sig2 = _sign_batch_attest_request(**kwargs)
+    sig1 = _sign_merkle_attest_request(**kwargs)
+    sig2 = _sign_merkle_attest_request(**kwargs)
     assert sig1 == sig2
 
 
-def test_sign_batch_attest_request_different_hashes_different_sig() -> None:
+def test_sign_merkle_attest_request_different_hashes_different_sig() -> None:
     """Different cidHashes produce different signatures."""
     base = dict(
         private_key=_ATTEST_TEST_PRIVATE_KEY,
@@ -1030,8 +1031,8 @@ def test_sign_batch_attest_request_different_hashes_different_sig() -> None:
         chain_id=1,
         verifying_contract=_ATTEST_TEST_VERIFYING_CONTRACT,
     )
-    sig1 = _sign_batch_attest_request(cid_hashes=["ab" * 32, "cd" * 32], **base)
-    sig2 = _sign_batch_attest_request(cid_hashes=["cd" * 32, "ab" * 32], **base)
+    sig1 = _sign_merkle_attest_request(cid_hashes=["ab" * 32, "cd" * 32], **base)
+    sig2 = _sign_merkle_attest_request(cid_hashes=["cd" * 32, "ab" * 32], **base)
     assert sig1 != sig2
 
 
@@ -1118,42 +1119,45 @@ def _install_fake_batch_attest_canister(monkeypatch, batch_response):
     )
 
 
+def _make_merkle_ok_response(
+    *,
+    cid_hashes: list[str],
+    merkle_root: bytes = b"\x11" * 32,
+    root_signature: bytes = b"\x22" * 64,
+    balance: int = 10,
+    timestamp: int = 1_700_000_000,
+) -> dict:
+    """Build a canister-shaped MerkleAttestation `ok` response.
+
+    Echoes leaves in submission order with empty proofs (sufficient for
+    smoke-tests of the CLI parser; full Merkle correctness is covered by
+    tests/integration.test.mjs in the haven-aol repo).
+    """
+    return {
+        "ok": {
+            "evmAddress": "0x" + "aa" * 20,
+            "chain": {"EthMainnet": None},
+            "tokenAddress": "0x" + "c" * 40,
+            "threshold": 1,
+            "balanceAtCheck": balance,
+            "timestamp": timestamp,
+            "cidCount": len(cid_hashes),
+            "merkleRoot": list(merkle_root),
+            "rootSignature": list(root_signature),
+            "leaves": [
+                {"cidHash": h, "merkleProof": []} for h in cid_hashes
+            ],
+        }
+    }
+
+
 def test_batch_attest_holding_success(monkeypatch, tmp_path) -> None:
     _attest_env(monkeypatch, tmp_path)
     cid_hash_1 = "ab" * 32
     cid_hash_2 = "cd" * 32
     _install_fake_batch_attest_canister(
         monkeypatch,
-        batch_response=[
-            {
-                "ok": [
-                    {
-                        "attestation": {
-                            "evmAddress": "0x" + "aa" * 20,
-                            "chain": {"EthMainnet": None},
-                            "tokenAddress": "0x" + "c" * 40,
-                            "threshold": 1,
-                            "balanceAtCheck": 10,
-                            "cidHash": cid_hash_1,
-                            "timestamp": 1700000000,
-                        },
-                        "signature": [1, 2, 3],
-                    },
-                    {
-                        "attestation": {
-                            "evmAddress": "0x" + "aa" * 20,
-                            "chain": {"EthMainnet": None},
-                            "tokenAddress": "0x" + "c" * 40,
-                            "threshold": 1,
-                            "balanceAtCheck": 10,
-                            "cidHash": cid_hash_2,
-                            "timestamp": 1700000001,
-                        },
-                        "signature": [4, 5, 6],
-                    },
-                ]
-            }
-        ],
+        batch_response=[_make_merkle_ok_response(cid_hashes=[cid_hash_1, cid_hash_2])],
     )
 
     results = batch_attest_holding(
@@ -1166,13 +1170,65 @@ def test_batch_attest_holding_success(monkeypatch, tmp_path) -> None:
     )
 
     assert len(results) == 2
+    # Submission order preserved.
     assert results[0]["cidHash"] == cid_hash_1
-    assert results[0]["signature"] == "010203"
-    assert results[0]["balanceAtCheck"] == 10
-    assert results[0]["chain"] == "EthMainnet"
     assert results[1]["cidHash"] == cid_hash_2
-    assert results[1]["signature"] == "040506"
-    assert results[1]["timestamp"] == 1700000001
+    # Shared batch fields are stamped on every leaf.
+    assert results[0]["chain"] == "EthMainnet"
+    assert results[0]["balanceAtCheck"] == 10
+    assert results[0]["cidCount"] == 2
+    assert results[0]["merkleRoot"] == "11" * 32
+    assert results[0]["rootSignature"] == "22" * 64
+    assert results[0]["merkleProof"] == []
+    # No legacy "signature" key on Merkle attestations.
+    assert "signature" not in results[0]
+
+
+def test_batch_attest_holding_with_proof(monkeypatch, tmp_path) -> None:
+    """A non-empty Merkle proof is decoded into hex sibling hashes."""
+    _attest_env(monkeypatch, tmp_path)
+    cid_hash = "ab" * 32
+    _install_fake_batch_attest_canister(
+        monkeypatch,
+        batch_response=[
+            {
+                "ok": {
+                    "evmAddress": "0x" + "aa" * 20,
+                    "chain": {"EthMainnet": None},
+                    "tokenAddress": "0x" + "c" * 40,
+                    "threshold": 1,
+                    "balanceAtCheck": 99,
+                    "timestamp": 1_700_000_000,
+                    "cidCount": 1,
+                    "merkleRoot": list(b"\x11" * 32),
+                    "rootSignature": list(b"\x22" * 64),
+                    "leaves": [
+                        {
+                            "cidHash": cid_hash,
+                            "merkleProof": [
+                                {"side": {"left": None}, "hash": list(b"\x33" * 32)},
+                                {"side": {"right": None}, "hash": list(b"\x44" * 32)},
+                            ],
+                        }
+                    ],
+                }
+            }
+        ],
+    )
+    results = batch_attest_holding(
+        private_key=_ATTEST_TEST_PRIVATE_KEY,
+        chain="EthMainnet",
+        token_address="0x" + "c" * 40,
+        threshold=1,
+        cid_hashes=[cid_hash],
+        evm_address="0x" + "aa" * 20,
+    )
+    assert len(results) == 1
+    proof = results[0]["merkleProof"]
+    assert proof == [
+        {"side": "left", "hash": "33" * 32},
+        {"side": "right", "hash": "44" * 32},
+    ]
 
 
 def test_batch_attest_holding_canister_error(monkeypatch, tmp_path) -> None:
@@ -1197,12 +1253,51 @@ def test_batch_attest_holding_unexpected_payload(monkeypatch, tmp_path) -> None:
     _attest_env(monkeypatch, tmp_path)
     _install_fake_batch_attest_canister(monkeypatch, batch_response=["unexpected"])
 
-    with pytest.raises(RuntimeError, match="Unexpected BatchAttestResult payload"):
+    with pytest.raises(RuntimeError, match="Unexpected MerkleAttestResult payload"):
         batch_attest_holding(
             private_key=_ATTEST_TEST_PRIVATE_KEY,
             chain="EthMainnet",
             token_address="0x" + "c" * 40,
             threshold=1,
             cid_hashes=["ab" * 32],
+            evm_address="0x" + "aa" * 20,
+        )
+
+
+def test_batch_attest_holding_leaves_count_mismatch(monkeypatch, tmp_path) -> None:
+    """Defense in depth: canister returns wrong number of leaves → RuntimeError."""
+    _attest_env(monkeypatch, tmp_path)
+    cid_hash = "ab" * 32
+    _install_fake_batch_attest_canister(
+        monkeypatch,
+        batch_response=[_make_merkle_ok_response(cid_hashes=[cid_hash, "cd" * 32])],
+    )
+    with pytest.raises(RuntimeError, match=r"returned 2 leaves for 1 submitted"):
+        batch_attest_holding(
+            private_key=_ATTEST_TEST_PRIVATE_KEY,
+            chain="EthMainnet",
+            token_address="0x" + "c" * 40,
+            threshold=1,
+            cid_hashes=[cid_hash],
+            evm_address="0x" + "aa" * 20,
+        )
+
+
+def test_batch_attest_holding_leaf_order_mismatch(monkeypatch, tmp_path) -> None:
+    """Defense in depth: canister echoes leaves in wrong order → RuntimeError."""
+    _attest_env(monkeypatch, tmp_path)
+    submitted = ["ab" * 32, "cd" * 32]
+    swapped = list(reversed(submitted))
+    _install_fake_batch_attest_canister(
+        monkeypatch,
+        batch_response=[_make_merkle_ok_response(cid_hashes=swapped)],
+    )
+    with pytest.raises(RuntimeError, match="cidHash mismatch at index"):
+        batch_attest_holding(
+            private_key=_ATTEST_TEST_PRIVATE_KEY,
+            chain="EthMainnet",
+            token_address="0x" + "c" * 40,
+            threshold=1,
+            cid_hashes=submitted,
             evm_address="0x" + "aa" * 20,
         )
