@@ -48,7 +48,7 @@ dependencies = [
     "psutil==7.2.2",
     "av==17.1.0",
     "python-multipart==0.0.32",
-    "arkiv-sdk==1.0.0b3.dev0",
+    "arkiv-sdk==1.0.0b2",
     "yt-dlp==2026.6.9",
     "libtorrent==2.0.13; python_version < '3.14'",
     "libtorrent @ file:///root/haven-cli/wheels/libtorrent-2.0.13-cp314-cp314-linux_x86_64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'x86_64'",
