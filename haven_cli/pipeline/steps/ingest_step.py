@@ -4,16 +4,25 @@ This step is the entry point for videos into the pipeline. It:
 1. Validates the video file exists and is readable
 2. Extracts video metadata (duration, size, mime type, technical metadata)
 3. Calculates perceptual hash (pHash) for deduplication
-4. Creates a database entry for the video
-5. Checks for duplicates based on pHash
+4. Computes ``sha256(file_bytes)`` (``original_hash``) and performs a
+   Tier 1 pre-upload dedup lookup against the local catalog. If the file
+   was already archived from this node, the step returns
+   ``StepResult.skip()`` and sets ``context.skip_*`` flags so every
+   downstream step (encrypt / upload / sync / cleanup) short-circuits.
+   See ``docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md``.
+5. Creates a database entry for the video (or updates an existing row)
+   and persists ``original_hash`` so future ingests can dedup.
+6. Checks for pHash near-duplicates as a soft-warning (separate from the
+   byte-exact Tier 1 path).
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from haven_cli.database.models import Download, TorrentDownload
+from haven_cli.database.models import Download, TorrentDownload, Video
 
 logger = logging.getLogger(__name__)
 from haven_cli.media import detect_mime_type, extract_video_metadata
@@ -24,6 +33,7 @@ from haven_cli.pipeline.context import PipelineContext, VideoMetadata
 from haven_cli.pipeline.events import Event, EventType
 from haven_cli.pipeline.results import StepError, StepResult
 from haven_cli.pipeline.step import PipelineStep
+from haven_cli.pipeline.steps.encrypt_step import hash_file_sha256_with_progress
 
 
 class IngestStep(PipelineStep):
@@ -109,7 +119,8 @@ class IngestStep(PipelineStep):
                 duration = 0.0
                 tech_metadata = None
             
-            # Check for duplicates
+            # Check for pHash near-duplicates (soft signal — only fails the
+            # pipeline when ``duplicate_action == "error"``).
             is_duplicate = await self._check_duplicate(phash)
             
             if is_duplicate:
@@ -129,7 +140,117 @@ class IngestStep(PipelineStep):
                     )
                 # else: "continue" (default) - proceed with ingestion
                 # or "skip" - skip remaining processing (not implemented yet)
-            
+
+            # ---------------------------------------------------------------
+            # Tier 1 pre-upload deduplication
+            # ---------------------------------------------------------------
+            # Compute the byte-exact sha256 of the source file and look it
+            # up in the local catalog. If the file has been archived from
+            # this node before, short-circuit the entire downstream
+            # pipeline (encrypt, analyze, upload, sync, cleanup) by
+            # returning ``StepResult.skip`` and setting the ``skip_*``
+            # flags. This avoids the 2–15 minute Filecoin upload (and
+            # possibly hours of VLM analysis) on slow hardware /
+            # residential connections — the dominant cost for re-archives.
+            #
+            # Disabled when the user passes ``--no-dedup`` /
+            # ``--force`` (``options['dedup_enabled'] = False``) so they
+            # can intentionally re-upload despite a local match.
+            #
+            # See ``docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md``.
+            dedup_enabled = context.options.get("dedup_enabled", True)
+            original_hash: Optional[str] = None
+            dedup_match: Optional[Video] = None
+
+            if dedup_enabled:
+                try:
+                    # Hash runs in a worker thread so we don't block the
+                    # event loop; sha256 is CPU-bound but ~500 MB/s on
+                    # modest hardware, so the cost is dominated by disk
+                    # I/O, not crypto.
+                    original_hash = await asyncio.to_thread(
+                        hash_file_sha256_with_progress, str(video_path)
+                    )
+                except Exception as e:
+                    # If the hash fails for any reason (e.g. disk error)
+                    # fall through to the normal upload path; the
+                    # downstream encrypt step also computes this hash
+                    # internally and will surface real I/O failures.
+                    logger.warning(
+                        "Tier 1 dedup hash failed for %s: %s — "
+                        "falling through to normal upload path.",
+                        video_path,
+                        e,
+                    )
+
+            if original_hash:
+                context.original_hash = original_hash
+                context.set_step_data(self.name, "original_hash", original_hash)
+                dedup_match = await self._check_original_hash_dedup(original_hash)
+
+            if dedup_match is not None:
+                # Already archived. Set every downstream short-circuit
+                # flag and return early. Note: we still emit
+                # ``VIDEO_INGESTED`` below the normal path; here we emit
+                # a lightweight dedup-hit signal first so the TUI can
+                # surface the skip without confusion.
+                context.skip_encrypt = True
+                context.skip_upload = True
+                # Sync only skips when the prior row already has a
+                # ``arkiv_entity_key``. If the prior run uploaded but
+                # never synced (e.g. crash mid-pipeline), let sync run
+                # so we still get the entity registered.
+                context.skip_sync = bool(dedup_match.arkiv_entity_key)
+                # Skip cleanup too — the original file is the user's
+                # property; deleting it because we found a previous
+                # archive of the same content would be surprising.
+                context.skip_cleanup = True
+
+                context.set_step_data(self.name, "dedup_match_video_id", dedup_match.id)
+                context.set_step_data(self.name, "dedup_match_cid", dedup_match.cid)
+                context.set_step_data(
+                    self.name, "dedup_match_arkiv_key", dedup_match.arkiv_entity_key
+                )
+                context.video_id = dedup_match.id
+
+                logger.info(
+                    "Tier 1 pre-upload dedup hit: original_hash=%s… already "
+                    "archived as video_id=%d, cid=%s, arkiv_entity_key=%s. "
+                    "Skipping encrypt/upload/sync/cleanup for %s.",
+                    original_hash[:12],
+                    dedup_match.id,
+                    dedup_match.cid,
+                    dedup_match.arkiv_entity_key,
+                    video_path,
+                )
+
+                await self._emit_event(
+                    EventType.VIDEO_INGESTED,
+                    context,
+                    {
+                        "path": str(video_path),
+                        "phash": phash,
+                        "original_hash": original_hash,
+                        "file_size": file_size,
+                        "duration": duration,
+                        "is_duplicate": True,
+                        "dedup_hit": True,
+                        "dedup_match_video_id": dedup_match.id,
+                        "dedup_match_cid": dedup_match.cid,
+                        "dedup_match_arkiv_key": dedup_match.arkiv_entity_key,
+                    },
+                )
+
+                return StepResult.skip(
+                    self.name,
+                    reason=(
+                        f"Tier 1 dedup: original_hash={original_hash[:12]}… "
+                        f"already archived as video_id={dedup_match.id}, "
+                        f"cid={dedup_match.cid}, "
+                        f"arkiv_entity_key={dedup_match.arkiv_entity_key}"
+                    ),
+                )
+
             # Get metadata overrides from CLI options
             cli_title = context.options.get("title")
             cli_creator = context.options.get("creator_handle")
@@ -254,7 +375,48 @@ class IngestStep(PipelineStep):
             # If database check fails, don't block ingestion
             # Log error but return False to allow processing
             return False
-    
+
+    async def _check_original_hash_dedup(
+        self, original_hash: str
+    ) -> Optional[Video]:
+        """Look up an existing catalog row by ``original_hash``.
+
+        This is the Tier 1 pre-upload dedup lookup. ``videos.original_hash``
+        is indexed, so this is a sub-millisecond SELECT regardless of
+        catalog size. NULL ``original_hash`` rows (legacy entries written
+        before the column existed) are excluded by the equality predicate
+        in ``VideoRepository.get_by_original_hash`` and naturally fall
+        through to the normal upload path the first time they're
+        re-archived.
+
+        On any DB failure we return ``None`` so dedup degrades gracefully
+        to the normal upload path rather than blocking ingestion.
+
+        See ``docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md``.
+        """
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import VideoRepository
+
+            with get_db_session() as session:
+                repo = VideoRepository(session)
+                match = repo.get_by_original_hash(original_hash)
+                if match is None:
+                    return None
+                # Detach from the session so callers can read attributes
+                # after the session closes. ``expunge`` is enough — we
+                # don't write back through this object.
+                session.expunge(match)
+                return match
+        except Exception as e:
+            logger.warning(
+                "Tier 1 dedup lookup failed for original_hash=%s…: %s — "
+                "falling through to normal upload path.",
+                original_hash[:12] if original_hash else "<empty>",
+                e,
+            )
+            return None
+
     async def _save_to_database(
         self,
         metadata: VideoMetadata,
@@ -285,12 +447,19 @@ class IngestStep(PipelineStep):
             with get_db_session() as session:
                 repo = VideoRepository(session)
                 
+                # Tier 1 dedup: persist ``original_hash`` on the row so
+                # future ingests can short-circuit. ``context.original_hash``
+                # was set by the dedup block in ``process()`` (or left
+                # ``None`` if hashing failed / dedup was disabled).
+                original_hash = context.original_hash
+
                 # Check if video already exists by path
                 existing = repo.get_by_source_path(metadata.path)
                 if existing:
-                    # Update existing record
-                    repo.update(
-                        existing,
+                    # Update existing record. ``original_hash`` is only
+                    # written when we computed one this run; otherwise
+                    # leave the prior value intact.
+                    update_fields = dict(
                         title=metadata.title,
                         duration=metadata.duration,
                         file_size=metadata.file_size,
@@ -300,6 +469,9 @@ class IngestStep(PipelineStep):
                         plugin_source_id=plugin_source_id or existing.plugin_source_id,
                         source_uri=source_uri or existing.source_uri,
                     )
+                    if original_hash:
+                        update_fields["original_hash"] = original_hash
+                    repo.update(existing, **update_fields)
                     return existing.id
                 else:
                     # Create new record with plugin source attribution
@@ -310,6 +482,7 @@ class IngestStep(PipelineStep):
                         file_size=metadata.file_size,
                         mime_type=metadata.mime_type,
                         phash=metadata.phash,
+                        original_hash=original_hash,
                         plugin_name=plugin_name,
                         plugin_source_id=plugin_source_id,
                         source_uri=source_uri,

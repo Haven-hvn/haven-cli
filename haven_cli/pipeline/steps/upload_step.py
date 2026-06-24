@@ -147,6 +147,19 @@ class UploadStep(ConditionalStep):
         Also skips if encryption was requested but failed (security measure).
         This prevents uploading unencrypted files when encryption fails.
         """
+        # Tier 1 pre-upload dedup short-circuit. ``IngestStep`` sets
+        # ``context.skip_upload`` when ``original_hash`` matches an
+        # existing catalog row — the file is already on Filecoin from a
+        # previous run of this node, so re-uploading it would be a
+        # 2-15-minute waste on the slow-hardware target. See
+        # docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md.
+        if getattr(context, "skip_upload", False):
+            self._skip_reason = (
+                "Tier 1 dedup: file already uploaded to Filecoin "
+                "(matched by original_hash)"
+            )
+            return True
+
         # Check if upload is disabled
         enabled = context.options.get(self.enabled_option, self.default_enabled)
         if not enabled:

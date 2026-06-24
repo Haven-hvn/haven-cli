@@ -317,7 +317,87 @@ def create_tables(config: Optional[HavenConfig] = None) -> None:
     
     engine = init_engine(config)
     Base.metadata.create_all(bind=engine)
+
+    # Lightweight in-place schema migrations.
+    #
+    # Haven CLI does not currently use alembic. ``Base.metadata.create_all``
+    # is a "create new tables" operation — it does *not* add columns to
+    # existing tables when models gain new fields. To support landing new
+    # columns on databases that pre-date them, we run a small set of
+    # idempotent ``ALTER TABLE ... ADD COLUMN`` statements here.
+    #
+    # SQLite supports ``ADD COLUMN`` natively. New columns start NULL on
+    # every existing row (no rebuild, no data loss). When the column
+    # already exists, SQLite raises ``OperationalError("duplicate column
+    # name: …")`` and we swallow it. Anything else re-raises.
+    #
+    # When the project eventually adopts a real migration tool, this shim
+    # can be deleted — by then every database will already have the
+    # columns and the migration tool's bookkeeping table can be
+    # bootstrapped from the current state.
+    _apply_inplace_migrations(engine)
+
     logger.info("Database tables created")
+
+
+def _apply_inplace_migrations(engine: Engine) -> None:
+    """Apply idempotent ``ALTER TABLE`` migrations for columns that were
+    added to models after the initial schema shipped.
+
+    Each entry runs once per process startup and is a no-op on databases
+    that already have the column. Adding a new shimmed column is a
+    one-line addition to ``MIGRATIONS`` below.
+    """
+    import sqlite3
+
+    # (table, column_definition, optional_index_sql)
+    # ``column_definition`` is the SQLite column body — e.g.
+    # ``"original_hash TEXT"``. ``index_sql`` is run after the ALTER
+    # succeeds and must be ``CREATE INDEX IF NOT EXISTS …`` so it stays
+    # idempotent on second startup.
+    MIGRATIONS = [
+        (
+            "videos",
+            "original_hash TEXT",
+            "CREATE INDEX IF NOT EXISTS ix_videos_original_hash "
+            "ON videos(original_hash)",
+        ),
+    ]
+
+    with engine.begin() as conn:
+        for table, column_def, index_sql in MIGRATIONS:
+            try:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {table} ADD COLUMN {column_def}"
+                )
+                logger.info(
+                    "Applied in-place migration: %s ADD COLUMN %s",
+                    table,
+                    column_def,
+                )
+            except sqlite3.OperationalError as exc:
+                # SQLite returns "duplicate column name: <name>" when the
+                # column already exists. Anything else is a real error.
+                msg = str(exc).lower()
+                if "duplicate column name" not in msg:
+                    raise
+                # Column already present — nothing to do.
+            except Exception as exc:  # pragma: no cover - safety net
+                # SQLAlchemy may wrap the sqlite3 error. Match on text.
+                msg = str(exc).lower()
+                if "duplicate column name" not in msg:
+                    raise
+
+            if index_sql:
+                # Indexes are created/verified every startup; ``IF NOT
+                # EXISTS`` keeps it idempotent regardless of whether the
+                # column was just added or already there.
+                try:
+                    conn.exec_driver_sql(index_sql)
+                except Exception as exc:  # pragma: no cover - safety net
+                    logger.warning(
+                        "Failed to ensure index for %s: %s", table, exc
+                    )
 
 
 def drop_tables(config: Optional[HavenConfig] = None) -> None:

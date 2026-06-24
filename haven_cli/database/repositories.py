@@ -319,6 +319,36 @@ class VideoRepository:
             Video.arkiv_entity_key == arkiv_key
         ).first()
 
+    def get_by_original_hash(self, original_hash: str) -> Optional[Video]:
+        """
+        Look up a video by SHA-256 of the original (plaintext) file bytes.
+
+        This is the lookup used by Tier 1 pre-upload deduplication
+        (see ``IngestStep`` and ``docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md``).
+        ``videos.original_hash`` is indexed, so this is O(log n) on the
+        catalog size.
+
+        Returns the most-recent matching row; rows with NULL
+        ``original_hash`` (legacy entries written before the column
+        existed) are naturally excluded by the equality predicate.
+
+        Args:
+            original_hash: SHA-256 hex digest (64 lowercase hex chars).
+
+        Returns:
+            Most-recent ``Video`` whose ``original_hash`` matches, or
+            ``None`` if there is no match (including the case where
+            ``original_hash`` is empty/None).
+        """
+        if not original_hash:
+            return None
+        return (
+            self.session.query(Video)
+            .filter(Video.original_hash == original_hash)
+            .order_by(Video.created_at.desc())
+            .first()
+        )
+
     def get_by_plugin_source(
         self,
         plugin_name: str,

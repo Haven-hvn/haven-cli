@@ -200,6 +200,27 @@ class PipelineContext:
     cid_encryption_metadata: Optional[CidEncryptionMetadata] = None
     segment_metadata: Optional[SegmentMetadata] = None
     arkiv_entity_key: Optional[str] = None
+
+    # Tier 1 pre-upload deduplication state.
+    #
+    # ``original_hash`` is set by ``IngestStep`` to ``sha256(file_bytes)``
+    # of the source file (pre-encryption). It's used both as an
+    # identifier for the catalog row and as the Tier 1 dedup lookup key.
+    # See ``docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md``.
+    #
+    # The three ``skip_*`` flags are set by ``IngestStep`` when a dedup
+    # match is found, telling each downstream step to short-circuit at
+    # the top of its ``should_skip``. They're independent of the
+    # ``*_enabled`` step options because dedup-skip is "we already did
+    # this work for the same content," not "the user disabled this
+    # step." Each step still emits a ``STEP_SKIPPED`` event with a
+    # dedup-specific reason for observability.
+    original_hash: Optional[str] = None
+    skip_encrypt: bool = False
+    skip_upload: bool = False
+    skip_sync: bool = False
+    skip_cleanup: bool = False
+
     # Canister-signed holding proof. Two shapes are accepted:
     #   • Single-CID  (attest_holding):       {evmAddress, chain, tokenAddress,
     #         threshold, balanceAtCheck, cidHash, timestamp, signature}

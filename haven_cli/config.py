@@ -200,7 +200,15 @@ class PipelineConfig:
     # performed in configurable batches rather than per-video inline.
     batch_sync_enabled: bool = False
     batch_sync_size: int = 10          # Number of videos per batch
-    batch_sync_flush_timeout: float = 30.0  # Seconds before partial-batch flush
+    # Default raised from 30s → 18000s (30 min) in Phase 4b. The 30s default
+    # caused the accumulator to time out into singletons before any real
+    # batch could form on typical Haven workloads (per-item ingest is
+    # 1–6 min). With the new default, the size trigger fires first under
+    # steady ingest and the timeout acts as a latency cap rather than the
+    # primary flush mechanism. Operators who need near-realtime visibility
+    # can set HAVEN_BATCH_SYNC_FLUSH_TIMEOUT=30 to restore the old behavior.
+    # See docs/BATCH_SYNC_TUNING.md for per-workload presets.
+    batch_sync_flush_timeout: float = 18000.0  # Seconds before partial-batch flush
     batch_sync_max_pending: int = 50   # Max buffered items (backpressure threshold)
     
     # Cleanup (remove local files after successful upload)

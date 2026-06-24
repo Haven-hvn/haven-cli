@@ -34,7 +34,68 @@ class TestBatchAccumulatorConstants:
         assert DEFAULT_BATCH_SIZE == 10
 
     def test_flush_timeout(self):
-        assert BATCH_FLUSH_TIMEOUT_SECONDS == 30.0
+        # Phase 4b (BATCH_SYNC_REMEDIATION_PLAN.md): default raised from
+        # 30s → 18000s (30 min). The 30s default caused the accumulator to
+        # time out into singletons before any real batch could form on
+        # typical Haven workloads. Operators who want the old behavior
+        # set HAVEN_BATCH_SYNC_FLUSH_TIMEOUT=30.
+        assert BATCH_FLUSH_TIMEOUT_SECONDS == 18000.0
+
+
+class TestBatchAccumulatorEmptyToOneRace:
+    """Phase 1 regression (BATCH_SYNC_REMEDIATION_PLAN.md).
+
+    Before the fix, ``add()`` only set ``_ready`` once the buffer reached
+    ``batch_size``. If ``flush()`` was already awaiting on an empty buffer
+    when a single ``add()`` arrived, ``_ready`` was never set, so
+    ``flush()`` timed out and returned ``[]`` instead of returning the
+    one buffered item promptly.
+    """
+
+    @pytest.mark.asyncio
+    async def test_add_during_empty_wait_wakes_flush_immediately(self):
+        """The pre-fix bug: empty buffer + concurrent add() must wake flush().
+
+        Worst-case latency before the fix was ~2× ``flush_timeout`` (the
+        first flush() returns [] on timeout; the next one waits another
+        full timeout). After the fix, flush() must return [ctx] within
+        far less than the configured timeout.
+        """
+        # Generous timeout so a regression would obviously time out.
+        acc = BatchAccumulator(batch_size=10, flush_timeout=5.0)
+
+        async def delayed_add():
+            # Let flush() start waiting on _ready before we add.
+            await asyncio.sleep(0.05)
+            await acc.add(_make_context(0))
+
+        # Run flush() and the delayed add() concurrently. A regression
+        # would have flush() return [] after the timeout.
+        flush_task = asyncio.create_task(acc.flush())
+        add_task = asyncio.create_task(delayed_add())
+
+        # If the race is broken, this hits the timeout. Cap how long we
+        # wait so the test fails fast rather than blocking the suite.
+        batch = await asyncio.wait_for(flush_task, timeout=2.0)
+        await add_task
+
+        assert len(batch) == 1
+        assert acc.pending_count == 0
+
+    @pytest.mark.asyncio
+    async def test_add_always_signals_ready_event(self):
+        """Direct white-box check: a single add() unconditionally sets _ready.
+
+        This is the contract Phase 1 establishes — _take_batch() relies on
+        being able to clear _ready and re-set it only when the buffer is
+        still full, so add() must always signal even for the first item.
+        """
+        acc = BatchAccumulator(batch_size=10, flush_timeout=5.0)
+        assert not acc._ready.is_set()
+
+        await acc.add(_make_context(0))
+
+        assert acc._ready.is_set()
 
 
 class TestBatchAccumulatorFullFlush:

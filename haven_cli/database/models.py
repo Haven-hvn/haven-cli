@@ -55,7 +55,17 @@ class Video(Base):
     
     # Content identification (for deduplication)
     phash: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
-    
+
+    # Byte-exact pre-encryption content hash for Tier 1 pre-upload deduplication.
+    # SHA-256 of the original (plaintext) file bytes — exactly 64 hex chars.
+    # Indexed because IngestStep performs ``WHERE original_hash = ?`` on every
+    # ingest to short-circuit re-archives. Nullable so legacy rows (added before
+    # this column existed) simply don't match the lookup and fall through to
+    # the normal upload path. See docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md.
+    original_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+
     # Source information
     source_uri: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     creator_handle: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -172,6 +182,7 @@ class Video(Base):
                 if self.filecoin_uploaded_at else None
             ),
             "arkiv_entity_key": self.arkiv_entity_key,
+            "original_hash": self.original_hash,
             "encrypted": self.encrypted,
             "has_ai_data": self.has_ai_data,
             "vlm_json_cid": self.vlm_json_cid,

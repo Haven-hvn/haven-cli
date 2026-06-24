@@ -139,16 +139,28 @@ class HavenDaemon:
         sync_enabled = getattr(config.pipeline, "sync_enabled", False)
         
         if batch_sync_enabled and sync_enabled:
+            # Phase 4: read all three batch-sync knobs from config so
+            # HAVEN_BATCH_SYNC_FLUSH_TIMEOUT / HAVEN_BATCH_SYNC_MAX_PENDING
+            # actually take effect. The previous implementation only read
+            # batch_size and silently fell through to BatchAccumulator's
+            # module defaults for the other two.
             batch_size = getattr(config.pipeline, "batch_sync_size", 10)
+            flush_timeout = getattr(config.pipeline, "batch_sync_flush_timeout", 18000.0)
+            max_pending = getattr(config.pipeline, "batch_sync_max_pending", 50)
             self._pipeline_manager, self._accumulator, self._flush_queue = create_batched_pipeline(
                 max_concurrent=self._max_concurrent,
                 batch_size=batch_size,
+                flush_timeout=flush_timeout,
+                max_pending=max_pending,
                 config=self._config.__dict__,
             )
             await self._flush_queue.start()
             logger.info(
-                "Batched pipeline initialized (batch_size=%d, steps=%d)",
+                "Batched pipeline initialized (batch_size=%d, flush_timeout=%.1fs, "
+                "max_pending=%d, steps=%d)",
                 batch_size,
+                flush_timeout,
+                max_pending,
                 len(self._pipeline_manager.steps),
             )
         else:

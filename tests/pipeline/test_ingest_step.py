@@ -75,7 +75,7 @@ class TestIngestStepMetadataExtraction:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         # Mock detect_mime_type
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
@@ -136,7 +136,7 @@ class TestIngestStepMetadataExtraction:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         # Simulate VideoMetadataError from ffprobe
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
@@ -176,7 +176,7 @@ class TestIngestStepDuplicateDetection:
         step = IngestStep()
         context = PipelineContext(
             source_path=video_file,
-            options={"duplicate_action": "continue"},
+            options={"duplicate_action": "continue", "dedup_enabled": False},
         )
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
@@ -256,7 +256,7 @@ class TestIngestStepDuplicateDetection:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
         # No duplicate_action set - should default to 'continue'
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
@@ -304,7 +304,7 @@ class TestIngestStepPhash:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         mock_phash = "deadbeef12345678"
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
@@ -347,7 +347,7 @@ class TestIngestStepPhash:
         video_file.write_bytes(b"fake video content")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         from haven_cli.media.phash import VideoHashError
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
@@ -367,7 +367,7 @@ class TestIngestStepDatabase:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
             with patch.object(step, '_calculate_phash', new_callable=AsyncMock, return_value="a3f5c2d8"):
@@ -415,7 +415,7 @@ class TestIngestStepDatabase:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
             with patch.object(step, '_calculate_phash', new_callable=AsyncMock, return_value="a3f5c2d8"):
@@ -461,7 +461,7 @@ class TestIngestStepDatabase:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
             with patch.object(step, '_calculate_phash', new_callable=AsyncMock, return_value="a3f5c2d8"):
@@ -503,7 +503,7 @@ class TestIngestStepDuplicateChecking:
         step = IngestStep()
         context = PipelineContext(
             source_path=video_file,
-            options={"duplicate_action": "continue"},
+            options={"duplicate_action": "continue", "dedup_enabled": False},
         )
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
@@ -547,7 +547,7 @@ class TestIngestStepDuplicateChecking:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
             with patch.object(step, '_calculate_phash', new_callable=AsyncMock, return_value="a3f5c2d8"):
@@ -593,7 +593,7 @@ class TestIngestStepEvents:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
             with patch.object(step, '_calculate_phash', new_callable=AsyncMock, return_value="a3f5c2d8"):
@@ -639,7 +639,7 @@ class TestIngestStepEvents:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         emitted_events = []
 
@@ -714,7 +714,7 @@ class TestIngestStepDatabaseFailure:
         video_file.write_bytes(b"fake video data here")
 
         step = IngestStep()
-        context = PipelineContext(source_path=video_file)
+        context = PipelineContext(source_path=video_file, options={"dedup_enabled": False})
 
         with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="video/mp4"):
             with patch.object(step, '_calculate_phash', new_callable=AsyncMock, return_value="a3f5c2d8"):

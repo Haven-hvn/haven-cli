@@ -319,6 +319,26 @@ class EncryptStep(ConditionalStep):
         """Maximum retry attempts for transient errors."""
         return 3
 
+    async def should_skip(self, context: PipelineContext) -> bool:
+        """Skip when encryption is disabled or Tier 1 dedup already matched.
+
+        ``IngestStep`` sets ``context.skip_encrypt`` when ``original_hash``
+        matches an existing catalog row. Re-encrypting the same plaintext
+        produces a *different* ciphertext (random salt/nonce), so the
+        encrypted bytes from the prior run are still valid and we must
+        not re-run encryption — doing so would invalidate every consumer
+        holding the old ciphertext key bundle.
+        See docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md.
+        """
+        if getattr(context, "skip_encrypt", False):
+            return True
+        return await super().should_skip(context)
+
+    async def _get_skip_reason(self, context: PipelineContext) -> str:
+        if getattr(context, "skip_encrypt", False):
+            return "Tier 1 dedup: prior archive already encrypted and uploaded"
+        return await super()._get_skip_reason(context)
+
     def _get_chain(self, context: PipelineContext) -> str:
         """Resolve the EVM chain from context options or config.
 

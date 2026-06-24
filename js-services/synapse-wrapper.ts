@@ -840,7 +840,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
     filePath: string,
     onProgress?: ProgressCallback,
     maxRetries: number = 3,
-    timeoutMs: number = 1800000 // 30 minutes per attempt
+    timeoutMs: number = 18000000 // 30 minutes per attempt
   ): Promise<UploadExecutionResult> {
     let lastError: Error | null = null;
     

@@ -144,6 +144,18 @@ def upload(
             "Supported: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet."
         ),
     ),
+    no_dedup: bool = typer.Option(
+        False,
+        "--no-dedup",
+        "--force",
+        help=(
+            "Bypass Tier 1 pre-upload deduplication. By default, if "
+            "sha256(file) matches an existing catalog row, the encrypt/"
+            "upload/sync steps are skipped to avoid re-uploading content "
+            "this node has already archived. Use this flag to intentionally "
+            "re-upload despite a local match."
+        ),
+    ),
 ) -> None:
     """Upload a file to Filecoin network.
     
@@ -181,7 +193,7 @@ def upload(
 
     from haven_cli.config import load_config
     from haven_cli.pipeline.context import PipelineContext
-    from haven_cli.pipeline.manager import create_default_pipeline, create_batched_pipeline
+    from haven_cli.pipeline.manager import create_default_pipeline
 
     config = load_config(config_file)
     
@@ -271,6 +283,9 @@ def upload(
         "upload_enabled": upload_enabled,
         "arkiv_sync_enabled": sync_enabled,
         "cleanup_enabled": cleanup_enabled,
+        # Tier 1 pre-upload deduplication. Default is enabled; --no-dedup
+        # / --force bypasses it. See docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md.
+        "dedup_enabled": not no_dedup,
         "dataset_id": dataset_id,
         "title": title,
         "creator_handle": creator,
@@ -290,22 +305,20 @@ def upload(
         options=options,
     )
     
-    # Determine whether to use batched pipeline
-    batch_sync_enabled = get_config_value("batch_sync_enabled", False)
-    
-    # Initialize pipeline manager
-    if batch_sync_enabled and sync_enabled:
-        batch_size = get_config_value("batch_sync_size", 10)
-        pipeline_manager, accumulator, flush_queue = create_batched_pipeline(
-            max_concurrent=1,
-            batch_size=batch_size,
-            config=config.__dict__ if config else None,
-        )
-        logger.info("Using batched pipeline (batch_sync_size=%d)", batch_size)
-    else:
-        pipeline_manager = create_default_pipeline(config=config.__dict__ if config else None)
-        accumulator = None
-        flush_queue = None
+    # Phase 2 (BATCH_SYNC_REMEDIATION_PLAN.md): one-shot `haven upload file`
+    # always uses the default pipeline. The previous implementation routed
+    # single-file CLI uploads through `create_batched_pipeline` whenever
+    # `batch_sync_enabled=true`, which meant:
+    #   1. We constructed a BatchAccumulator + FlushQueue for one item
+    #      (no amortization benefit).
+    #   2. The flush path landed on `batch_sync_contexts([ctx])`, which
+    #      historically skipped the `find_existing_entity()` dedup that
+    #      `sync_context()` performs — so re-uploading the same file
+    #      produced a duplicate Arkiv entity.
+    # The default pipeline's SyncStep calls `sync_context()` directly,
+    # which has dedup parity. `batch_sync_enabled` now applies only to
+    # the daemon and scheduled jobs, not interactive `haven upload`.
+    pipeline_manager = create_default_pipeline(config=config.__dict__ if config else None)
     
     async def run_pipeline() -> None:
         from haven_cli.js_runtime.manager import JSBridgeManager
@@ -319,10 +332,6 @@ def upload(
             debug=debug_mode,
         )
         
-        # Start flush queue if batched mode
-        if flush_queue is not None:
-            await flush_queue.start()
-        
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -331,31 +340,20 @@ def upload(
             task = progress.add_task("Processing...", total=None)
             
             try:
-                # Process through pipeline
+                # Process through pipeline (SyncStep handles N=1 sync via
+                # ArkivSyncClient.sync_context, which does dedup).
                 result = await pipeline_manager.process(context)
                 
                 progress.update(task, completed=True)
                 
                 if result.success:
                     console.print(f"[green]✓[/green] Upload complete: {result.cid or 'N/A'}")
-                    
-                    # If batched mode, add to accumulator and flush immediately
-                    # (single-file upload — drain immediately so user sees sync result)
-                    if accumulator is not None and flush_queue is not None:
-                        await accumulator.add(context)
-                        batch = await accumulator.drain()
-                        if batch:
-                            await flush_queue.enqueue(batch)
-                        console.print("[dim]Batch sync: queued for attestation + entity creation[/dim]")
                 else:
                     console.print(f"[red]✗[/red] Upload failed: {result.error}")
                     raise typer.Exit(code=1)
             finally:
-                # Stop flush queue and wait for in-flight processing
-                if flush_queue is not None:
-                    await flush_queue.stop()
-                # CRITICAL: Shutdown JS Bridge Manager to prevent hang
-                # The background health check task keeps the event loop alive
+                # CRITICAL: Shutdown JS Bridge Manager to prevent hang.
+                # The background health check task keeps the event loop alive.
                 logger.debug("Shutting down JS Bridge Manager...")
                 await JSBridgeManager.get_instance().shutdown()
     

@@ -243,10 +243,19 @@ def run_job(
         
         if batch_sync_enabled and sync_enabled:
             from haven_cli.pipeline.manager import create_batched_pipeline
+            # Phase 4: read all three batch-sync knobs from config so
+            # HAVEN_BATCH_SYNC_FLUSH_TIMEOUT / HAVEN_BATCH_SYNC_MAX_PENDING
+            # actually take effect. The previous implementation only read
+            # batch_size and silently fell through to BatchAccumulator's
+            # module defaults for the other two.
             batch_size = getattr(config.pipeline, "batch_sync_size", 10)
+            flush_timeout = getattr(config.pipeline, "batch_sync_flush_timeout", 18000.0)
+            max_pending = getattr(config.pipeline, "batch_sync_max_pending", 50)
             pipeline_manager, accumulator, flush_queue = create_batched_pipeline(
                 max_concurrent=4,
                 batch_size=batch_size,
+                flush_timeout=flush_timeout,
+                max_pending=max_pending,
                 config=config.__dict__,
             )
             await flush_queue.start()

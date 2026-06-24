@@ -15,7 +15,13 @@ from haven_cli.pipeline.context import PipelineContext
 logger = logging.getLogger(__name__)
 
 DEFAULT_BATCH_SIZE = 10
-BATCH_FLUSH_TIMEOUT_SECONDS = 30.0
+# 30 minutes — sized to match real Haven ingest cadence (yt-dlp + VLM +
+# encryption + Filecoin upload is typically 1–6 min per item). With a
+# 30-second default, the accumulator times out into singletons every
+# cycle and the size-based trigger never fires. See
+# docs/BATCH_SYNC_TUNING.md for per-workload presets and
+# docs/BATCH_SYNC_REMEDIATION_PLAN.md (Phase 4b) for the rationale.
+BATCH_FLUSH_TIMEOUT_SECONDS = 18000.0
 
 
 class BatchAccumulator:
@@ -42,7 +48,25 @@ class BatchAccumulator:
         self._ready = asyncio.Event()
 
     async def add(self, context: PipelineContext) -> None:
-        """Append a context to the buffer. Signals ready if batch_size reached."""
+        """Append a context to the buffer. Always signals ready.
+
+        Phase 1 race fix (see docs/BATCH_SYNC_REMEDIATION_PLAN.md): the
+        previous implementation only set ``_ready`` when the buffer reached
+        ``batch_size``. If ``flush()`` was already awaiting ``_ready.wait()``
+        with an empty buffer and a single ``add()`` arrived during the wait,
+        ``_ready`` was never set, so ``flush()`` timed out and returned
+        ``[]`` — and the next ``flush()`` call waited *another* full
+        ``flush_timeout``. Worst-case singleton latency was ~2× the
+        configured timeout.
+
+        Always signaling ``_ready`` on ``add()`` matches the natural
+        semantics: any item makes the accumulator non-empty, so any
+        awaiter should wake up and let ``_take_batch()`` decide whether
+        to emit a partial batch (size threshold) or wait further (timeout
+        path). ``_take_batch()`` already clears ``_ready`` after a flush
+        and re-sets it only if more than ``batch_size`` items remain, so
+        full-batch behavior is unchanged.
+        """
         self._buffer.append(context)
         logger.debug(
             "Added context %s to accumulator (%d/%d)",
@@ -50,8 +74,7 @@ class BatchAccumulator:
             len(self._buffer),
             self._batch_size,
         )
-        if len(self._buffer) >= self._batch_size:
-            self._ready.set()
+        self._ready.set()
 
     async def flush(self) -> List[PipelineContext]:
         """Wait until a batch is ready (size or timeout), then return and clear it.

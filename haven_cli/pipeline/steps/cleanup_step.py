@@ -89,6 +89,20 @@ class CleanupStep(ConditionalStep):
         Returns:
             True if cleanup should be skipped
         """
+        # Tier 1 pre-upload dedup short-circuit. ``IngestStep`` sets
+        # ``context.skip_cleanup`` when ``original_hash`` matches a prior
+        # archive — the upload didn't run this time, so there's no
+        # encrypted file to clean. We also intentionally do *not* delete
+        # the user's original file in this case: a re-archive that
+        # produced no new work shouldn't surprise the user by deleting
+        # their input. See docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md.
+        if getattr(context, "skip_cleanup", False):
+            self._skip_reason = (
+                "Tier 1 dedup: no upload performed, nothing to clean"
+            )
+            logger.info("Cleanup skipped: %s", self._skip_reason)
+            return True
+
         # Check if cleanup is enabled - check context.options first (CLI flags), 
         # then fall back to step config (from config file)
         context_enabled = context.options.get(self.enabled_option)

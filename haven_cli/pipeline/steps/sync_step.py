@@ -90,6 +90,14 @@ class SyncStep(ConditionalStep):
     
     async def should_skip(self, context: PipelineContext) -> bool:
         """Skip if sync is disabled or no upload result available."""
+        # Tier 1 pre-upload dedup short-circuit. If ``IngestStep`` set
+        # ``context.skip_sync`` it means a prior run of this node already
+        # synced the same content (matched by ``original_hash``) and the
+        # existing entity has an ``arkiv_entity_key``, so there's nothing
+        # for sync to do here. See docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md.
+        if getattr(context, "skip_sync", False):
+            return True
+
         # Check if sync is enabled
         if await super().should_skip(context):
             return True
@@ -106,6 +114,8 @@ class SyncStep(ConditionalStep):
     
     async def _get_skip_reason(self, context: PipelineContext) -> str:
         """Provide specific skip reason."""
+        if getattr(context, "skip_sync", False):
+            return "Tier 1 dedup: prior archive already synced to Arkiv"
         if context.upload_result is None:
             return "No upload result to sync"
         if not context.upload_result.root_cid:

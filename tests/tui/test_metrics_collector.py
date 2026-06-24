@@ -403,7 +403,7 @@ class TestMetricsCollectorVisualization:
             MagicMock(timestamp=now - timedelta(seconds=8), speed=120000),
             MagicMock(timestamp=now - timedelta(seconds=6), speed=140000),
             MagicMock(timestamp=now - timedelta(seconds=4), speed=160000),
-            MagicMock(timestamp=now - timedelta(seconds=2), speed=180000),
+            MagicMock(timestamp=now - timedelta(seconds=2), speed=1800000),
         ]
         mock_service.get_speed_history.return_value = mock_records
         

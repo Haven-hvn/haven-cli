@@ -547,9 +547,25 @@ def create_default_pipeline(
 def create_batched_pipeline(
     max_concurrent: int = 1,
     batch_size: int = 10,
+    flush_timeout: Optional[float] = None,
+    max_pending: Optional[int] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> tuple["PipelineManager", "BatchAccumulator", "FlushQueue"]:
     """Create a pipeline with batched background sync.
+
+    Args:
+        max_concurrent: Max concurrent upload-phase pipelines.
+        batch_size: How many contexts to accumulate before a flush.
+        flush_timeout: Seconds to wait before flushing a partial batch.
+            Defaults to ``BatchAccumulator``'s default
+            (``BATCH_FLUSH_TIMEOUT_SECONDS`` = 18000.0). Phase 4 wires this
+            through from ``PipelineConfig.batch_sync_flush_timeout``; the
+            previous implementation silently ignored the user's config.
+        max_pending: Advisory backpressure threshold — when buffered count
+            reaches this, ``accumulator.has_backpressure`` becomes True.
+            Defaults to ``BatchAccumulator``'s default (50). Phase 4 wires
+            this through from ``PipelineConfig.batch_sync_max_pending``.
+        config: Pipeline configuration dict.
 
     Returns:
         - PipelineManager configured for upload-phase only
@@ -567,7 +583,17 @@ def create_batched_pipeline(
     builder.with_upload_phase_steps()
     manager = builder.build()
 
-    accumulator = BatchAccumulator(batch_size=batch_size)
+    # Build accumulator kwargs lazily so we keep BatchAccumulator's own
+    # defaults when callers pass None — this preserves the contract that
+    # passing the new parameters is opt-in. Phase 4: callers in
+    # daemon/service.py and cli/jobs.py pass these from config; older
+    # callers (none in-tree, but external integrators) still work.
+    accumulator_kwargs: Dict[str, Any] = {"batch_size": batch_size}
+    if flush_timeout is not None:
+        accumulator_kwargs["flush_timeout"] = flush_timeout
+    if max_pending is not None:
+        accumulator_kwargs["max_pending"] = max_pending
+    accumulator = BatchAccumulator(**accumulator_kwargs)
 
     # Build Arkiv config from environment/config
     arkiv_config = build_arkiv_config(

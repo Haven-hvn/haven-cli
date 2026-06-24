@@ -779,6 +779,27 @@ class ArkivSyncClient:
         if not contexts:
             return []
 
+        # Phase 3 (BATCH_SYNC_REMEDIATION_PLAN.md): singleton short-circuit.
+        # ``BatchBuilder`` only amortizes when there are ≥2 entities to
+        # commit — a single ``create_entity`` call inside a batch costs the
+        # same one transaction as calling it directly, but the batch path
+        # historically skipped the ``find_existing_entity()`` dedup that
+        # ``sync_context()`` performs. So a daemon flushing a singleton
+        # for an already-archived CID would create a duplicate Arkiv
+        # entity. Delegating to ``sync_context()`` for ``len == 1``
+        # restores dedup parity at zero cost.
+        #
+        # Note: ``BatchSyncProcessor.__call__`` reads only ``entity_key``
+        # from each result dict, so the extra ``is_update`` key on the
+        # singleton path is harmless (no contract break).
+        if len(contexts) == 1:
+            logger.debug(
+                "batch_sync_contexts: singleton — delegating to sync_context() "
+                "for find_existing_entity() dedup parity"
+            )
+            result = self.sync_context(contexts[0])
+            return [result] if result is not None else []
+
         try:
             from arkiv.types import Attributes
 

@@ -648,6 +648,22 @@ def init_config(
         console.print(
             "  [dim]in the background instead of per-video inline. Upload speed is unaffected.[/dim]"
         )
+        # Phase 2 (BATCH_SYNC_REMEDIATION_PLAN.md): clarify scope. The
+        # accumulator only runs in long-lived processes. `haven upload file`
+        # always uses the default per-video sync path because there is
+        # never anything to amortize over for a one-shot upload.
+        console.print(
+            "  [dim]Applies to the daemon (`haven daemon`) and scheduled jobs[/dim]"
+        )
+        console.print(
+            "  [dim](`haven jobs run`). One-shot `haven upload file` always syncs[/dim]"
+        )
+        console.print(
+            "  [dim]inline regardless of this setting.[/dim]"
+        )
+        console.print(
+            "  [dim]See docs/BATCH_SYNC_TUNING.md for per-workload presets.[/dim]"
+        )
         batch_sync_enabled = typer.confirm(
             "  Enable batch sync?",
             default=config.pipeline.batch_sync_enabled,
@@ -659,11 +675,21 @@ def init_config(
                 default=str(config.pipeline.batch_sync_size),
             )
             config.pipeline.batch_sync_size = int(batch_size)
+            # Phase 4b: default raised to 18000s (30 min). The 30s default
+            # caused the accumulator to time out into singletons every
+            # cycle. See docs/BATCH_SYNC_TUNING.md.
             flush_timeout = typer.prompt(
-                "  Flush timeout in seconds (partial batch)",
+                "  Flush timeout in seconds (partial-batch fallback; default 18000 = 30 min)",
                 default=str(config.pipeline.batch_sync_flush_timeout),
             )
             config.pipeline.batch_sync_flush_timeout = float(flush_timeout)
+            # Phase 4: max_pending is now configurable end-to-end (was
+            # previously declared but ignored).
+            max_pending = typer.prompt(
+                "  Max pending items (advisory backpressure threshold)",
+                default=str(config.pipeline.batch_sync_max_pending),
+            )
+            config.pipeline.batch_sync_max_pending = int(max_pending)
         console.print(
             f"  [green]✓[/green] batch_sync_enabled = {str(batch_sync_enabled).lower()}"
         )
