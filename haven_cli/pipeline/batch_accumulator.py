@@ -22,8 +22,6 @@ DEFAULT_BATCH_SIZE = 10
 # docs/BATCH_SYNC_TUNING.md for per-workload presets and
 # docs/BATCH_SYNC_REMEDIATION_PLAN.md (Phase 4b) for the rationale.
 BATCH_FLUSH_TIMEOUT_SECONDS = 18000.0
-
-
 class BatchAccumulator:
     """Accumulates pipeline contexts and produces batches for processing.
 
@@ -31,7 +29,7 @@ class BatchAccumulator:
     - The buffer reaches `batch_size` items, or
     - `flush_timeout` seconds elapse with a non-empty buffer.
 
-    `drain()` returns all pending items immediately for shutdown scenarios.
+    `drain()` returns all pending contexts immediately for shutdown scenarios.
     `has_backpressure` is advisory — callers should slow down but are not blocked.
     """
 
@@ -84,21 +82,31 @@ class BatchAccumulator:
         if len(self._buffer) >= self._batch_size:
             return self._take_batch()
 
-        if not self._buffer:
-            # Wait for at least one item or timeout
-            try:
-                await asyncio.wait_for(self._ready.wait(), timeout=self._flush_timeout)
-            except asyncio.TimeoutError:
-                return []
-            return self._take_batch()
-
         # Have items but not enough — wait for batch_size or timeout
-        try:
-            await asyncio.wait_for(self._ready.wait(), timeout=self._flush_timeout)
-        except asyncio.TimeoutError:
-            pass
+        # Track start time to ensure timeout truly expires
+        start_time = asyncio.get_running_loop().time()
 
-        return self._take_batch()
+        while True:
+            remaining = self._flush_timeout - (asyncio.get_running_loop().time() - start_time)
+            if remaining <= 0:
+                # Timeout truly expired with partial batch
+                return self._take_batch()
+
+            # Clear _ready before waiting to block until a NEW add() call.
+            # This ensures we don't get busy-spin when _ready is already set.
+            # If add() happened between clear() and wait(), wait() returns immediately
+            # which is correct (item arrived).
+            self._ready.clear()
+            try:
+                await asyncio.wait_for(self._ready.wait(), timeout=remaining)
+                # _ready was set by add() - check if we now have a full batch
+                if len(self._buffer) >= self._batch_size:
+                    return self._take_batch()
+                # Item(s) arrived but still not enough - continue waiting
+                # (loop continues to check remaining timeout)
+            except asyncio.TimeoutError:
+                # Timeout truly expired with partial batch
+                return self._take_batch()
 
     async def drain(self) -> List[PipelineContext]:
         """Return all pending contexts immediately. Clears the buffer."""
@@ -127,6 +135,10 @@ class BatchAccumulator:
         """Snapshot up to batch_size items, clear them from buffer."""
         batch = self._buffer[: self._batch_size]
         self._buffer = self._buffer[self._batch_size :]
+        # After flushing, always clear _ready. If there are still >= batch_size
+        # items remaining, re-set it immediately to avoid race condition where
+        # the next flush() would wait forever because _ready is cleared but
+        # buffer still has enough for an immediate flush.
         self._ready.clear()
         if len(self._buffer) >= self._batch_size:
             self._ready.set()

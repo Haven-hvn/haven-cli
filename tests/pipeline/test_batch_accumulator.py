@@ -45,23 +45,24 @@ class TestBatchAccumulatorConstants:
 class TestBatchAccumulatorEmptyToOneRace:
     """Phase 1 regression (BATCH_SYNC_REMEDIATION_PLAN.md).
 
-    Before the fix, ``add()`` only set ``_ready`` once the buffer reached
+    Before the fix, ``add()`` only set ``_ready`` when the buffer reached
     ``batch_size``. If ``flush()`` was already awaiting on an empty buffer
     when a single ``add()`` arrived, ``_ready`` was never set, so
     ``flush()`` timed out and returned ``[]`` instead of returning the
     one buffered item promptly.
+
+    After fix: add() always sets _ready even if buffer < batch_size
     """
 
     @pytest.mark.asyncio
     async def test_add_during_empty_wait_wakes_flush_immediately(self):
-        """The pre-fix bug: empty buffer + concurrent add() must wake flush().
+        """Empty buffer + concurrent add() must wake flush() immediately.
 
-        Worst-case latency before the fix was ~2× ``flush_timeout`` (the
-        first flush() returns [] on timeout; the next one waits another
-        full timeout). After the fix, flush() must return [ctx] within
-        far less than the configured timeout.
+        The original bug: empty buffer + concurrent add() resulted in
+        ~2× timeout latency because _ready was never set during wait().
+
+        After fix: flush() should wake up when item arrives, return [ctx].
         """
-        # Generous timeout so a regression would obviously time out.
         acc = BatchAccumulator(batch_size=10, flush_timeout=5.0)
 
         async def delayed_add():
@@ -69,14 +70,12 @@ class TestBatchAccumulatorEmptyToOneRace:
             await asyncio.sleep(0.05)
             await acc.add(_make_context(0))
 
-        # Run flush() and the delayed add() concurrently. A regression
-        # would have flush() return [] after the timeout.
         flush_task = asyncio.create_task(acc.flush())
         add_task = asyncio.create_task(delayed_add())
 
         # If the race is broken, this hits the timeout. Cap how long we
         # wait so the test fails fast rather than blocking the suite.
-        batch = await asyncio.wait_for(flush_task, timeout=2.0)
+        batch = await asyncio.wait_for(flush_task, timeout=0.15)
         await add_task
 
         assert len(batch) == 1
