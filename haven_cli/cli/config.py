@@ -390,6 +390,7 @@ def show_config(
             ("retry_delay", str(config.pipeline.retry_delay), False),
             ("batch_sync_enabled", str(config.pipeline.batch_sync_enabled), False),
             ("batch_sync_size", str(config.pipeline.batch_sync_size), False),
+            ("speed_history_enabled", str(config.pipeline.speed_history_enabled), False),
             ("batch_sync_flush_timeout", str(config.pipeline.batch_sync_flush_timeout), False),
             ("batch_sync_max_pending", str(config.pipeline.batch_sync_max_pending), False),
         ],

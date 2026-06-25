@@ -3,10 +3,10 @@
 import asyncio
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch, AsyncMock, MagicMock, mock_open
 
 from haven_cli.daemon.service import HavenDaemon, run_daemon, daemonize
-from haven_cli.config import HavenConfig
 
 
 class TestHavenDaemon:
@@ -15,11 +15,14 @@ class TestHavenDaemon:
     @pytest.fixture
     def mock_config(self):
         """Create a mock configuration."""
-        config = Mock(spec=HavenConfig)
-        config.__dict__ = {
-            "data_dir": Path("/tmp/haven"),
-            "config_dir": Path("/tmp/haven/config"),
-        }
+        config = SimpleNamespace(
+            data_dir=Path("/tmp/haven"),
+            config_dir=Path("/tmp/haven/config"),
+            pipeline=SimpleNamespace(speed_history_enabled=False),
+            blockchain=SimpleNamespace(
+                effective_filecoin_network_mode="testnet",
+            ),
+        )
         return config
     
     @pytest.mark.asyncio
@@ -50,9 +53,10 @@ class TestHavenDaemon:
         mock_scheduler.start = AsyncMock()
         
         with patch("haven_cli.js_runtime.manager.JSBridgeManager.get_instance", return_value=mock_bridge_manager):
-            with patch("haven_cli.daemon.service.create_default_pipeline", return_value=mock_pipeline_manager):
-                with patch("haven_cli.daemon.service.JobScheduler", return_value=mock_scheduler):
-                    await daemon.start()
+            with patch("haven_cli.config.get_config", return_value=mock_config):
+                with patch("haven_cli.daemon.service.create_default_pipeline", return_value=mock_pipeline_manager):
+                    with patch("haven_cli.daemon.service.JobScheduler", return_value=mock_scheduler):
+                        await daemon.start()
         
         assert daemon._running is True
         assert daemon._pipeline_manager == mock_pipeline_manager
@@ -166,11 +170,14 @@ class TestRunDaemon:
     @pytest.mark.asyncio
     async def test_run_daemon_starts_and_stops(self):
         """Test run_daemon starts daemon and handles shutdown."""
-        mock_config = Mock(spec=HavenConfig)
-        mock_config.__dict__ = {
-            "data_dir": Path("/tmp/haven"),
-            "config_dir": Path("/tmp/haven/config"),
-        }
+        mock_config = SimpleNamespace(
+            data_dir=Path("/tmp/haven"),
+            config_dir=Path("/tmp/haven/config"),
+            pipeline=SimpleNamespace(speed_history_enabled=False),
+            blockchain=SimpleNamespace(
+                effective_filecoin_network_mode="testnet",
+            ),
+        )
         
         options = {"max_concurrent": 4, "verbose": False}
         

@@ -214,6 +214,17 @@ class PipelineConfig:
     # Cleanup (remove local files after successful upload)
     cleanup_enabled: bool = False
 
+    # Speed history monitoring — when enabled, the daemon samples download/
+    # encrypt/upload speeds from pipeline progress events and persists them
+    # into the ``speed_history`` table for the TUI's speed graphs.
+    #
+    # This is opt-in (disabled by default) because it writes a row to the
+    # database roughly every second per active transfer, which can grow
+    # the database quickly on long-running or high-throughput workloads.
+    # Enable with ``speed_history_enabled = true`` or
+    # ``HAVEN_SPEED_HISTORY_ENABLED=true``.
+    speed_history_enabled: bool = False
+
 
 @dataclass
 class SchedulerConfig:
@@ -538,6 +549,8 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
     
     if env_val := os.environ.get(f"{prefix}CLEANUP_ENABLED"):
         config.pipeline.cleanup_enabled = env_val.lower() in ("true", "1", "yes")
+    if env_val := os.environ.get(f"{prefix}SPEED_HISTORY_ENABLED"):
+        config.pipeline.speed_history_enabled = env_val.lower() in ("true", "1", "yes")
     
     # Batch sync settings
     if env_val := os.environ.get(f"{prefix}BATCH_SYNC_ENABLED"):
@@ -1231,6 +1244,7 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
             "upload_enabled": config.pipeline.upload_enabled,
             "sync_enabled": config.pipeline.sync_enabled,
             "cleanup_enabled": config.pipeline.cleanup_enabled,
+            "speed_history_enabled": config.pipeline.speed_history_enabled,
             "arkiv_contract": config.pipeline.arkiv_contract,
             "max_concurrent_videos": config.pipeline.max_concurrent_videos,
             "retry_attempts": config.pipeline.retry_attempts,

@@ -142,37 +142,44 @@ class HavenDaemon:
                 e,
             )
 
-        # Start the SpeedHistoryService. It subscribes to *_PROGRESS events
-        # and writes ``speed_history`` rows that the TUI's SpeedGraph reads.
-        # Without this the graph reads an empty table and shows
-        # "[No speed data available]" for every video. Degrades gracefully:
-        # a failure here only loses the graph data, not the pipeline.
-        try:
-            from haven_cli.database.connection import get_session_maker
+        # Start the SpeedHistoryService only when the user opts in. It
+        # subscribes to *_PROGRESS events and writes ``speed_history`` rows
+        # that the TUI's SpeedGraph reads. Without it the graph reads an
+        # empty table and shows "[No speed data available]" for every
+        # video. Degrades gracefully: a failure here only loses the graph
+        # data, not the pipeline.
+        if self._config.pipeline.speed_history_enabled:
+            try:
+                from haven_cli.database.connection import get_session_maker
 
-            SessionMaker = get_session_maker()
-            self._speed_history_session = SessionMaker()
-            self._speed_history_service = SpeedHistoryService(
-                db_session=self._speed_history_session,
-                event_bus=get_event_bus(),
+                SessionMaker = get_session_maker()
+                self._speed_history_session = SessionMaker()
+                self._speed_history_service = SpeedHistoryService(
+                    db_session=self._speed_history_session,
+                    event_bus=get_event_bus(),
+                )
+                await self._speed_history_service.start()
+                logger.info("SpeedHistoryService started (speed_history table)")
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "Could not start SpeedHistoryService: %s; TUI speed graph "
+                    "will show '[No speed data available]'.",
+                    e,
+                )
+                # Clean up partial init so stop() doesn't try to use a
+                # half-built service.
+                self._speed_history_service = None
+                if self._speed_history_session is not None:
+                    try:
+                        self._speed_history_session.close()
+                    except Exception:
+                        pass
+                    self._speed_history_session = None
+        else:
+            logger.info(
+                "SpeedHistoryService disabled (set pipeline.speed_history_enabled=true "
+                "or HAVEN_SPEED_HISTORY_ENABLED=true to enable)"
             )
-            await self._speed_history_service.start()
-            logger.info("SpeedHistoryService started (speed_history table)")
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning(
-                "Could not start SpeedHistoryService: %s; TUI speed graph "
-                "will show '[No speed data available]'.",
-                e,
-            )
-            # Clean up partial init so stop() doesn't try to use a half-built
-            # service.
-            self._speed_history_service = None
-            if self._speed_history_session is not None:
-                try:
-                    self._speed_history_session.close()
-                except Exception:
-                    pass
-                self._speed_history_session = None
 
         # Initialize pipeline manager — batched or default based on config
 

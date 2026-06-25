@@ -84,6 +84,13 @@ arkiv_contract = "0x0000000000000000000000000000000000000000"  # Your Arkiv cont
 # Files deleted: original video, encrypted video (if encryption enabled), metadata file
 cleanup_enabled = false
 
+# Speed History Monitoring (optional)
+# When enabled, the daemon samples download/encrypt/upload speeds and
+# persists them into the speed_history table for the TUI speed graphs.
+# Disabled by default because it writes ~1 row/sec per active transfer,
+# which can grow the database quickly on long-running workloads.
+# speed_history_enabled = true
+
 # Processing Settings
 max_concurrent_videos = 4
 retry_attempts = 3
