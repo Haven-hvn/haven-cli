@@ -130,8 +130,16 @@ class PipelineManager:
         self._active_pipelines[pipeline_id] = context
         
         try:
-            # Emit pipeline started event
+            # Emit pipeline started event.
+            #
+            # ``video_id`` is REQUIRED by ``StateManager._on_pipeline_started``
+            # (haven_tui/core/state_manager.py); without it the handler bails
+            # silently and the TUI only catches up on the next ~2s polling
+            # tick.  ``context.video_id`` may legitimately be ``None`` on the
+            # very first run (before ingest assigns one), so we forward it
+            # as-is — downstream handlers tolerate ``None`` by no-op'ing.
             await self._emit_event(EventType.PIPELINE_STARTED, context, {
+                "video_id": context.video_id,
                 "video_path": context.video_path,
                 "steps": self.step_names,
             })
@@ -154,15 +162,20 @@ class PipelineManager:
                 started_at=started_at,
             )
             
-            # Emit completion event
+            # Emit completion event.  ``video_id`` is REQUIRED by both
+            # ``_on_pipeline_complete`` and ``_on_pipeline_failed`` in the
+            # TUI's StateManager; omitting it makes the final ✅/❌ tick
+            # never appear over the event path (only via the 2s poll).
             if pipeline_result.success:
                 await self._emit_event(EventType.PIPELINE_COMPLETE, context, {
+                    "video_id": context.video_id,
                     "video_path": context.video_path,
                     "cid": pipeline_result.final_cid,
                     "duration_ms": pipeline_result.total_duration_ms,
                 })
             else:
                 await self._emit_event(EventType.PIPELINE_FAILED, context, {
+                    "video_id": context.video_id,
                     "video_path": context.video_path,
                     "error": pipeline_result.error,
                     "failed_steps": [r.step_name for r in pipeline_result.failed_steps],

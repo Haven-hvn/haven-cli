@@ -279,12 +279,18 @@ class EventLogWidget(DataTable):
         
         elif et == EventType.ENCRYPT_PROGRESS:
             video_id = p.get("video_id", "unknown")
-            progress = p.get("progress", 0)
+            # Canonical key emitted by encrypt_step's build_encrypt_progress_payload
+            # is ``progress_percent``; ``progress`` was the legacy field name
+            # and is no longer produced. Always show 0.0% if missing rather
+            # than silently dropping the row.
+            progress = p.get("progress_percent", 0)
             return f"Video {video_id}: Encryption {progress:.1f}%"
         
         elif et == EventType.UPLOAD_PROGRESS:
             video_id = p.get("video_id", "unknown")
-            progress = p.get("progress", 0)
+            # Canonical key emitted by upload_step is ``progress_percent``;
+            # the legacy ``progress`` field is no longer produced.
+            progress = p.get("progress_percent", 0)
             rate = p.get("upload_speed", 0)
             rate_str = self._format_speed(rate)
             return f"Video {video_id}: Upload {progress:.1f}% at {rate_str}"

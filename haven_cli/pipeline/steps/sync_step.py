@@ -187,8 +187,13 @@ class SyncStep(ConditionalStep):
                 )
                 await self._update_pipeline_snapshot(context.video_id, "sync", 100, status="completed")
             
-            # Emit sync complete event
+            # Emit sync complete event.
+            #
+            # ``video_id`` is REQUIRED by ``_on_sync_complete`` in the TUI's
+            # StateManager (haven_tui/core/state_manager.py:1085); omitting
+            # it makes the sync ✅ tick never appear on the event path.
             await self._emit_event(EventType.SYNC_COMPLETE, context, {
+                "video_id": context.video_id,
                 "video_path": video_path,
                 "entity_key": entity_key,
                 "transaction_hash": transaction_hash,

@@ -680,14 +680,55 @@ class VideoListWidget(DataTable):
     
     def get_selected_video_id(self) -> Optional[int]:
         """Get the ID of the currently selected video.
-        
+
         Returns:
             Video ID or None if no selection
+
+        Notes:
+            BUG HISTORY — Pressing ``d`` on a row used to open the details
+            for a *different* video.  The old implementation did
+            ``self._video_rows[cursor_row].video_id``, but Textual's
+            ``cursor_row`` is the **visible** row index in the rendered
+            table, while ``_video_rows`` is the model list whose order is
+            independent of how ``_update_table`` materialized the rows
+            (the diff path adds new rows via ``set difference`` ordering,
+            so insertion order ≠ display order).  The two indexes drift
+            apart whenever videos enter/leave/reorder.
+
+            The reliable mapping is ``DataTable.coordinate_to_cell_key``:
+            we key every row by ``str(video_id)`` when calling
+            ``add_row(..., key=str(row.video_id))`` in ``_update_table``,
+            so Textual will hand us that exact key back for whichever row
+            the cursor is on, regardless of insertion order.
         """
         cursor_row = self.cursor_row
-        if cursor_row is None or cursor_row >= len(self._video_rows):
+        if cursor_row is None or cursor_row < 0:
             return None
-        return self._video_rows[cursor_row].video_id
+        # Try the authoritative path first: ask the table for the row key
+        # at the cursor coordinate. The row key is exactly what we stored
+        # in ``_update_table`` (``str(video.id)``).
+        try:
+            row_key = self.coordinate_to_cell_key(
+                Coordinate(cursor_row, 0)
+            ).row_key
+            value = getattr(row_key, "value", row_key)
+            if value is None:
+                return None
+            return int(value)
+        except Exception:
+            # Defensive fallback for older Textual versions or odd states:
+            # consult ``_row_order`` (which tracks the actual rendered
+            # order from the last ``_update_table`` tick) before falling
+            # back to ``_video_rows`` insertion order.
+            row_order = getattr(self, "_row_order", None)
+            if row_order and cursor_row < len(row_order):
+                try:
+                    return int(row_order[cursor_row])
+                except (TypeError, ValueError):
+                    pass
+            if cursor_row < len(self._video_rows):
+                return self._video_rows[cursor_row].video_id
+            return None
     
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Handle row selection event.

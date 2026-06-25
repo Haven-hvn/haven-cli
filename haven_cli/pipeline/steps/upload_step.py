@@ -573,7 +573,12 @@ class UploadStep(ConditionalStep):
                 await self._update_pipeline_snapshot(context.video_id, "upload", 100, status="completed")
             
             # Emit upload complete event
+            # ``video_id`` is REQUIRED by ``_on_upload_complete`` in the TUI's
+            # StateManager (haven_tui/core/state_manager.py:1062); omitting
+            # it makes the upload ✅ tick never appear on the event path
+            # (the TUI only catches up on the next ~2s poll).
             await self._emit_event(EventType.UPLOAD_COMPLETE, context, {
+                "video_id": context.video_id,
                 "video_path": video_path,
                 "root_cid": result.root_cid,
                 "piece_cid": result.piece_cid,

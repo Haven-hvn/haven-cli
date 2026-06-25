@@ -215,8 +215,14 @@ class AnalyzeStep(ConditionalStep):
                     logger.warning(f"Failed to save timestamps to database: {e}")
                     # Don't fail the step if DB save fails
             
-            # Emit analysis complete event
+            # Emit analysis complete event.
+            #
+            # ``video_id`` is REQUIRED by ``_on_analysis_complete`` in the
+            # TUI's StateManager (haven_tui/core/state_manager.py:1106);
+            # omitting it makes the analysis ✅ tick never appear on the
+            # event path (the TUI only catches up on the next ~2s poll).
             await self._emit_event(EventType.ANALYSIS_COMPLETE, context, {
+                "video_id": context.video_id,
                 "video_path": video_path,
                 "timestamp_count": len(timestamps),
                 "tag_count": len(tags),

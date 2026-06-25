@@ -139,9 +139,19 @@ class PipelineStep(ABC):
                     # Call on_complete hook
                     await self.on_complete(context, result)
                     
-                    # Emit complete event
+                    # Emit complete event.
+                    #
+                    # ``video_id`` is REQUIRED by ``_on_stage_complete``
+                    # in the TUI's StateManager (haven_tui/core/state_manager.py
+                    # ~line 1169) — omitting it makes per-stage ✅ ticks never
+                    # appear on the event path; the TUI only catches up on
+                    # the next ~2s poll.  We also forward ``stage`` (alias of
+                    # ``step_name``) because the handler keys on ``stage`` to
+                    # decide which status field to flip.
                     await self._emit_event(EventType.STEP_COMPLETE, context, {
+                        "video_id": context.video_id,
                         "step_name": self.name,
+                        "stage": self.name,
                         "duration_ms": result.duration_ms,
                         "data": result.data,
                     })
@@ -194,9 +204,14 @@ class PipelineStep(ABC):
         # Call on_error hook
         await self.on_error(context, result.error)
         
-        # Emit failed event
+        # Emit failed event.  ``video_id`` and ``stage`` are REQUIRED by
+        # the TUI's ``_on_step_failed`` → ``_on_pipeline_failed`` chain
+        # (haven_tui/core/state_manager.py).  Without them the failure
+        # status never reflects in the TUI until the next ~2s poll.
         await self._emit_event(EventType.STEP_FAILED, context, {
+            "video_id": context.video_id,
             "step_name": self.name,
+            "stage": self.name,
             "error_code": result.error.code if result.error else None,
             "error_message": result.error.message if result.error else None,
             "attempts": attempts,
@@ -308,9 +323,12 @@ class PipelineStep(ABC):
         # Call on_skip hook
         await self.on_skip(context, reason)
         
-        # Emit skip event
+        # Emit skip event.  ``video_id`` is REQUIRED by
+        # ``StateManager._on_step_skipped`` (haven_tui/core/state_manager.py).
         await self._emit_event(EventType.STEP_SKIPPED, context, {
+            "video_id": context.video_id,
             "step_name": self.name,
+            "stage": self.name,
             "reason": reason,
         })
         
