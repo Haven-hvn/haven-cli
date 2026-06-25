@@ -149,20 +149,14 @@ class EventLogWidget(DataTable):
         """Set up the table columns."""
         self._setup_columns()
         return []
-    
-    def _setup_columns(self) -> None:
-        """Configure table columns."""
-        # Clear existing columns
-        for key in list(self.columns.keys()):
-            self.remove_column(key)
-        
-        # Add columns
-        for key, label, width in self.COLUMNS:
-            if width > 0:
-                self.add_column(label, key=key, width=width)
-            else:
-                self.add_column(label, key=key)
-    
+
+    # NOTE: this class used to define ``_setup_columns`` twice. The first
+    # definition (lived here) iterated the ``COLUMNS`` class attribute, the
+    # second (further down, after ``_format_speed``) used hard-coded
+    # add_column calls. Python keeps the *last* definition, so the first
+    # was dead code that masked any drift between the two. We removed the
+    # dead duplicate. The live implementation lives below.
+
     def on_mount(self) -> None:
         """Start listening to events when mounted."""
         self.start()
@@ -353,8 +347,15 @@ class EventLogWidget(DataTable):
             return f"Worker status: {p.get('status', 'unknown')}"
         
         # Requested events
-        elif et == EventType.DOWNLOAD_PROGRESS:
-            return f"Video {p.get('video_id', 'unknown')}: Download requested"
+        #
+        # BUG HISTORY — there used to be a second ``elif et ==
+        # EventType.DOWNLOAD_PROGRESS`` here that returned
+        # "Download requested". It was unreachable dead code (the live
+        # branch above handles DOWNLOAD_PROGRESS) and is now removed.
+        # A separate ``DOWNLOAD_REQUESTED`` event type does not exist
+        # in ``haven_cli.pipeline.events.EventType`` so we do NOT emit
+        # any "Download requested" message at all — the daemon never
+        # publishes one.
         elif et == EventType.ENCRYPT_REQUESTED:
             return f"Video {p.get('video_id', 'unknown')}: Encryption requested"
         elif et == EventType.UPLOAD_REQUESTED:

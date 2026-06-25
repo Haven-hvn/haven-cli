@@ -70,15 +70,27 @@ logger = logging.getLogger(__name__)
 # Stage names for UploadJob.stage and PipelineSnapshot tracking
 STAGE_CONNECTING = "connecting"   # 0-10%: Initial connection
 STAGE_PREPARING = "preparing"     # 20%: CAR file creation
-STAGE_UPLOADING = "uploading"     # 80-99%: Actual network upload
+STAGE_UPLOADING = "uploading"     # 80-89%: Actual network upload
 STAGE_CONFIRMING = "confirming"   # 90%: Transaction confirmation
-STAGE_COMPLETE = "complete"       # 100%: Upload finished
+# STAGE_FINALIZING covers the post-network-upload work that previously
+# happened invisibly between the synapse-sdk returning and the
+# ``UPLOAD_COMPLETE`` event firing:
+#   * verifyPieceRetrieval JS RPC (can take up to 300s)
+#   * optional getStatus polling loop (when wait_for_deal=True)
+#   * VLM AI.json secondary upload
+#   * encrypt_cid for Arkiv sync
+#   * database persistence (root_cid + piece_cid)
+# We surface a 95% checkpoint so the TUI no longer shows a frozen-looking
+# "upload 100%" for 5-30+ seconds while these run.
+STAGE_FINALIZING = "finalizing"   # 95%: Post-network finalization (CID encryption, DB writes)
+STAGE_COMPLETE = "complete"       # 100%: Upload truly finished (CID persisted to DB)
 
 # Progress thresholds
 NETWORK_UPLOAD_START_PERCENT = 80  # Actual network upload starts at 80%
 CAR_CREATION_PERCENT = 20          # CAR file created at 20%
 CONNECTION_PERCENT = 10            # Connected at 10%
 CONFIRMATION_PERCENT = 90          # Confirming at 90%
+FINALIZING_PERCENT = 95            # Post-network finalization at 95%
 COMPLETION_PERCENT = 100           # Complete at 100%
 
 
@@ -389,6 +401,18 @@ class UploadStep(ConditionalStep):
                 self._network_upload_start_time = None
                 self._actual_bytes_uploaded = 0
 
+            # BUG HISTORY: ``upload_speed`` is used in the UPLOAD_PROGRESS
+            # event payload below regardless of whether ``_job_id`` is set,
+            # but its assignment was nested inside the ``if self._job_id
+            # and context.video_id:`` block — so when no job row exists
+            # (which happens in unit tests and any code path that doesn't
+            # set ``context.video_id``) the event handler raised
+            # ``UnboundLocalError: cannot access local variable
+            # 'upload_speed' where it is not associated with a value``
+            # and the whole upload attempt failed. We seed the variable
+            # here so the event path always has a definite value.
+            upload_speed = 0
+
             # Update job progress with accurate data
             if self._job_id and context.video_id:
                 file_size = context.video_metadata.file_size if context.video_metadata else 0
@@ -564,14 +588,24 @@ class UploadStep(ConditionalStep):
             
             # Update database
             await self._update_database(video_path, result)
-            
+
+            # BUG HISTORY: ``STAGE_COMPLETE`` (100%) used to be emitted inside
+            # ``_upload_to_filecoin`` before this DB write, which meant the TUI
+            # showed "upload 100%" for 5-30+ seconds with a still-empty CID
+            # column. We now emit the real 100% only here, after
+            # ``_update_database`` has persisted root_cid + piece_cid. The
+            # 95% "finalizing" emit at the end of ``_upload_to_filecoin``
+            # tells the user the network upload is done and post-processing
+            # is in flight.
+            await on_progress(STAGE_COMPLETE, COMPLETION_PERCENT, 0, 0)
+
             # Mark job as completed
             if self._job_id and context.video_id:
                 await self._complete_upload_job(
                     self._job_id, result.root_cid, result.piece_cid
                 )
                 await self._update_pipeline_snapshot(context.video_id, "upload", 100, status="completed")
-            
+
             # Emit upload complete event
             # ``video_id`` is REQUIRED by ``_on_upload_complete`` in the TUI's
             # StateManager (haven_tui/core/state_manager.py:1062); omitting
@@ -837,9 +871,18 @@ class UploadStep(ConditionalStep):
             except Exception as e:
                 logger.warning(f"Could not confirm FOC retrieval status: {e}")
 
-        await on_progress(STAGE_COMPLETE, COMPLETION_PERCENT, 0, 0)
+        # BUG HISTORY: ``STAGE_COMPLETE`` (100%) used to be emitted here, but at
+        # this point the caller in ``_do_upload`` still needs to:
+        #   * upload the VLM AI.json (a whole second upload)
+        #   * encrypt the CID for Arkiv sync
+        #   * persist root_cid + piece_cid to the database
+        # The TUI would show "upload 100%" for 5-30+ seconds with no CID
+        # visible before the upload row finally flipped to "completed".
+        # We now emit ``STAGE_FINALIZING`` (95%) here and let ``_do_upload``
+        # emit the real 100% only after the DB write lands.
+        await on_progress(STAGE_FINALIZING, FINALIZING_PERCENT, 0, 0)
 
-        logger.info(f"Upload complete. CID: {result.get('cid', '')}")
+        logger.info(f"Network upload complete. CID: {result.get('cid', '')}")
 
         uploaded_at = datetime.now(timezone.utc)
 

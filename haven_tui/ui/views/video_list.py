@@ -91,6 +91,30 @@ class VideoListWidget(DataTable):
     .stage-analysis { color: $warning; }
     .stage-encrypt { color: $error; }
     .stage-upload { color: $success; }
+    /* Upload finalize sub-stages. These are emitted by
+       ``haven_cli/pipeline/steps/upload_step.py`` after the synapse-sdk byte
+       stream has drained but before the CID is persisted to the database.
+       All are styled italic so users can tell at a glance that the network
+       upload is done and we're now wrapping up — but each sub-stage gets a
+       slightly different hue so a stuck finalize is easy to spot:
+
+         stage-stored            (95%)  CAR fully streamed to provider(s)
+         stage-pieces_added      (97%)  on-chain addPieces succeeded
+         stage-pieces_confirmed  (99%)  provider confirmed PDP root
+         stage-finalizing        (95%)  Python umbrella (verifyPieceRetrieval,
+                                        getStatus polling, vlm_json upload,
+                                        encrypt_cid, DB write)
+
+       Note that ``pieces_added`` and ``pieces_confirmed`` use an underscore
+       in their CSS class because ``_get_stage_style`` does
+       ``f"stage-{stage.lower()}"`` without normalization — the JS layer in
+       ``js-services/synapse-wrapper.ts`` and the Python event_stage in
+       ``state_manager._on_upload_progress`` both emit the underscore form,
+       so the CSS class names must match exactly. */
+    .stage-finalizing { color: $success; text-style: italic; }
+    .stage-stored { color: $success; text-style: italic; }
+    .stage-pieces_added { color: $warning; text-style: italic; }
+    .stage-pieces_confirmed { color: $accent; text-style: italic; }
     .stage-sync { color: $success; }
     .stage-complete { color: $success; text-style: bold; }
     .stage-skipped { color: $warning; text-style: italic; }
@@ -959,10 +983,22 @@ class VideoListFooter(Static):
     def _update_content(self) -> None:
         """Update the footer content."""
         if self._batch_mode:
-            # Batch mode footer with selection count and batch operations
+            # Batch mode footer with selection count and batch operations.
+            #
+            # BUG HISTORY — these strings used to show LOWERCASE keys
+            # ("[a] All [c] Clear [r] Retry [x] Remove [e] Export"), but
+            # the BINDINGS on VideoListScreen bind the lowercase keys to
+            # OTHER actions even while batch_mode is on
+            # (a → toggle_auto_refresh, c → toggle_completed_filter,
+            #  r → refresh, x → clear_filters, e → errors_only_filter).
+            # The real batch operations are bound to uppercase A R X E
+            # (select_all, batch_retry, batch_remove, batch_export). Users
+            # following the footer would silently trigger the wrong action
+            # — e.g. pressing "r" thinking they were retrying when they
+            # were just refreshing.
             self.update(
                 f"Batch: {self._selection_count} selected | "
-                f"[a] All  [c] Clear  [r] Retry  [x] Remove  [e] Export  [Esc] Exit"
+                f"[A] All  [c] Clear-sel  [R] Retry  [X] Remove  [E] Export  [Esc] Exit"
             )
         else:
             # Normal mode footer
@@ -1473,17 +1509,20 @@ class VideoListScreen(Screen):
     def action_help(self) -> None:
         """Show help dialog."""
         if self.batch_mode:
-            # Batch mode help
+            # Batch mode help — keys are case-sensitive. Lowercase a/c/r/x/e
+            # are bound to filter/refresh actions; uppercase A/R/X/E are the
+            # batch operations. See bug history note in
+            # VideoListFooter._update_content.
             help_text = (
-                "Batch Mode Shortcuts:\n"
+                "Batch Mode Shortcuts (case-sensitive):\n"
                 "  Space - Select/deselect current video\n"
-                "  a - Select all visible videos\n"
-                "  c - Clear all selections\n"
-                "  r - Retry failed selected videos\n"
-                "  x - Remove selected from queue\n"
-                "  e - Export selected to JSON\n"
-                "  Esc - Exit batch mode\n"
-                "  ? - Show this help"
+                "  A     - Select all visible videos\n"
+                "  c     - Clear-sel (clears selection, not filters)\n"
+                "  R     - Retry failed selected videos\n"
+                "  X     - Remove selected from queue\n"
+                "  E     - Export selected to JSON\n"
+                "  Esc   - Exit batch mode\n"
+                "  ?     - Show this help"
             )
         else:
             # Normal mode help
@@ -1530,10 +1569,17 @@ class VideoListScreen(Screen):
         self.batch_mode = not self.batch_mode
         
         if self.batch_mode:
-            # Entering batch mode
+            # Entering batch mode.
+            #
+            # BUG HISTORY — these strings used to show LOWERCASE keys for
+            # batch operations, but the BINDINGS bind lowercase a/c/r/x/e
+            # to filter/refresh/auto-refresh actions even in batch mode.
+            # Only Space + uppercase A/R/X/E + Esc actually trigger batch
+            # operations. See VideoListFooter._update_content for full
+            # explanation.
             self.app.notify(
-                "Batch mode ON. Use [Space] to select, [a] for all, [c] to clear, "
-                "[r] to retry failed, [x] to remove, [e] to export, [Esc] to exit",
+                "Batch mode ON. Use [Space] to select, [A] for all, [c] to clear-sel, "
+                "[R] to retry failed, [X] to remove, [E] to export, [Esc] to exit",
                 title="Batch Mode",
                 timeout=5.0
             )
