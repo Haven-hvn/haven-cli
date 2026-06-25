@@ -121,23 +121,60 @@ class VideoState:
     
     @property
     def current_progress(self) -> float:
-        """Get progress for the current active stage."""
+        """Get progress for the current active stage.
+
+        Note: ``finalizing`` (and its more specific sub-stages ``stored``,
+        ``pieces_added``, ``pieces_confirmed``) are post-network-upload phases
+        emitted by ``upload_step.py`` after the synapse-sdk byte stream is
+        drained but before the CID is persisted to the database. They all
+        belong to the upload stage, so they read the same ``upload_progress``
+        field (which will be ~95-99% during finalization and 100% only after
+        the DB write lands).
+
+        The sub-stages come from filecoin-pin's UploadProgressEvents
+        (forwarded through ``js-services/synapse-wrapper.ts``):
+
+          * ``stored`` (95%)            — CAR fully streamed to provider(s)
+          * ``pieces_added`` (97%)      — piece registered on-chain (addPieces)
+          * ``pieces_confirmed`` (99%)  — provider confirmed PDP root
+          * ``finalizing`` (95%)        — fallback emitted by Python
+                                           ``_upload_to_filecoin`` (covers
+                                           verifyPieceRetrieval + getStatus +
+                                           vlm_json + encrypt_cid + DB write)
+        """
         stage_progress_map = {
             "download": self.download_progress,
             "encrypt": self.encrypt_progress,
             "upload": self.upload_progress,
+            # Upload finalize sub-stages (see docstring above)
+            "finalizing": self.upload_progress,
+            "stored": self.upload_progress,
+            "pieces_added": self.upload_progress,
+            "pieces_confirmed": self.upload_progress,
             "sync": self.sync_progress,
             "analysis": self.analysis_progress,
         }
         return stage_progress_map.get(self.current_stage, 0.0)
-    
+
     @property
     def current_speed(self) -> float:
-        """Get speed for the current active stage."""
+        """Get speed for the current active stage.
+
+        All upload finalize sub-stages report a speed of 0 because the network
+        byte stream has already drained — what's running is on-chain work
+        (addPieces / PDP confirmation), retrieval probes, and DB writes.
+        Showing a non-zero "upload speed" during these stages would be
+        misleading (the user would think bytes are still moving).
+        """
         stage_speed_map = {
             "download": self.download_speed,
             "encrypt": 0.0,  # Encryption typically doesn't report speed
             "upload": self.upload_speed,
+            # All finalize sub-stages: network is idle, on-chain work in flight
+            "finalizing": 0.0,
+            "stored": 0.0,
+            "pieces_added": 0.0,
+            "pieces_confirmed": 0.0,
             "sync": 0.0,  # Sync typically doesn't report speed
             "analysis": 0.0,  # Analysis typically doesn't report speed
         }
@@ -383,6 +420,30 @@ class StateManager:
             # Try to get pipeline snapshot for additional state
             stats = self._pipeline.get_pipeline_stats()
             
+            # Compute the freshest timestamp we know about for this video so
+            # the next ``refresh_from_database`` tick has a real watermark
+            # to compare against. Otherwise, with ``Video.updated_at`` not
+            # ticking on snapshot writes, ``state.updated_at`` would lock
+            # to a stale value and every tick would think "needs refresh"
+            # (still correct, just wasteful).
+            snap = getattr(video, "pipeline_snapshot", None)
+            snap_updated_at = getattr(snap, "updated_at", None) if snap else None
+
+            def _to_utc(dt):
+                if dt is None:
+                    return None
+                if dt.tzinfo is None:
+                    return dt.replace(tzinfo=timezone.utc)
+                return dt
+
+            v_ts = _to_utc(video.updated_at)
+            s_ts = _to_utc(snap_updated_at)
+            initial_updated_at = (
+                max(t for t in (v_ts, s_ts) if t is not None)
+                if (v_ts is not None or s_ts is not None)
+                else datetime.now(timezone.utc)
+            )
+
             # Create initial state from video
             state = VideoState(
                 id=video.id,
@@ -390,7 +451,7 @@ class StateManager:
                 file_size=video.file_size or 0,
                 plugin=video.plugin_name or "unknown",
                 created_at=video.created_at or datetime.now(timezone.utc),
-                updated_at=video.updated_at or datetime.now(timezone.utc),
+                updated_at=initial_updated_at,
             )
             
             # Update from pipeline snapshot if available
@@ -708,11 +769,64 @@ class StateManager:
                             await self._load_video(video_id)
                             refreshed_count += 1
                         else:
-                            # Existing video - check if it needs update
+                            # Existing video - check if it needs update.
+                            #
+                            # BUG HISTORY (auto-refresh / manual 'r' never
+                            # updated running videos):
+                            #
+                            # Previously this only checked
+                            # ``video.updated_at > state.updated_at``. But
+                            # ``Video.updated_at`` only ticks when the Video
+                            # row itself is written (``encrypted``, ``cid``,
+                            # ``has_ai_data`` etc.) — which is RARE.
+                            #
+                            # The thing that ticks every progress event is
+                            # ``PipelineSnapshot.updated_at`` (the snapshot
+                            # row co-located with the Video). With WAL
+                            # giving us fresh reads, the data was sitting
+                            # right there in the DB — we just never asked
+                            # for it because the staleness check was
+                            # comparing the wrong column.
+                            #
+                            # Symptom: a running download/upload's
+                            # progress, speed, ETA, and current stage all
+                            # froze in the TUI after the initial load. The
+                            # only way to see updated values was to close
+                            # and re-open the TUI, which forces a fresh
+                            # ``_load_video`` for every row.
+                            #
+                            # Fix: refresh if EITHER timestamp moved
+                            # forward. We tolerate ``state.updated_at`` not
+                            # being timezone-aware by coercing both sides
+                            # to UTC-aware ``datetime``.
                             state = self._state[video_id]
-                            # Update if video has newer timestamp
-                            video_updated = getattr(video, 'updated_at', None)
-                            if video_updated and video_updated > state.updated_at:
+
+                            def _needs_refresh() -> bool:
+                                state_ts = state.updated_at
+                                v_ts = getattr(video, "updated_at", None)
+                                snap = getattr(video, "pipeline_snapshot", None)
+                                snap_ts = getattr(snap, "updated_at", None) if snap else None
+
+                                def _to_utc(dt):
+                                    if dt is None:
+                                        return None
+                                    if dt.tzinfo is None:
+                                        return dt.replace(tzinfo=timezone.utc)
+                                    return dt
+
+                                state_ts = _to_utc(state_ts)
+                                v_ts = _to_utc(v_ts)
+                                snap_ts = _to_utc(snap_ts)
+
+                                if state_ts is None:
+                                    return True
+                                if v_ts is not None and v_ts > state_ts:
+                                    return True
+                                if snap_ts is not None and snap_ts > state_ts:
+                                    return True
+                                return False
+
+                            if _needs_refresh():
                                 await self._load_video(video_id)
                                 refreshed_count += 1
                     except Exception as e:
@@ -952,10 +1066,45 @@ class StateManager:
 
             old_speed = state.upload_speed
             old_progress = state.upload_progress
+            old_stage = state.current_stage
 
             state.upload_status = "active"
-            state.current_stage = "upload"
             state.overall_status = "active"
+
+            # Honor finalize sub-stages from the JS layer so users can see
+            # which post-network-upload step is in flight.
+            #
+            # The JS wrapper (``js-services/synapse-wrapper.ts``) translates
+            # filecoin-pin UploadProgressEvents into stage strings:
+            #
+            #   "uploading"         -> 80-95% network transfer
+            #   "stored"            -> 95% CAR fully streamed to provider(s)
+            #   "pieces_added"      -> 97% on-chain addPieces succeeded
+            #   "pieces_confirmed"  -> 99% provider confirmed PDP root
+            #
+            # The Python ``_upload_to_filecoin`` also emits ``finalizing`` at
+            # 95% as a fallback / umbrella for the post-stream work
+            # (verifyPieceRetrieval, getStatus polling, vlm_json upload,
+            # encrypt_cid, DB write).
+            #
+            # All of these are still semantically "upload", but we surface
+            # them as the current_stage so the TUI stage column can render
+            # them distinctly (CSS classes ``stage-stored`` /
+            # ``stage-pieces_added`` / ``stage-pieces_confirmed`` /
+            # ``stage-finalizing`` — see ``haven_tui/ui/views/video_list.py``).
+            #
+            # Any other stage string (including the legacy ``uploading``,
+            # ``preparing``, ``connecting``, ``confirming``, etc.) collapses
+            # to ``"upload"`` so the existing TUI styling for the main
+            # network-upload phase keeps working.
+            event_stage = payload.get('stage') or ''
+            FINALIZE_SUBSTAGES = {
+                'finalizing', 'stored', 'pieces_added', 'pieces_confirmed'
+            }
+            if event_stage in FINALIZE_SUBSTAGES:
+                state.current_stage = event_stage
+            else:
+                state.current_stage = "upload"
 
             # --- Progress ---------------------------------------------------
             progress_present = 'progress_percent' in payload and payload['progress_percent'] is not None
@@ -1000,7 +1149,12 @@ class StateManager:
             self._notify_change(video_id, 'upload_speed', state.upload_speed)
         if progress_present and state.upload_progress != old_progress:
             self._notify_change(video_id, 'upload_progress', state.upload_progress)
-    
+        # Notify on sub-stage transitions (uploading -> stored -> pieces_added
+        # -> pieces_confirmed -> finalizing) so the video_list re-renders the
+        # stage column with the correct CSS class.
+        if state.current_stage != old_stage:
+            self._notify_change(video_id, 'current_stage', state.current_stage)
+
     async def _on_encrypt_progress(self, event: Event) -> None:
         """Handle encryption progress events.
         
