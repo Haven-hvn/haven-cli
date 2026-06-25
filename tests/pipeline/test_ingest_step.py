@@ -681,6 +681,18 @@ class TestIngestStepEvents:
         from haven_cli.pipeline.events import EventType
         ingested_event = next(e for e in emitted_events if e[0] == EventType.VIDEO_INGESTED)
         data = ingested_event[1]
+        # ``video_id`` is REQUIRED in the VIDEO_INGESTED payload — the TUI's
+        # StateManager._on_video_ingested handler silently drops events
+        # without it, which manifests as "new titles only appear after
+        # pressing r to refresh". Regression guard: if you remove this
+        # field from the emit site, the TUI will look broken even though
+        # all the data is in the database.
+        assert "video_id" in data, (
+            "VIDEO_INGESTED payload must include video_id — TUI silently "
+            "drops events without it. See haven_tui/core/state_manager.py "
+            "_on_video_ingested."
+        )
+        assert data["video_id"] == 42
         assert data["path"] == str(video_file)
         assert data["phash"] == "a3f5c2d8"
         assert data["file_size"] == 20

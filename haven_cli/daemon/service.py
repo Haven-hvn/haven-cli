@@ -21,6 +21,7 @@ from haven_cli.pipeline.batch_accumulator import BatchAccumulator
 from haven_cli.pipeline.flush_queue import FlushQueue
 from haven_cli.pipeline.events import get_event_bus, make_sqlite_event_sink
 from haven_cli.scheduler.job_scheduler import JobScheduler
+from haven_cli.services.speed_history import SpeedHistoryService
 
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,14 @@ class HavenDaemon:
         self._flush_queue: Optional[FlushQueue] = None
         self._flush_loop_task: Optional[asyncio.Task] = None
         self._scheduler: Optional[JobScheduler] = None
+        # SpeedHistoryService subscribes to *_PROGRESS events and persists
+        # samples into the ``speed_history`` table. Without it, the TUI's
+        # SpeedGraph shows "[No speed data available]" because the rows it
+        # reads from never get written. The service holds one DB session for
+        # its lifetime (it's a writer; WAL mode keeps it from blocking the
+        # TUI's per-call readers).
+        self._speed_history_service: Optional[SpeedHistoryService] = None
+        self._speed_history_session: Optional[Any] = None
         self._running = False
         self._shutdown_event = asyncio.Event()
     
@@ -132,6 +141,38 @@ class HavenDaemon:
                 "TUI updates will rely on polling.",
                 e,
             )
+
+        # Start the SpeedHistoryService. It subscribes to *_PROGRESS events
+        # and writes ``speed_history`` rows that the TUI's SpeedGraph reads.
+        # Without this the graph reads an empty table and shows
+        # "[No speed data available]" for every video. Degrades gracefully:
+        # a failure here only loses the graph data, not the pipeline.
+        try:
+            from haven_cli.database.connection import get_session_maker
+
+            SessionMaker = get_session_maker()
+            self._speed_history_session = SessionMaker()
+            self._speed_history_service = SpeedHistoryService(
+                db_session=self._speed_history_session,
+                event_bus=get_event_bus(),
+            )
+            await self._speed_history_service.start()
+            logger.info("SpeedHistoryService started (speed_history table)")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "Could not start SpeedHistoryService: %s; TUI speed graph "
+                "will show '[No speed data available]'.",
+                e,
+            )
+            # Clean up partial init so stop() doesn't try to use a half-built
+            # service.
+            self._speed_history_service = None
+            if self._speed_history_session is not None:
+                try:
+                    self._speed_history_session.close()
+                except Exception:
+                    pass
+                self._speed_history_session = None
 
         # Initialize pipeline manager — batched or default based on config
 
@@ -246,6 +287,24 @@ class HavenDaemon:
                 logger.info("Job scheduler stopped")
             except Exception as e:
                 logger.warning(f"Error stopping scheduler: {e}")
+
+        # Stop speed-history service (flushes any buffered samples).
+        if self._speed_history_service is not None:
+            try:
+                await self._speed_history_service.stop()
+                logger.info("SpeedHistoryService stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping SpeedHistoryService: {e}")
+            finally:
+                # Close the long-lived session even if stop() raised so we
+                # don't leak a connection on shutdown.
+                if self._speed_history_session is not None:
+                    try:
+                        self._speed_history_session.close()
+                    except Exception:
+                        pass
+                    self._speed_history_session = None
+                self._speed_history_service = None
         
         # Drain accumulator and stop flush queue (batched mode)
         if self._accumulator is not None and self._flush_queue is not None:

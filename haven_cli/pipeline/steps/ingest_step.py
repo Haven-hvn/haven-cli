@@ -228,6 +228,11 @@ class IngestStep(PipelineStep):
                     EventType.VIDEO_INGESTED,
                     context,
                     {
+                        # ``video_id`` is required by the TUI's
+                        # StateManager._on_video_ingested handler — without
+                        # it the event is silently dropped and new titles
+                        # never appear until the next polling tick.
+                        "video_id": dedup_match.id,
                         "path": str(video_path),
                         "phash": phash,
                         "original_hash": original_hash,
@@ -279,9 +284,34 @@ class IngestStep(PipelineStep):
             
             # Store in context
             context.video_metadata = video_metadata
-            
-            # Emit video ingested event
+
+            # Get plugin information from context for source attribution
+            plugin_name = context.options.get("plugin_name")
+            plugin_source_id = context.options.get("source_id")
+            source_uri = context.options.get("source_uri")
+
+            # Save to database and get video ID. We must save BEFORE
+            # emitting VIDEO_INGESTED so the event payload can include
+            # ``video_id`` — the TUI's StateManager._on_video_ingested
+            # handler drops events without it, which is why newly
+            # ingested titles were invisible in the TUI until the next
+            # polling tick / manual refresh.
+            video_id = await self._save_to_database(
+                video_metadata, context, plugin_name, plugin_source_id, source_uri
+            )
+
+            # Store video ID in context for later steps
+            if video_id > 0:
+                context.video_id = video_id
+                context.set_step_data(self.name, "video_id", video_id)
+
+            # Emit video ingested event (after save so video_id is set).
             await self._emit_event(EventType.VIDEO_INGESTED, context, {
+                # ``video_id`` is required by the TUI's StateManager
+                # handler. Use None when the DB save failed (video_id == -1)
+                # so the TUI just ignores the event rather than trying to
+                # load a non-existent row.
+                "video_id": video_id if video_id > 0 else None,
                 "path": str(video_path),
                 "phash": phash,
                 "file_size": file_size,
@@ -292,22 +322,7 @@ class IngestStep(PipelineStep):
                 "resolution": f"{video_metadata.width}x{video_metadata.height}",
                 "codec": video_metadata.codec,
             })
-            
-            # Get plugin information from context for source attribution
-            plugin_name = context.options.get("plugin_name")
-            plugin_source_id = context.options.get("source_id")
-            source_uri = context.options.get("source_uri")
-            
-            # Save to database and get video ID
-            video_id = await self._save_to_database(
-                video_metadata, context, plugin_name, plugin_source_id, source_uri
-            )
-            
-            # Store video ID in context for later steps
-            if video_id > 0:
-                context.video_id = video_id
-                context.set_step_data(self.name, "video_id", video_id)
-            
+
             return StepResult.ok(
                 self.name,
                 video_id=video_id if video_id > 0 else None,
