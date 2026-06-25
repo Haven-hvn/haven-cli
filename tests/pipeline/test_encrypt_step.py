@@ -88,8 +88,10 @@ class TestEncryptProgressHelpers:
         )
         assert payload["video_id"] == 7
         assert payload["job_id"] == 3
-        assert payload["progress"] == 42.5
+        # ``progress_percent`` is the canonical key. The deprecated ``progress``
+        # alias was removed once all consumers were migrated.
         assert payload["progress_percent"] == 42.5
+        assert "progress" not in payload
         assert payload["bytes_processed"] == 425
         assert payload["phase"] == "encrypting"
         assert payload["encrypt_speed"] == 1024
@@ -736,7 +738,7 @@ class TestEncryptStepProcess:
         assert len(progress_payloads) >= 2
         for payload in progress_payloads:
             assert payload["video_id"] == 42
-            assert "progress" in payload
+            assert "progress_percent" in payload
             assert payload["phase"] in ("hashing", "encrypting")
             assert payload["bytes_total"] == 250
         phases = {p["phase"] for p in progress_payloads}
@@ -744,7 +746,7 @@ class TestEncryptStepProcess:
         assert "encrypting" in phases
         assert mock_job.await_count >= 1
         final = progress_payloads[-1]
-        assert final["progress"] == pytest.approx(100.0)
+        assert final["progress_percent"] == pytest.approx(100.0)
 
     @pytest.mark.asyncio
     async def test_report_encrypt_progress_throttled(self) -> None:
@@ -765,7 +767,7 @@ class TestEncryptStepProcess:
             payload: dict,
         ) -> None:
             if event_type == EventType.ENCRYPT_PROGRESS:
-                emitted.append(payload["progress"])
+                emitted.append(payload["progress_percent"])
             await real_emit(event_type, ctx, payload)
 
         step._emit_event = capture_emit  # type: ignore[method-assign]

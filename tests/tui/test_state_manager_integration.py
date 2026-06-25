@@ -86,8 +86,8 @@ class TestStateManagerLifecycle:
                 event_type=EventType.DOWNLOAD_PROGRESS,
                 payload={
                     'video_id': 1,
-                    'progress': float(i),
-                    'speed': 1024.0,
+                    'progress_percent': float(i),
+                    'download_rate': 1024.0,
                 },
             ))
             await asyncio.sleep(0.001)
@@ -111,8 +111,8 @@ class TestStateManagerLifecycle:
             event_type=EventType.UPLOAD_PROGRESS,
             payload={
                 'video_id': 1,
-                'progress': 50.0,
-                'speed': 512.0,
+                'progress_percent': 50.0,
+                'download_rate': 512.0,
             },
         ))
         await asyncio.sleep(0.01)
@@ -230,8 +230,8 @@ class TestStateManagerConcurrentVideos:
                 event_type=EventType.DOWNLOAD_PROGRESS,
                 payload={
                     'video_id': i,
-                    'progress': float(i * 20),
-                    'speed': float(i * 1000),
+                    'progress_percent': float(i * 20),
+                    'download_rate': float(i * 1000),
                 },
             ))
         
@@ -341,8 +341,8 @@ class TestStateManagerConcurrentVideos:
                     event_type=EventType.DOWNLOAD_PROGRESS,
                     payload={
                         'video_id': video_id,
-                        'progress': float(progress),
-                        'speed': 1024.0,
+                        'progress_percent': float(progress),
+                        'download_rate': 1024.0,
                     },
                 ))
         
@@ -387,8 +387,8 @@ class TestStateManagerPerformance:
                 event_type=EventType.DOWNLOAD_PROGRESS,
                 payload={
                     'video_id': i,
-                    'progress': 50.0,
-                    'speed': 1024.0,
+                    'progress_percent': 50.0,
+                    'download_rate': 1024.0,
                 },
             ))
         
@@ -427,8 +427,8 @@ class TestStateManagerPerformance:
                 event_type=EventType.DOWNLOAD_PROGRESS,
                 payload={
                     'video_id': 1,
-                    'progress': float(i % 101),
-                    'speed': float(i),
+                    'progress_percent': float(i % 101),
+                    'download_rate': float(i),
                 },
             ))
         
@@ -464,7 +464,7 @@ class TestStateManagerCallbacks:
         # Download progress
         await event_bus.publish(Event(
             event_type=EventType.DOWNLOAD_PROGRESS,
-            payload={'video_id': 1, 'progress': 50.0, 'speed': 1024.0},
+            payload={'video_id': 1, 'progress_percent': 50.0, 'download_rate': 1024.0},
         ))
         await asyncio.sleep(0.01)
         
@@ -475,10 +475,33 @@ class TestStateManagerCallbacks:
         ))
         await asyncio.sleep(0.01)
         
-        # Upload progress
+        # Upload progress — speed is derived from successive bytes_uploaded
+        # deltas (upload_step.py does not emit an explicit speed field), so
+        # publish two events and rewind the tracker baseline to deterministic
+        # produce a non-zero ``upload_speed`` change notification.
         await event_bus.publish(Event(
             event_type=EventType.UPLOAD_PROGRESS,
-            payload={'video_id': 1, 'progress': 75.0, 'speed': 512.0},
+            payload={
+                'video_id': 1,
+                'stage': 'uploading',
+                'progress_percent': 50.0,
+                'bytes_uploaded': 0,
+                'total_bytes': 1024,
+            },
+        ))
+        await asyncio.sleep(0.01)
+        import time as _time
+        prev_bytes, _prev_ts = manager._upload_byte_tracker[1]
+        manager._upload_byte_tracker[1] = (prev_bytes, _time.monotonic() - 1.0)
+        await event_bus.publish(Event(
+            event_type=EventType.UPLOAD_PROGRESS,
+            payload={
+                'video_id': 1,
+                'stage': 'uploading',
+                'progress_percent': 75.0,
+                'bytes_uploaded': 512,
+                'total_bytes': 1024,
+            },
         ))
         await asyncio.sleep(0.01)
         
@@ -511,7 +534,7 @@ class TestStateManagerCallbacks:
         
         await event_bus.publish(Event(
             event_type=EventType.DOWNLOAD_PROGRESS,
-            payload={'video_id': 1, 'progress': 50.0},
+            payload={'video_id': 1, 'progress_percent': 50.0},
         ))
         await asyncio.sleep(0.01)
         
@@ -539,7 +562,7 @@ class TestStateManagerCallbacks:
         # Should not raise despite bad callback
         await event_bus.publish(Event(
             event_type=EventType.DOWNLOAD_PROGRESS,
-            payload={'video_id': 1, 'progress': 50.0},
+            payload={'video_id': 1, 'progress_percent': 50.0},
         ))
         await asyncio.sleep(0.01)
         
@@ -565,7 +588,7 @@ class TestStateManagerEdgeCases:
         # Event for non-existent video
         await event_bus.publish(Event(
             event_type=EventType.DOWNLOAD_PROGRESS,
-            payload={'video_id': 99999, 'progress': 50.0},
+            payload={'video_id': 99999, 'progress_percent': 50.0},
         ))
         await asyncio.sleep(0.01)
         
@@ -587,7 +610,7 @@ class TestStateManagerEdgeCases:
         # Event with missing video_id
         await event_bus.publish(Event(
             event_type=EventType.DOWNLOAD_PROGRESS,
-            payload={'progress': 50.0},  # No video_id
+            payload={'progress_percent': 50.0},  # No video_id
         ))
         await asyncio.sleep(0.01)
         

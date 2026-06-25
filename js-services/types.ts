@@ -118,6 +118,13 @@ export interface SynapseUploadProgress {
   bytesUploaded: number;
   totalBytes: number;
   percentage: number;
+  /**
+   * Optional stage marker for the current progress event. Forwarded to
+   * Python so the UploadJob row can record which phase of the upload
+   * pipeline produced the byte count (e.g. "uploading", "stored",
+   * "pieces_added", "pieces_confirmed").
+   */
+  stage?: string;
 }
 
 export interface SynapseStatusParams {

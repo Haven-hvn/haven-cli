@@ -380,16 +380,25 @@ class UploadStep(ConditionalStep):
         
         # Create progress callback
         async def on_progress(stage: str, percent: int, bytes_uploaded: int = 0, total_bytes: int = 0) -> None:
+            # The Deno wrapper emits `uploading_retry` at the start of every
+            # retry attempt so we reset the speed/byte window — without this,
+            # a previously-completed attempt's bytes inflate the apparent
+            # throughput of the retry.
+            if stage == "uploading_retry":
+                self._network_upload_started = False
+                self._network_upload_start_time = None
+                self._actual_bytes_uploaded = 0
+
             # Update job progress with accurate data
             if self._job_id and context.video_id:
                 file_size = context.video_metadata.file_size if context.video_metadata else 0
-                
+
                 # Determine if we're in preparation or actual network upload phase
                 # Based on synapse-wrapper.ts stages:
                 # 0-35% = Preparation (CAR creation, payment check)
                 # 80%+ = Actual network upload
                 is_preparation = percent < NETWORK_UPLOAD_START_PERCENT
-                
+
                 if is_preparation:
                     # During preparation, no actual network bytes have been transferred
                     display_bytes_uploaded = 0
@@ -399,29 +408,36 @@ class UploadStep(ConditionalStep):
                     if not self._network_upload_started:
                         self._network_upload_started = True
                         self._network_upload_start_time = time.time()
-                        self._actual_bytes_uploaded = bytes_uploaded if bytes_uploaded > 0 else file_size
-                    
-                    # Use actual bytes from callback, or calculate from percentage of file size
-                    display_bytes_uploaded = bytes_uploaded if bytes_uploaded > 0 else int(
-                        file_size * (percent - NETWORK_UPLOAD_START_PERCENT) / (COMPLETION_PERCENT - NETWORK_UPLOAD_START_PERCENT)
-                    )
+                        self._actual_bytes_uploaded = bytes_uploaded if bytes_uploaded > 0 else 0
+
+                    # Prefer the real byte counter from synapse-sdk's TransformStream
+                    # (forwarded by js-services/synapse-wrapper.ts via the
+                    # `uploadProgress` event). Fall back to a percentage estimate
+                    # only when the wrapper has not provided a byte count yet.
+                    if bytes_uploaded > 0:
+                        display_bytes_uploaded = bytes_uploaded
+                    else:
+                        display_bytes_uploaded = int(
+                            file_size * (percent - NETWORK_UPLOAD_START_PERCENT)
+                            / max(1, COMPLETION_PERCENT - NETWORK_UPLOAD_START_PERCENT)
+                        )
                     self._actual_bytes_uploaded = display_bytes_uploaded
-                    
+
                     # Calculate speed only during actual network upload
                     if self._network_upload_start_time:
                         network_elapsed = time.time() - self._network_upload_start_time
                         upload_speed = int(display_bytes_uploaded / network_elapsed) if network_elapsed > 0 else 0
                     else:
                         upload_speed = 0
-                
+
                 await self._update_job_progress(
-                    context.video_id, 
-                    display_bytes_uploaded, 
-                    percent, 
+                    context.video_id,
+                    display_bytes_uploaded,
+                    percent,
                     upload_speed,
                     stage=stage  # Pass actual stage to database
                 )
-            
+
             await self._emit_event(EventType.UPLOAD_PROGRESS, context, {
                 "video_path": video_path,
                 "video_id": context.video_id,
@@ -429,25 +445,47 @@ class UploadStep(ConditionalStep):
                 "stage": stage,
                 "progress_percent": percent,
                 "bytes_uploaded": bytes_uploaded if bytes_uploaded > 0 else None,
+                "total_bytes": total_bytes if total_bytes > 0 else None,
+                # ``upload_speed`` is only non-zero during the network-upload
+                # phase (see ``_network_upload_start_time`` above). It's
+                # consumed by ``haven_cli/services/speed_history.py`` to fill
+                # the historical upload graph. The TUI's live ``upload_speed``
+                # is still derived from byte-deltas in ``StateManager`` so
+                # the in-memory ring graph keeps working if this field is 0.
+                "upload_speed": upload_speed,
             })
-        
+
+
         # Set up progress notification handler
         unregister_progress = None
-        
+
         def handle_progress(params: dict) -> None:
-            """Handle progress notifications from JS runtime."""
-            percentage = params.get("percentage", 0)
-            stage = params.get("stage", "uploading")
-            if percentage < 100:
-                # Emit pipeline event
+            """Handle progress notifications from JS runtime.
+
+            The Deno-side `synapse.upload` RPC forwards every SynapseUploadProgress
+            object verbatim. We funnel it through the same ``on_progress``
+            coroutine used by the in-process callback so the UploadJob row
+            (and therefore the TUI speed graph) sees byte-level updates,
+            including the per-chunk events emitted by synapse-sdk's
+            TransformStream byte counter.
+            """
+            try:
+                percentage = int(params.get("percentage", 0) or 0)
+            except (TypeError, ValueError):
+                percentage = 0
+            stage = params.get("stage", "uploading") or "uploading"
+            try:
+                bytes_uploaded = int(params.get("bytesUploaded", 0) or 0)
+            except (TypeError, ValueError):
+                bytes_uploaded = 0
+            try:
+                total_bytes = int(params.get("totalBytes", 0) or 0)
+            except (TypeError, ValueError):
+                total_bytes = 0
+
+            if percentage < COMPLETION_PERCENT:
                 asyncio.create_task(
-                    self._emit_event(EventType.UPLOAD_PROGRESS, context, {
-                        "video_path": video_path,
-                        "video_id": context.video_id,
-                        "job_id": self._job_id,
-                        "stage": stage,
-                        "progress_percent": percentage,
-                    })
+                    on_progress(stage, percentage, bytes_uploaded, total_bytes)
                 )
         
         try:

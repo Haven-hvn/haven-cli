@@ -1,8 +1,11 @@
 """Data access layer for Haven TUI.
 
-Repository pattern implementation for querying pipeline data,
-event consumer for real-time state updates, and refresh strategy
-for data synchronization.
+Repository pattern implementation for querying pipeline data and
+real-time download/torrent progress tracking. Cross-process pipeline
+events arrive via ``haven_tui.data.sqlite_event_consumer.SqliteEventConsumer``
+(wired in ``haven_tui.app``), which republishes onto the in-process
+EventBus that ``haven_tui.core.state_manager.StateManager`` is
+subscribed to.
 """
 
 from haven_tui.data.repositories import (
@@ -11,14 +14,6 @@ from haven_tui.data.repositories import (
     JobHistoryRepository,
     SpeedHistoryRepository,
     AnalyticsRepository,
-)
-from haven_tui.data.event_consumer import (
-    TUIEventConsumer,
-    TUIStateManager,
-)
-from haven_tui.data.refresher import (
-    DataRefresher,
-    RefreshMode,
 )
 from haven_tui.data.download_tracker import (
     DownloadStatus,
@@ -46,10 +41,6 @@ __all__ = [
     "JobHistoryRepository",
     "SpeedHistoryRepository",
     "AnalyticsRepository",
-    "TUIEventConsumer",
-    "TUIStateManager",
-    "DataRefresher",
-    "RefreshMode",
     "DownloadStatus",
     "DownloadProgress",
     "DownloadProgressTracker",

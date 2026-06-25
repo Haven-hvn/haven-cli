@@ -185,6 +185,19 @@ const ENCRYPTION_OVERHEAD_FACTOR = 1.35; // Base64 encoding overhead (~35%)
 const CAR_OVERHEAD_FACTOR = 1.01; // CAR file overhead (~1%)
 const SAFETY_MARGIN = 1.05; // Additional 5% safety margin
 
+// Progress percentage bands for upload phases. Keep in sync with the stage
+// thresholds in haven_cli/pipeline/steps/upload_step.py (NETWORK_UPLOAD_START_PERCENT etc.).
+//   0-35%  -> connecting / CAR build / payment readiness (handled in upload())
+//   80-95% -> network upload of CAR bytes to FOC (per-chunk uploadProgress events)
+//   95%    -> stored (CAR fully transferred)
+//   97%    -> pieces added on chain
+//   99%    -> pieces confirmed
+//   100%   -> upload returns success
+const NETWORK_UPLOAD_START_PERCENT = 80;
+const STORED_PERCENT_END = 95;
+const PIECES_ADDED_PERCENT = 97;
+const PIECES_CONFIRMED_PERCENT = 99;
+
 /**
  * Progress callback type for upload operations.
  */
@@ -849,7 +862,19 @@ class SynapseWrapperImpl implements SynapseWrapper {
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
         this._logger.info(`Upload attempt ${attempt}/${maxRetries} for ${filePath}`);
-        
+
+        // Reset network-upload progress on every retry attempt so the Python
+        // pipeline can clear its bytes/speed tally and start a fresh window.
+        // The `uploading_retry` stage is the signal consumed by upload_step.py.
+        if (attempt > 1) {
+          onProgress?.({
+            bytesUploaded: 0,
+            totalBytes: carByteLength,
+            percentage: NETWORK_UPLOAD_START_PERCENT,
+            stage: 'uploading_retry',
+          });
+        }
+
         // Create a promise that rejects after the timeout
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutId = setTimeout(() => {
@@ -865,25 +890,53 @@ class SynapseWrapperImpl implements SynapseWrapper {
         const uploadPromise = executeUpload(synapse, stream, rootCid, {
           logger: this._logger,
           contextId: filePath.split('/').pop() || 'upload',
-          onProgress: (event: { type: string }) => {
+          onProgress: (event: { type: string; data?: Record<string, unknown> }) => {
             // filecoin-pin 0.21+ UploadProgressEvents (legacy on* names kept for safety)
-            if (event.type === 'stored' || event.type === 'copyComplete' || event.type === 'onUploadComplete') {
+            //
+            // The `uploadProgress` event is fired per chunk by the synapse-sdk
+            // TransformStream byte counter (see synapse-core/src/sp/upload-streaming.ts).
+            // We surface it as a real byte-level progress signal so the TUI can
+            // render an accurate upload-speed graph via UploadJob.bytes_uploaded.
+            if (event.type === 'uploadProgress') {
+              const rawBytes = Number(event.data?.bytesUploaded ?? 0);
+              const bytesUploaded = Number.isFinite(rawBytes)
+                ? Math.max(0, Math.min(rawBytes, carByteLength))
+                : 0;
+              // Map byte progress into the 80-95% band reserved for network
+              // upload activity. Reaching 95% indicates the stream has been
+              // fully drained but pieces are not yet stored/confirmed.
+              const networkBand = STORED_PERCENT_END - NETWORK_UPLOAD_START_PERCENT;
+              const fraction = carByteLength > 0 ? bytesUploaded / carByteLength : 0;
+              const percentage = Math.min(
+                STORED_PERCENT_END,
+                NETWORK_UPLOAD_START_PERCENT + Math.floor(fraction * networkBand)
+              );
+              onProgress?.({
+                bytesUploaded,
+                totalBytes: carByteLength,
+                percentage,
+                stage: 'uploading',
+              });
+            } else if (event.type === 'stored' || event.type === 'copyComplete' || event.type === 'onUploadComplete') {
               onProgress?.({
                 bytesUploaded: carByteLength,
                 totalBytes: carByteLength,
-                percentage: 80,
+                percentage: STORED_PERCENT_END,
+                stage: 'stored',
               });
             } else if (event.type === 'piecesAdded' || event.type === 'onPieceAdded') {
               onProgress?.({
                 bytesUploaded: carByteLength,
                 totalBytes: carByteLength,
-                percentage: 90,
+                percentage: PIECES_ADDED_PERCENT,
+                stage: 'pieces_added',
               });
             } else if (event.type === 'piecesConfirmed' || event.type === 'onPieceConfirmed') {
               onProgress?.({
                 bytesUploaded: carByteLength,
                 totalBytes: carByteLength,
-                percentage: 95,
+                percentage: PIECES_CONFIRMED_PERCENT,
+                stage: 'pieces_confirmed',
               });
             }
           },

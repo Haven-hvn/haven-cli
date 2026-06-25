@@ -405,8 +405,11 @@ class TestSpeedHistoryServiceEventHandling:
             event_type=EventType.UPLOAD_PROGRESS,
             payload={
                 "video_id": sample_video.id,
-                "progress": 50.0,
-                "speed": 100000,
+                "progress_percent": 50.0,
+                # upload_step.py does not emit a speed field; speed_history.py
+                # falls back to 0. ``upload_speed`` is accepted for explicit
+                # speed reporting from future emitters.
+                "upload_speed": 100000,
                 "bytes_uploaded": 500000,
             },
         )

@@ -109,35 +109,47 @@ class SpeedHistoryService:
         if not self.event_bus:
             return
         
-        # Define sync wrappers for async handlers
+        # Define sync wrappers for async handlers.
+        #
+        # Canonical payload keys (must match the production emitters):
+        #   * DOWNLOAD_PROGRESS — see ``haven_tui/data/download_tracker.py``:
+        #       download_rate, progress_percent, downloaded_bytes
+        #   * ENCRYPT_PROGRESS  — see ``build_encrypt_progress_payload``:
+        #       encrypt_speed, progress_percent, bytes_processed
+        #   * UPLOAD_PROGRESS   — see ``haven_cli/pipeline/steps/upload_step.py``:
+        #       progress_percent, bytes_uploaded
+        #       (no explicit speed field; ``_record_sample`` will receive 0)
         def on_download_progress(event: Event) -> None:
             payload = event.payload
             self._record_sample(
                 video_id=payload.get('video_id', 0),
                 stage='download',
-                speed=payload.get('rate', 0) or payload.get('speed', 0),
-                progress=payload.get('progress', 0) or payload.get('progress_percent', 0),
-                bytes_processed=payload.get('bytes_downloaded', 0),
+                speed=payload.get('download_rate', 0) or 0,
+                progress=payload.get('progress_percent', 0) or 0,
+                bytes_processed=payload.get('downloaded_bytes', 0)
+                                 or payload.get('bytes_downloaded', 0),
             )
-        
+
         def on_encrypt_progress(event: Event) -> None:
             payload = event.payload
             self._record_sample(
                 video_id=payload.get('video_id', 0),
                 stage='encrypt',
-                speed=payload.get('speed', 0) or payload.get('encrypt_speed', 0),
-                progress=payload.get('progress', 0) or payload.get('progress_percent', 0),
+                speed=payload.get('encrypt_speed', 0) or 0,
+                progress=payload.get('progress_percent', 0) or 0,
                 bytes_processed=payload.get('bytes_processed', 0),
             )
-        
+
         def on_upload_progress(event: Event) -> None:
             payload = event.payload
             self._record_sample(
                 video_id=payload.get('video_id', 0),
                 stage='upload',
-                speed=payload.get('speed', 0) or payload.get('upload_speed', 0),
-                progress=payload.get('progress', 0) or payload.get('progress_percent', 0),
-                bytes_processed=payload.get('bytes_uploaded', 0),
+                # upload_step does not emit a speed field; the speed-history
+                # consumer relies on the byte-delta tracker in StateManager.
+                speed=payload.get('upload_speed', 0) or 0,
+                progress=payload.get('progress_percent', 0) or 0,
+                bytes_processed=payload.get('bytes_uploaded', 0) or 0,
             )
         
         # Subscribe to progress events (store unsubscribe functions)

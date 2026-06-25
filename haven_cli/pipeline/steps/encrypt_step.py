@@ -242,7 +242,6 @@ def build_encrypt_progress_payload(
         "video_id": video_id,
         "job_id": job_id,
         "video_path": video_path,
-        "progress": progress_percent,
         "progress_percent": progress_percent,
         "bytes_processed": bytes_processed,
         "bytes_total": bytes_total,

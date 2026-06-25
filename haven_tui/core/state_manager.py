@@ -273,6 +273,10 @@ class StateManager:
         self._change_callbacks: List[Callable[[int, str, Any], None]] = []
         self._event_unsubscribers: List[Callable[[], None]] = []
         self._initialized = False
+        # Byte-delta tracking for computing upload speed when the emitter
+        # only sends ``bytes_uploaded`` / ``total_bytes`` (no speed field).
+        # Maps video_id -> (last_bytes, last_monotonic_ts).
+        self._upload_byte_tracker: Dict[int, tuple[int, float]] = {}
     
     async def initialize(self) -> None:
         """Load initial state from database and setup event handlers.
@@ -394,7 +398,7 @@ class StateManager:
                 snapshot = video.pipeline_snapshot
                 state.overall_status = snapshot.overall_status
                 state.current_stage = snapshot.current_stage
-                
+
                 # Set stage progress if available
                 if snapshot.stage_progress_percent is not None:
                     progress = snapshot.stage_progress_percent
@@ -408,6 +412,30 @@ class StateManager:
                         state.sync_progress = progress
                     elif snapshot.current_stage == "analyze":
                         state.analysis_progress = progress
+
+                # Sync stage_speed from the snapshot so the 5 s polling
+                # refresh re-syncs upload/download speed even if a few
+                # progress events were missed (e.g. daemon ↔ TUI process
+                # boundary). The snapshot only carries the *current* stage's
+                # speed, so map it onto the matching attribute.
+                stage_speed = getattr(snapshot, "stage_speed", None)
+                if stage_speed is not None:
+                    try:
+                        stage_speed_f = float(stage_speed)
+                    except (TypeError, ValueError):
+                        stage_speed_f = 0.0
+                    if snapshot.current_stage == "download":
+                        state.download_speed = stage_speed_f
+                    elif snapshot.current_stage == "upload":
+                        state.upload_speed = stage_speed_f
+
+                # Surface ETA from the snapshot if available (download stage).
+                stage_eta = getattr(snapshot, "stage_eta", None)
+                if stage_eta is not None and snapshot.current_stage == "download":
+                    try:
+                        state.download_eta = int(stage_eta)
+                    except (TypeError, ValueError):
+                        pass
             
             # Check video status flags
             if video.encrypted:
@@ -810,21 +838,33 @@ class StateManager:
             if state.started_at is None:
                 state.started_at = datetime.now(timezone.utc)
             
-            if 'speed' in payload:
-                state.download_speed = float(payload['speed'])
-            if 'progress' in payload:
-                state.download_progress = float(payload['progress'])
-            if 'eta' in payload:
-                state.download_eta = payload['eta']
-            
-            # Update speed history
-            state.add_speed_sample(state.download_speed, state.download_progress)
+            # Canonical payload keys emitted by
+            # ``haven_tui/data/download_tracker.py``:
+            #   - ``progress_percent`` (float, 0.0 - 100.0)
+            #   - ``download_rate``   (bytes/sec)
+            #   - ``eta_seconds``     (Optional[int])
+            speed_present = 'download_rate' in payload and payload['download_rate'] is not None
+            progress_present = 'progress_percent' in payload and payload['progress_percent'] is not None
+
+            if speed_present:
+                state.download_speed = float(payload['download_rate'])
+            if progress_present:
+                state.download_progress = float(payload['progress_percent'])
+
+            eta_val = payload.get('eta_seconds')
+            if eta_val is not None:
+                state.download_eta = int(eta_val)
+
+            # Update speed history (only sample when we actually got a value
+            # to avoid flooding the buffer with zeros on no-op updates).
+            if speed_present or progress_present:
+                state.add_speed_sample(state.download_speed, state.download_progress)
             state.update_timestamp()
         
         # Notify outside lock to prevent deadlocks
-        if 'speed' in payload and state.download_speed != old_speed:
+        if speed_present and state.download_speed != old_speed:
             self._notify_change(video_id, 'download_speed', state.download_speed)
-        if 'progress' in payload and state.download_progress != old_progress:
+        if progress_present and state.download_progress != old_progress:
             self._notify_change(video_id, 'download_progress', state.download_progress)
     
     async def _create_torrent_state_from_event(self, video_id: int, payload: Dict[str, Any]) -> Optional[VideoState]:
@@ -871,43 +911,94 @@ class StateManager:
     
     async def _on_upload_progress(self, event: Event) -> None:
         """Handle upload progress events.
-        
-        Args:
-            event: The upload progress event
+
+        The canonical payload emitted by ``haven_cli/pipeline/steps/upload_step.py``
+        is::
+
+            {
+                "video_id": int,
+                "job_id": int,
+                "stage": "preparing" | "encoding_car" | "uploading"
+                         | "verifying" | "creating_pieces" | "completed",
+                "progress_percent": float,           # 0.0 - 100.0
+                "bytes_uploaded": Optional[int],     # byte counter from synapse-sdk
+                "total_bytes": Optional[int],
+                "upload_speed": int,                 # bytes/sec, 0 during prep
+            }
+
+        We prefer ``upload_speed`` when it's a positive integer (it is the
+        authoritative value derived from the synapse network-upload window
+        inside ``upload_step``). When it's 0 (preparation phase) or missing
+        we fall back to a per-video byte-delta computed from
+        ``bytes_uploaded`` via ``self._upload_byte_tracker`` — this keeps
+        the in-memory ring graph alive on older daemons that haven't been
+        restarted with the explicit field yet.
         """
         payload = event.payload
         video_id = payload.get('video_id')
-        
+
         if not video_id:
             return
-        
+
         # Load video first if needed (outside lock to avoid reentrancy issues)
         if video_id not in self._state:
             await self._load_video(video_id)
-        
+
         if video_id not in self._state:
             return
-        
+
         async with self._lock:
             state = self._state[video_id]
-            
+
             old_speed = state.upload_speed
             old_progress = state.upload_progress
-            
+
             state.upload_status = "active"
             state.current_stage = "upload"
             state.overall_status = "active"
-            
-            if 'speed' in payload:
-                state.upload_speed = float(payload['speed'])
-            if 'progress' in payload:
-                state.upload_progress = float(payload['progress'])
-            
+
+            # --- Progress ---------------------------------------------------
+            progress_present = 'progress_percent' in payload and payload['progress_percent'] is not None
+            if progress_present:
+                state.upload_progress = float(payload['progress_percent'])
+
+            # --- Speed: prefer explicit upload_speed, else byte-delta -------
+            speed_present = False
+            raw_speed = payload.get('upload_speed')
+            if raw_speed is not None:
+                try:
+                    explicit_speed = float(raw_speed)
+                except (TypeError, ValueError):
+                    explicit_speed = 0.0
+                if explicit_speed > 0:
+                    state.upload_speed = explicit_speed
+                    speed_present = True
+
+            # upload_step emits ``bytes_uploaded`` only during the actual
+            # network upload phase (otherwise it is ``None``); we still
+            # advance the byte tracker so the fallback path stays primed
+            # in case a later event drops the explicit speed field.
+            raw_bytes = payload.get('bytes_uploaded')
+            if raw_bytes is not None:
+                try:
+                    cur_bytes = int(raw_bytes)
+                except (TypeError, ValueError):
+                    cur_bytes = 0
+                now = time.monotonic()
+                prev = self._upload_byte_tracker.get(video_id)
+                if prev is not None and not speed_present:
+                    prev_bytes, prev_ts = prev
+                    dt = now - prev_ts
+                    if dt > 0 and cur_bytes >= prev_bytes:
+                        state.upload_speed = float(cur_bytes - prev_bytes) / dt
+                        speed_present = True
+                self._upload_byte_tracker[video_id] = (cur_bytes, now)
+
             state.update_timestamp()
-        
-        if 'speed' in payload and state.upload_speed != old_speed:
+
+        if speed_present and state.upload_speed != old_speed:
             self._notify_change(video_id, 'upload_speed', state.upload_speed)
-        if 'progress' in payload and state.upload_progress != old_progress:
+        if progress_present and state.upload_progress != old_progress:
             self._notify_change(video_id, 'upload_progress', state.upload_progress)
     
     async def _on_encrypt_progress(self, event: Event) -> None:
@@ -932,17 +1023,19 @@ class StateManager:
         async with self._lock:
             state = self._state[video_id]
             old_progress = state.encrypt_progress
-            
+
             state.encrypt_status = "active"
             state.current_stage = "encrypt"
             state.overall_status = "active"
-            
-            if 'progress' in payload:
-                state.encrypt_progress = float(payload['progress'])
-            
+
+            # Canonical key from ``build_encrypt_progress_payload``.
+            progress_present = 'progress_percent' in payload and payload['progress_percent'] is not None
+            if progress_present:
+                state.encrypt_progress = float(payload['progress_percent'])
+
             state.update_timestamp()
-        
-        if 'progress' in payload and state.encrypt_progress != old_progress:
+
+        if progress_present and state.encrypt_progress != old_progress:
             self._notify_change(video_id, 'encrypt_progress', state.encrypt_progress)
     
     async def _on_encrypt_complete(self, event: Event) -> None:

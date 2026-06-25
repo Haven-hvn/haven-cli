@@ -567,14 +567,14 @@ class TestStateManagerEventHandlers:
             event_type=EventType.DOWNLOAD_PROGRESS,
             payload={
                 'video_id': 1,
-                'speed': 1024.0,
-                'progress': 50.0,
-                'eta': 60,
+                'download_rate': 1024.0,
+                'progress_percent': 50.0,
+                'eta_seconds': 60,
             },
         )
-        
+
         await manager._on_download_progress(event)
-        
+
         state = manager.get_video(1)
         assert state.download_status == "active"
         assert state.download_speed == 1024.0
@@ -587,54 +587,79 @@ class TestStateManagerEventHandlers:
     
     @pytest.mark.asyncio
     async def test_on_upload_progress(self, mock_pipeline):
-        """Test handling upload progress events."""
+        """Test handling upload progress events.
+
+        Upload speed is derived from successive ``bytes_uploaded`` deltas
+        because the production emitter (``upload_step.py``) does not
+        include an explicit speed field.
+        """
         manager = StateManager(mock_pipeline)
         await manager.initialize()
-        
+
         manager._state[1] = VideoState(id=1, title="Test")
-        
-        event = Event(
+
+        # First event: establishes the byte-delta baseline. No speed yet.
+        first = Event(
             event_type=EventType.UPLOAD_PROGRESS,
             payload={
                 'video_id': 1,
-                'speed': 512.0,
-                'progress': 75.0,
+                'stage': 'uploading',
+                'progress_percent': 50.0,
+                'bytes_uploaded': 0,
+                'total_bytes': 1024,
             },
         )
-        
-        await manager._on_upload_progress(event)
-        
+        await manager._on_upload_progress(first)
+
+        # Force the byte-delta tracker baseline back in time so the second
+        # event computes a deterministic, non-zero speed.
+        import time as _time
+        prev_bytes, _prev_ts = manager._upload_byte_tracker[1]
+        manager._upload_byte_tracker[1] = (prev_bytes, _time.monotonic() - 1.0)
+
+        second = Event(
+            event_type=EventType.UPLOAD_PROGRESS,
+            payload={
+                'video_id': 1,
+                'stage': 'uploading',
+                'progress_percent': 75.0,
+                'bytes_uploaded': 512,
+                'total_bytes': 1024,
+            },
+        )
+        await manager._on_upload_progress(second)
+
         state = manager.get_video(1)
         assert state.upload_status == "active"
-        assert state.upload_speed == 512.0
         assert state.upload_progress == 75.0
+        assert state.upload_speed > 0  # 512 bytes / ~1s ≈ 512 B/s
         assert state.current_stage == "upload"
-        
+
         await manager.shutdown()
-    
+
     @pytest.mark.asyncio
     async def test_on_encrypt_progress(self, mock_pipeline):
         """Test handling encryption progress events."""
         manager = StateManager(mock_pipeline)
         await manager.initialize()
-        
+
         manager._state[1] = VideoState(id=1, title="Test")
-        
+
         event = Event(
             event_type=EventType.ENCRYPT_PROGRESS,
             payload={
                 'video_id': 1,
-                'progress': 80.0,
+                'progress_percent': 80.0,
             },
         )
-        
+
         await manager._on_encrypt_progress(event)
-        
+
         state = manager.get_video(1)
         assert state.encrypt_status == "active"
         assert state.encrypt_progress == 80.0
         assert state.current_stage == "encrypt"
-        
+
         await manager.shutdown()
     
     @pytest.mark.asyncio
@@ -838,12 +863,12 @@ class TestStateManagerEventHandlers:
             event_type=EventType.DOWNLOAD_PROGRESS,
             payload={
                 'video_id': 999,
-                'progress': 50.0,
+                'progress_percent': 50.0,
             },
         )
-        
+
         await manager._on_download_progress(event)
-        
+
         # Should have loaded the video
         state = manager.get_video(999)
         assert state is not None
@@ -866,7 +891,7 @@ class TestStateManagerThreadSafety:
         async def update_progress(value):
             event = Event(
                 event_type=EventType.DOWNLOAD_PROGRESS,
-                payload={'video_id': 1, 'progress': value},
+                payload={'video_id': 1, 'progress_percent': value},
             )
             await manager._on_download_progress(event)
         

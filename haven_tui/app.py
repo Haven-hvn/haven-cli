@@ -38,8 +38,6 @@ from textual.widgets import Static
 from haven_tui.config import HavenTUIConfig, HavenTUIConfig as _Cfg, get_default_config_path
 from haven_tui.core.state_manager import StateManager
 from haven_tui.core.pipeline_interface import PipelineInterface
-from haven_tui.data.event_consumer import TUIEventConsumer as EventConsumer
-from haven_tui.data.refresher import DataRefresher as Refresher
 from haven_tui.data.repositories import (
     JobHistoryRepository,
     PipelineSnapshotRepository,
@@ -194,8 +192,6 @@ class HavenTUIApp(App[None]):
         config: The TUI configuration
         state_manager: Manages application state
         pipeline_interface: Interface to the pipeline
-        event_consumer: Consumes events from the pipeline
-        refresher: Handles periodic data refresh
         speed_history_repo: Repository for speed history data
     """
     
@@ -275,8 +271,6 @@ class HavenTUIApp(App[None]):
         # Initialize core components (will be set up in on_mount)
         self.state_manager: Optional[StateManager] = None
         self.pipeline_interface: Optional[PipelineInterface] = None
-        self.event_consumer: Optional[EventConsumer] = None
-        self.refresher: Optional[Refresher] = None
         self.speed_history_repo: Optional[SpeedHistoryRepository] = None
         self.job_history_repo: Optional[JobHistoryRepository] = None
         self.snapshot_repo: Optional[PipelineSnapshotRepository] = None
@@ -408,14 +402,6 @@ class HavenTUIApp(App[None]):
             )
             self._sqlite_event_consumer = None
 
-        # Legacy slots retained for backwards compatibility with code
-        # paths that probe for them. The Milestone B implementation does
-        # NOT use these — they were the dead, never-wired
-        # ``TUIEventConsumer`` / ``DataRefresher`` from the original
-        # codebase. Leaving as None until C8 cleans them up.
-        self.event_consumer = None
-        self.refresher = None
-
         # Update screens with initialized components
         self._setup_screens()
 
@@ -523,14 +509,6 @@ class HavenTUIApp(App[None]):
                 await consumer.stop()
             except Exception:  # pragma: no cover - defensive
                 logger.exception("Error stopping SqliteEventConsumer")
-
-        # Stop legacy background tasks (currently always None — kept for
-        # forwards compatibility with C8 cleanup).
-        if self.refresher:
-            await self.refresher.stop()
-
-        if self.event_consumer:
-            await self.event_consumer.stop()
 
         # Shutdown state manager
         if self.state_manager:
