@@ -357,6 +357,10 @@ class PipelineSnapshotRepository:
         except ValueError:
             stage = PipelineStage.PENDING
 
+        arkiv_entity_key = None
+        if snapshot.video:
+            arkiv_entity_key = getattr(snapshot.video, "arkiv_entity_key", None)
+
         return VideoView(
             id=snapshot.video_id,
             title=video_title,
@@ -370,6 +374,7 @@ class PipelineSnapshotRepository:
             error_message=snapshot.error_message,
             file_size=snapshot.total_bytes or 0,
             plugin=plugin_name,
+            arkiv_entity_key=arkiv_entity_key,
         )
 
 

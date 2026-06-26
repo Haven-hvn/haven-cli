@@ -419,12 +419,27 @@ class VideoListWidget(DataTable):
             if skip_reason:
                 status = "skipped"
             
+            # If the video has completed Arkiv sync (batch or inline),
+            # show stage as "sync" rather than the last active pipeline stage
+            # (which would be "upload" or a compound "upload:*" sub-stage —
+            # confusing because the user expects to see that sync happened).
+            #
+            # We must also override the progress value because
+            # ``VideoState.current_progress`` maps from ``current_stage``
+            # and the original stage (e.g. "upload:complete") resolves to
+            # 0.0 (no map entry), while the sync progress is 100.0.
+            stage = video.current_stage
+            progress = video.current_progress
+            if video.sync_status == "completed" and (stage == "sync" or stage.startswith("upload")):
+                stage = "sync"
+                progress = video.sync_progress
+
             row = VideoRow(
                 index=i,
                 video_id=video.id,
                 title=self._truncate_title(video.title),
-                stage=video.current_stage,
-                progress=video.current_progress,
+                stage=stage,
+                progress=progress,
                 speed=self._format_speed(video.current_speed),
                 plugin=getattr(video, 'plugin', 'unknown'),
                 size=self._format_size(getattr(video, 'file_size', 0)),

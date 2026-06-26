@@ -311,6 +311,7 @@ class ResultsWidget(Static):
         self._is_encrypted: bool = False
         self._analysis_complete: bool = False
         self._tx_hash: Optional[str] = None
+        self._entity_key: Optional[str] = None
     
     def compose(self):
         """Compose the widget - Static widgets don't yield children."""
@@ -326,19 +327,22 @@ class ResultsWidget(Static):
         is_encrypted: bool = False,
         analysis_complete: bool = False,
         tx_hash: Optional[str] = None,
+        entity_key: Optional[str] = None,
     ) -> None:
         """Set the results to display.
-        
+
         Args:
             cid: IPFS CID from upload
             is_encrypted: Whether video is encrypted
             analysis_complete: Whether AI analysis is complete
             tx_hash: Blockchain transaction hash
+            entity_key: Arkiv entity key (set by batch or inline sync)
         """
         self._cid = cid
         self._is_encrypted = is_encrypted
         self._analysis_complete = analysis_complete
         self._tx_hash = tx_hash
+        self._entity_key = entity_key
         self._update_display()
     
     def _update_display(self) -> None:
@@ -361,7 +365,11 @@ class ResultsWidget(Static):
         if self._tx_hash:
             tx_display = self._tx_hash[:50] + "..." if len(self._tx_hash) > 50 else self._tx_hash
             lines.append(f"[dim]Transaction:[/dim]  [success]{tx_display}[/success]")
-        
+
+        if self._entity_key:
+            ek_display = self._entity_key[:50] + "..." if len(self._entity_key) > 50 else self._entity_key
+            lines.append(f"[dim]Arkiv Entity:[/dim] [success]{ek_display}[/success]")
+
         if len(lines) == 2:  # Only header lines
             lines.append("[dim]No results yet[/dim]")
         
@@ -672,10 +680,31 @@ class VideoDetailScreen(Screen):
         else:
             stages.append(self._create_pending_stage("upload"))
         
-        # Process sync stage
+        # Process sync stage.
+        #
+        # The fast path via SyncJob rows only fires for the legacy
+        # inline-sync code path (``SyncStep``). Batch sync
+        # (``BatchSyncProcessor``) commits the entity key directly
+        # to ``Video.arkiv_entity_key`` and never inserts a
+        # ``SyncJob`` row — so we consult the StateManager (which
+        # already maps arkiv_entity_key -> sync_status) as a
+        # cross-check. If the in-memory state says sync is completed,
+        # override the DB-derived stage display.
         sync_jobs = history.get('sync_jobs', [])
         if sync_jobs:
             stages.append(self._create_sync_stage(sync_jobs[0]))
+        elif (
+            self._state_manager is not None
+            and self._state_manager.get_video(self.video_id) is not None
+            and self._state_manager.get_video(self.video_id).sync_status == "completed"
+        ):
+            stages.append(StageDisplayInfo(
+                name="sync",
+                status="completed",
+                progress=100.0,
+                detail="Completed",
+                symbol=self._get_status_symbol("completed"),
+            ))
         else:
             stages.append(self._create_pending_stage("sync"))
         
@@ -1057,26 +1086,35 @@ class VideoDetailScreen(Screen):
         """Load and display final results."""
         if self._job_repo is None or self.video_id is None:
             return
-        
+
         # Get latest CID from upload_jobs
         latest_cid = self._job_repo.get_latest_cid(self.video_id)
-        
+
         # Check encryption status
         is_encrypted = self._job_repo.is_encrypted(self.video_id)
-        
+
         # Check analysis status
         history = self._job_repo.get_video_pipeline_history(self.video_id)
         analysis_jobs = history.get('analysis_jobs', [])
         analysis_complete = (
             analysis_jobs and analysis_jobs[0].status == "completed"
         )
-        
-        # Get sync info for tx_hash
+
+        # Get sync info for tx_hash (inline sync path)
         tx_hash = None
         sync_info = self._job_repo.get_sync_info(self.video_id)
         if sync_info:
             tx_hash = sync_info.get('tx_hash')
-        
+
+        # Get entity_key — batch sync writes Video.arkiv_entity_key
+        # directly and does not populate SyncJob rows, so fall back to
+        # the video record itself.
+        entity_key = None
+        if self._snapshot_repo is not None:
+            video = self._snapshot_repo.get_video_summary(self.video_id)
+            if video is not None:
+                entity_key = getattr(video, 'arkiv_entity_key', None)
+
         # Update results widget
         results_widget = self.query_one("#results", ResultsWidget)
         results_widget.set_results(
@@ -1084,6 +1122,7 @@ class VideoDetailScreen(Screen):
             is_encrypted=is_encrypted,
             analysis_complete=analysis_complete,
             tx_hash=tx_hash,
+            entity_key=entity_key,
         )
     
     def action_back(self) -> None:

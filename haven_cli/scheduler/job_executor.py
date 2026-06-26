@@ -417,14 +417,30 @@ class JobExecutor:
             },
         )
         
-        # Process and wait for completion to properly release scheduler lock
+        # Fire-and-forget: schedule the pipeline task on the event loop
+        # without awaiting it.  Awaiting would block APScheduler's single
+        # allowed instance (max_instances=1) for the full pipeline duration
+        # (5–100 min), causing every subsequent cron tick to be skipped.
+        #
+        # The task still runs to completion in the background; on success
+        # _process_with_logging feeds the BatchAccumulator, and on failure
+        # the done_callback logs the error.
         task = asyncio.create_task(
             self._process_with_logging(context, job.job_id)
         )
-        try:
-            await task
-        except Exception as e:
-            logger.error(f"Pipeline processing failed for job {job.job_id}: {e}")
+
+        def _on_pipeline_done(t: asyncio.Task) -> None:
+            """Log errors from the background pipeline task."""
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                logger.error(
+                    "Pipeline processing failed for job %s: %s",
+                    job.job_id, exc,
+                )
+
+        task.add_done_callback(_on_pipeline_done)
     
     async def _process_with_logging(
         self,

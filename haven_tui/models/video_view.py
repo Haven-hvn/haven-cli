@@ -198,6 +198,12 @@ class VideoView:
     file_size: int = 0
     plugin: str = "unknown"
     
+    # Arkiv blockchain entity key (set by batch or inline sync)
+    arkiv_entity_key: Optional[str] = None
+    
+    # Transaction hash for the Arkiv sync transaction
+    arkiv_tx_hash: Optional[str] = None
+    
     # Optional detailed stage info for expanded view
     stage_details: Optional[List[StageInfo]] = None
     
