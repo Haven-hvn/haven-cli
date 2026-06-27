@@ -42,17 +42,40 @@ HAVEN_AOL_CANISTER_ID = "dciac-uaaaa-aaaad-qlzuq-cai"
 HAVEN_AOL_MAX_PER_CALL = 20  # Max cidHashes per batchAttestHolding call (1 page of haven-dapp feed)
 # v2: batchAttestHolding now signs ONE Merkle root over all leaves (RFC 6962 domain separation)
 # and returns per-leaf proofs in submission order. See docs/ipld-batch-attestation-proposal-v2.md.
+# Protocol v3 surface — corpus-scoped, epoch-bound gate requests.
+#
+# The v3 types below are appended verbatim from the Sprint 0 contract
+# fragment ``tasking/sprint-0-foundations/contracts/backend-v3.did.fragment``.
+# The existing ``GateError`` variant is extended in-place with
+# ``InvalidEpoch`` (Sprint 1 Task 01). v1 types and entries are
+# unchanged; v1 callers see no behavioural difference.
+#
+# The v3 service entries are:
+#   * requestDecryptionKeyV3      — single-CID gate request
+#   * batchRequestDecryptionKeyV3 — multi-CID gate request
+#   * getCurrentEpoch             — operator diagnostic (haven-cli epoch only)
+#   * evictExpiredApprovals       — controller-only janitor (Sprint 2 cron)
 HAVEN_AOL_DID = """type Chain = variant { EthMainnet; EthSepolia; ArbitrumOne; BaseMainnet; OptimismMainnet; };
 type GateRequest = record {
   chain : Chain; tokenAddress : text; threshold : nat; cid : text; evmAddress : text;
   transportPublicKey : blob; nonce : nat; signature : blob; eip712ChainId : nat; eip712VerifyingContract : text;
 };
+type GateRequestV3 = record {
+  chain : Chain; tokenAddress : text; threshold : nat; epoch : nat; evmAddress : text;
+  transportPublicKey : blob; nonce : nat; signature : blob; eip712ChainId : nat; eip712VerifyingContract : text;
+};
+type BatchGateRequestV3 = record {
+  chain : Chain; tokenAddress : text; threshold : nat; epoch : nat; cids : vec text;
+  evmAddress : text; transportPublicKey : blob; nonce : nat; signature : blob;
+  eip712ChainId : nat; eip712VerifyingContract : text;
+};
 type GateError = variant {
   InsufficientBalance : record { required : nat; actual : nat };
   InvalidAddress : text; InvalidThreshold; EvmRpcError : text; VetKDError : text;
-  InvalidSignature : text; NonceAlreadyUsed; BatchTooLarge : nat;
+  InvalidSignature : text; NonceAlreadyUsed; BatchTooLarge : nat; InvalidEpoch;
 };
 type GateResult = variant { ok : record { encrypted_key : blob; verification_key : blob }; err : GateError; };
+type BatchGateResult = variant { ok : record { encrypted_key : blob; verification_key : blob }; err : GateError; };
 type AttestRequest = record {
   chain : Chain; tokenAddress : text; threshold : nat; cidHash : text; evmAddress : text;
   nonce : nat; signature : blob; eip712ChainId : nat; eip712VerifyingContract : text;
@@ -86,6 +109,10 @@ type MerkleAttestation = record {
 type MerkleAttestResult = variant { ok : MerkleAttestation; err : GateError };
 service : {
   requestDecryptionKey : (GateRequest) -> (GateResult);
+  requestDecryptionKeyV3 : (GateRequestV3) -> (GateResult);
+  batchRequestDecryptionKeyV3 : (BatchGateRequestV3) -> (BatchGateResult);
+  getCurrentEpoch : () -> (nat) query;
+  evictExpiredApprovals : (nat) -> (nat);
   getVetKDPublicKey : () -> (blob) query;
   attestHolding : (AttestRequest) -> (AttestResult);
   batchAttestHolding : (MerkleAttestRequest) -> (MerkleAttestResult);
@@ -564,6 +591,333 @@ def request_decryption_key(
     if isinstance(gate_result, dict) and "err" in gate_result:
         raise RuntimeError(f"Haven-AOL requestDecryptionKey failed: {gate_result['err']}")
     raise RuntimeError("Unexpected GateResult payload")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Protocol v3 — corpus-scoped, epoch-bound gate requests.
+#
+# Two client entry points + one diagnostic:
+#   * :func:`request_decryption_key_v3` — single CID; signs the v3
+#     EIP-712 typed data via the shared SDK and dispatches to
+#     ``requestDecryptionKeyV3``.
+#   * :func:`batch_request_decryption_key_v3` — multi-CID; same
+#     signature as the single-CID call (the canister produces one
+#     VetKey per ``(chain, token, threshold, epoch)`` bucket
+#     regardless of CID count). Dispatches to ``batchRequestDecryptionKeyV3``.
+#   * :func:`get_current_epoch` — query-only diagnostic. Per the
+#     proposal §1.7 and tasking/README.md (Key Design Decision §4),
+#     this is the ONLY allowed caller of ``getCurrentEpoch`` in
+#     haven-cli. Upload/decrypt paths derive epochs locally via
+#     ``haven_aol.v3.current_epoch()``.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _sign_gate_request_v3_typed_data(
+    *,
+    private_key: str,
+    transport_public_key: bytes,
+    epoch: int,
+    nonce: int,
+    chain_id: int,
+    verifying_contract: str,
+) -> tuple[str, bytes]:
+    """Sign the v3 EIP-712 typed data and return ``(evm_address, signature_bytes)``.
+
+    The typed-data dict comes from the shared SDK so the EIP-712 layout
+    (primary type ``GateRequestV3(address evmAddress,bytes transportPublicKey,
+    uint256 epoch,uint256 nonce)``, three-field domain with no ``version``)
+    matches the canister's ``eip712DomainSeparator`` byte-for-byte.
+
+    Returns:
+        ``(evm_address, signature_bytes)`` — ``signature_bytes`` is the
+        raw 65-byte ``r || s || v`` payload the canister expects.
+    """
+    try:
+        from eth_account import Account
+        from eth_account.messages import encode_typed_data
+    except ImportError as exc:
+        raise RuntimeError(
+            "eth-account is required for EIP-712 v3 signing. Install haven-cli[blockchain]."
+        ) from exc
+
+    # Import lazily so a stripped-down install (only haven-cli[icp] + the
+    # shared SDK) can still run the v1 EIP-712 path without dragging the
+    # v3 SDK module into scope.
+    from haven_aol.v3 import build_eip712_gate_request_v3_typed_data
+
+    normalized_key = private_key.strip()
+    if not normalized_key.startswith("0x"):
+        normalized_key = f"0x{normalized_key}"
+    signer = Account.from_key(normalized_key)
+
+    typed_data = build_eip712_gate_request_v3_typed_data(
+        evm_address=signer.address,
+        transport_public_key=bytes(transport_public_key),
+        epoch=epoch,
+        nonce=nonce,
+        eip712_chain_id=chain_id,
+        eip712_verifying_contract=verifying_contract,
+    )
+    signable_message = encode_typed_data(full_message=typed_data)
+    signed = Account.sign_message(signable_message, normalized_key)
+    if len(signed.signature) != 65:
+        raise RuntimeError(
+            f"EIP-712 v3 signature must be 65 bytes (got {len(signed.signature)})"
+        )
+    return signer.address, bytes(signed.signature)
+
+
+def _build_v3_gate_request(
+    *,
+    chain: str,
+    token_address: str,
+    threshold: int,
+    epoch: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Common scaffolding for v3 gate-request payloads.
+
+    Returns ``(common_fields, signing_inputs)``. The caller adds either a
+    ``cid : text`` (single) or a ``cids : vec text`` (batch) field on top
+    of ``common_fields`` to produce the final Candid record.
+
+    Threshold-zero collapse: the canister forces ``epoch = 0`` when
+    ``threshold == 0``. We do the same here so the EIP-712 signature
+    matches what the canister will reconstruct.
+    """
+    if threshold < 0:
+        raise ValueError(
+            "Gate threshold must be >= 0 (Haven-AOL canister rejects negative values)"
+        )
+    if epoch < 0:
+        raise ValueError("Gate epoch must be >= 0")
+    effective_epoch = 0 if threshold == 0 else epoch
+
+    evm_private_key = os.environ.get("HAVEN_PRIVATE_KEY", "").strip()
+    if not evm_private_key:
+        raise RuntimeError("HAVEN_PRIVATE_KEY is required for GateRequestV3 signing")
+    eip712_chain_id = int(os.environ.get("HAVEN_AOL_EIP712_CHAIN_ID", "1"))
+    eip712_verifying_contract = os.environ.get(
+        "HAVEN_AOL_EIP712_VERIFYING_CONTRACT", ""
+    ).strip()
+    if not eip712_verifying_contract:
+        raise RuntimeError("HAVEN_AOL_EIP712_VERIFYING_CONTRACT is required")
+    transport_public_key_b64 = os.environ.get(
+        "HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64", ""
+    ).strip()
+    if not transport_public_key_b64:
+        raise RuntimeError("HAVEN_AOL_TRANSPORT_PUBLIC_KEY_B64 is required")
+    transport_public_key = base64.b64decode(transport_public_key_b64)
+
+    nonce = (int(time.time_ns()) << 64) | int.from_bytes(secrets.token_bytes(8), "big")
+    evm_address, signature_bytes = _sign_gate_request_v3_typed_data(
+        private_key=evm_private_key,
+        transport_public_key=transport_public_key,
+        epoch=effective_epoch,
+        nonce=nonce,
+        chain_id=eip712_chain_id,
+        verifying_contract=eip712_verifying_contract,
+    )
+
+    common_fields = {
+        "chain": {chain: None},
+        "tokenAddress": token_address,
+        "threshold": threshold,
+        "epoch": effective_epoch,
+        "evmAddress": evm_address,
+        "transportPublicKey": transport_public_key,
+        "nonce": nonce,
+        "signature": signature_bytes,
+        "eip712ChainId": eip712_chain_id,
+        "eip712VerifyingContract": eip712_verifying_contract,
+    }
+    signing_inputs = {
+        "effective_epoch": effective_epoch,
+        "nonce": nonce,
+    }
+    return common_fields, signing_inputs
+
+
+def _parse_v3_gate_result(
+    response: object, *, context: str
+) -> DecryptionKeyResponse:
+    """Decode the ``GateResult`` / ``BatchGateResult`` reply.
+
+    Both v3 endpoints return the same Candid shape as v1's ``GateResult``:
+    ``variant { ok : record { encrypted_key; verification_key }; err : GateError }``.
+    """
+    gate_result = _first_return_slot(response, context=context)
+    if isinstance(gate_result, dict) and "ok" in gate_result:
+        ok_record = candid_return_item_to_value(gate_result["ok"])
+        if (
+            not isinstance(ok_record, dict)
+            or "encrypted_key" not in ok_record
+            or "verification_key" not in ok_record
+        ):
+            raise RuntimeError(
+                f"Unexpected {context} ok shape: expected record with "
+                f"encrypted_key and verification_key, got {type(ok_record).__name__}"
+            )
+        return DecryptionKeyResponse(
+            encrypted_key=candid_blob_to_bytes(
+                ok_record["encrypted_key"], context=f"{context} encrypted_key"
+            ),
+            verification_key=candid_blob_to_bytes(
+                ok_record["verification_key"], context=f"{context} verification_key"
+            ),
+        )
+    if isinstance(gate_result, dict) and "err" in gate_result:
+        err = candid_return_item_to_value(gate_result["err"])
+        if isinstance(err, dict) and err:
+            err_variant = next(iter(err))
+            err_detail = err[err_variant]
+            raise RuntimeError(f"{context} failed: {err_variant}: {err_detail!r}")
+        raise RuntimeError(f"{context} failed: {err!r}")
+    raise RuntimeError(f"Unexpected {context} payload: {gate_result!r}")
+
+
+def _new_v3_canister():
+    """Construct the v3 canister handle (shared across v3 entry points)."""
+    cfg = load_haven_aol_icp_config()
+    Agent, Canister, Client, Identity = _icp_sdk()
+
+    try:
+        pem = open(cfg.identity_pem_path, "r", encoding="utf-8").read()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to read ICP identity PEM at {cfg.identity_pem_path!r}"
+        ) from exc
+
+    identity = Identity.from_pem(pem)
+    if getattr(identity, "anonymous", False):
+        raise RuntimeError("Anonymous ICP identity is not allowed for Haven-AOL requests")
+
+    client = Client(url=cfg.host)
+    agent = Agent(identity, client)
+    return Canister(agent, HAVEN_AOL_CANISTER_ID, candid_str=HAVEN_AOL_DID)
+
+
+def request_decryption_key_v3(
+    *,
+    chain: str,
+    token_address: str,
+    threshold: int,
+    epoch: int,
+) -> DecryptionKeyResponse:
+    """Request a v3 single-CID VetKey from ``requestDecryptionKeyV3``.
+
+    Returns the same :class:`DecryptionKeyResponse` shape as the v1 path
+    so the local transport-unwrap + IBE-decrypt chain is identical (see
+    ``haven_cli/crypto/haven_aol_local.py::_vetkd_unwrap_aes_key``).
+
+    Behaviour notes:
+      * Threshold-zero collapse: when ``threshold == 0`` the effective
+        epoch is forced to ``0`` before EIP-712 signing. Matches the
+        canister.
+      * No CID is sent — v3 derivation is corpus-scoped, not per-CID.
+        The single-CID endpoint exists to keep the canister's per-call
+        approval bookkeeping clean; the returned VetKey unlocks every
+        CID in the ``(chain, token, threshold, epoch)`` bucket.
+
+    Retries on transient HTTP errors with exponential backoff.
+    """
+    common_fields, _ = _build_v3_gate_request(
+        chain=chain,
+        token_address=token_address,
+        threshold=threshold,
+        epoch=epoch,
+    )
+    canister = _new_v3_canister()
+    verify = _icp_verify_certificate()
+
+    def _call():
+        return canister.requestDecryptionKeyV3(common_fields, verify_certificate=verify)
+
+    logger.info(
+        "requestDecryptionKeyV3: chain=%s token=%s threshold=%d epoch=%d",
+        chain,
+        token_address,
+        threshold,
+        common_fields["epoch"],
+    )
+    response = _retry_on_transport_error(_call, context="requestDecryptionKeyV3")
+    return _parse_v3_gate_result(response, context="requestDecryptionKeyV3")
+
+
+def batch_request_decryption_key_v3(
+    *,
+    chain: str,
+    token_address: str,
+    threshold: int,
+    epoch: int,
+    cids: list[str],
+) -> DecryptionKeyResponse:
+    """Request a v3 multi-CID VetKey from ``batchRequestDecryptionKeyV3``.
+
+    ``cids`` does NOT participate in derivation — see
+    ``tasking/sprint-0-foundations/contracts/backend-v3.did.fragment``
+    docstring. It is forwarded so the canister can record which CIDs the
+    caller is intending to decrypt for approval-bookkeeping purposes.
+
+    The returned VetKey is the same shape as the single-CID call: one
+    encrypted derived key + verification key for the whole
+    ``(chain, token, threshold, epoch)`` bucket.
+    """
+    if not cids:
+        raise ValueError("cids must not be empty")
+    if any(not isinstance(c, str) or not c for c in cids):
+        raise ValueError("every CID in cids must be a non-empty string")
+
+    common_fields, _ = _build_v3_gate_request(
+        chain=chain,
+        token_address=token_address,
+        threshold=threshold,
+        epoch=epoch,
+    )
+    request_record = dict(common_fields)
+    request_record["cids"] = list(cids)
+
+    canister = _new_v3_canister()
+    verify = _icp_verify_certificate()
+
+    def _call():
+        return canister.batchRequestDecryptionKeyV3(request_record, verify_certificate=verify)
+
+    logger.info(
+        "batchRequestDecryptionKeyV3: chain=%s token=%s threshold=%d epoch=%d cids_count=%d",
+        chain,
+        token_address,
+        threshold,
+        common_fields["epoch"],
+        len(cids),
+    )
+    response = _retry_on_transport_error(_call, context="batchRequestDecryptionKeyV3")
+    return _parse_v3_gate_result(response, context="batchRequestDecryptionKeyV3")
+
+
+def get_current_epoch() -> int:
+    """Fetch the canister's view of the current epoch via ``getCurrentEpoch``.
+
+    Operator diagnostic only. Per ``tasking/README.md`` Key Design
+    Decision §4 and the Sprint 4 brief, **only** the ``haven epoch``
+    subcommand is allowed to call this in haven-cli. Upload/decrypt
+    paths compute the epoch locally via
+    :func:`haven_aol.v3.current_epoch`.
+    """
+    canister = _new_v3_canister()
+    verify = _icp_verify_certificate()
+
+    def _call():
+        return canister.getCurrentEpoch(verify_certificate=verify)
+
+    response = _retry_on_transport_error(_call, context="getCurrentEpoch")
+    value = _first_return_slot(response, context="getCurrentEpoch")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value)
+    raise RuntimeError(
+        f"Unexpected getCurrentEpoch response type: {type(value).__name__}"
+    )
 
 
 def _sign_attest_request(

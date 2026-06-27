@@ -477,13 +477,161 @@ async def test_scheduler():
         return False
 
 
+async def test_haven_aol_v3_round_trip():
+    """Test 10: Haven-AOL Protocol v3 round-trip (Sprint 4).
+
+    Exercises the haven-cli v3 surface without requiring the ``vetkd_py``
+    native extension or a live canister:
+
+      * Build v3 gate metadata via the dispatching builder.
+      * Encrypt bytes with ``encrypt_bytes_v3`` (IBE stubbed).
+      * Decrypt bytes with ``decrypt_bytes_v3`` (canister + unwrap stubbed).
+      * Verify per-file ``current_epoch()`` recomputation across two uploads.
+      * Verify the threshold-zero collapse rule on the uploader.
+      * Verify the in-memory ``GateKeyCache`` short-circuits a second
+        decrypt in the same ``(chain, token, threshold, epoch)`` bucket.
+
+    The native v3 IBE/VetKD wiring is verified separately by
+    ``pytest tests/crypto`` against a real ``vetkd_py`` install; this
+    e2e check focuses on the haven-cli-specific invariants pinned by
+    ``tasking/sprint-4-haven-cli/01-cli-v3-upload-decrypt-and-cache.md``.
+    """
+    log_section("TEST 10: Haven-AOL Protocol v3 Round-Trip (Sprint 4)")
+
+    try:
+        import hashlib
+
+        import haven_cli.crypto.haven_aol_v3 as v3_mod
+        from haven_cli.crypto.gate_key_cache import CachedVetKey, GateKeyCache
+        from haven_cli.crypto.gate_metadata import (
+            GATE_METADATA_VERSION_V3,
+            parse_gate_metadata,
+        )
+        from haven_cli.services.haven_aol_icp import DecryptionKeyResponse
+
+        # ── Stub the v3 IBE / unwrap / canister primitives.
+        stub_state = {"cipher_aes_key": None, "request_calls": 0, "request_epochs": []}
+
+        def fake_ibe(aes_key: bytes, derivation_input: bytes) -> bytes:
+            stub_state["cipher_aes_key"] = aes_key
+            return b"FAKEIBE|" + hashlib.sha256(aes_key).digest()
+
+        def fake_unwrap(**kwargs) -> bytes:
+            return bytes(stub_state["cipher_aes_key"])
+
+        def fake_request(*, chain, token_address, threshold, epoch):
+            stub_state["request_calls"] += 1
+            stub_state["request_epochs"].append(epoch)
+            return DecryptionKeyResponse(
+                encrypted_key=bytes([0x33] * 48),
+                verification_key=bytes([0x44] * 96),
+            )
+
+        original_ibe = v3_mod._ibe_encrypt_aes_key_v3
+        original_unwrap = v3_mod._vetkd_unwrap_aes_key
+        original_request = v3_mod.request_decryption_key_v3
+        original_current_epoch = v3_mod.current_epoch
+
+        v3_mod._ibe_encrypt_aes_key_v3 = fake_ibe  # type: ignore[assignment]
+        v3_mod._vetkd_unwrap_aes_key = fake_unwrap  # type: ignore[assignment]
+        v3_mod.request_decryption_key_v3 = fake_request  # type: ignore[assignment]
+
+        try:
+            chain = "EthMainnet"
+            token = "0x" + "ab" * 20
+            cid = "bafyV3E2E"
+
+            # --- Encrypt + metadata shape -----------------------------------
+            result = v3_mod.encrypt_bytes_v3(
+                b"v3 e2e payload",
+                chain=chain,
+                token_address=token,
+                threshold=1,
+                cid=cid,
+                epoch=687,
+            )
+            assert result["gate"]["version"] == GATE_METADATA_VERSION_V3
+            assert result["gate"]["epoch"] == 687
+            assert result["gate"]["threshold"] == "1"
+
+            # Dispatcher round-trip on the metadata.
+            parsed = parse_gate_metadata(result["gate"])
+            assert parsed is not None and parsed["version"] == 3
+
+            # --- Decrypt round-trip -----------------------------------------
+            cache = GateKeyCache()
+            plaintext = v3_mod.decrypt_bytes_v3(
+                result["ciphertext_bytes"], metadata=result["gate"], cache=cache
+            )
+            assert plaintext == b"v3 e2e payload"
+            assert stub_state["request_calls"] == 1
+
+            # --- Cache hit short-circuits the second decrypt ----------------
+            stub_state["request_calls"] = 0
+            v3_mod.decrypt_bytes_v3(
+                result["ciphertext_bytes"], metadata=result["gate"], cache=cache
+            )
+            assert stub_state["request_calls"] == 0, "Cache hit should have skipped the canister"
+
+            # --- Per-file epoch recomputation -------------------------------
+            epochs = iter([1_000, 1_001])
+            v3_mod.current_epoch = lambda: next(epochs)  # type: ignore[assignment]
+            try:
+                r1 = v3_mod.encrypt_bytes_v3(
+                    b"file 1", chain=chain, token_address=token, threshold=1, cid="cidA"
+                )
+                r2 = v3_mod.encrypt_bytes_v3(
+                    b"file 2", chain=chain, token_address=token, threshold=1, cid="cidB"
+                )
+            finally:
+                v3_mod.current_epoch = original_current_epoch  # type: ignore[assignment]
+            assert r1["gate"]["epoch"] == 1_000
+            assert r2["gate"]["epoch"] == 1_001
+
+            # --- Threshold-zero collapse ------------------------------------
+            v3_mod.current_epoch = lambda: 9999  # type: ignore[assignment]
+            try:
+                r0 = v3_mod.encrypt_bytes_v3(
+                    b"open gate",
+                    chain=chain,
+                    token_address=token,
+                    threshold=0,
+                    cid="cidThresholdZero",
+                )
+            finally:
+                v3_mod.current_epoch = original_current_epoch  # type: ignore[assignment]
+            assert r0["gate"]["threshold"] == "0"
+            assert r0["gate"]["epoch"] == 0
+
+            log_result("Haven-AOL v3 Round-Trip", True, {
+                "v3_metadata_version": GATE_METADATA_VERSION_V3,
+                "round_trip_plaintext_bytes": len(plaintext),
+                "cache_short_circuit": True,
+                "per_file_epochs_seen": [r1["gate"]["epoch"], r2["gate"]["epoch"]],
+                "threshold_zero_collapsed_epoch": r0["gate"]["epoch"],
+                "stub_request_calls_first_decrypt": 1,
+            })
+            return True
+        finally:
+            v3_mod._ibe_encrypt_aes_key_v3 = original_ibe  # type: ignore[assignment]
+            v3_mod._vetkd_unwrap_aes_key = original_unwrap  # type: ignore[assignment]
+            v3_mod.request_decryption_key_v3 = original_request  # type: ignore[assignment]
+            v3_mod.current_epoch = original_current_epoch  # type: ignore[assignment]
+
+    except Exception as e:
+        logger.exception(f"Haven-AOL v3 round-trip failed: {e}")
+        test_results["errors"].append(f"haven-aol v3: {str(e)}")
+        log_result("Haven-AOL v3 Round-Trip", False, {"error": str(e)})
+        return False
+
+
 async def run_all_tests():
     """Run all E2E tests."""
     log_section("HAVEN CLI - END-TO-END BETA TEST")
-    
+
     logger.info(f"Log file: {log_file}")
     logger.info(f"Started at: {test_results['start_time']}")
-    
+
     # Run tests
     results = []
     results.append(await test_config())
@@ -495,6 +643,9 @@ async def run_all_tests():
     results.append(await test_filecoin_upload())
     results.append(await test_arkiv_sync())
     results.append(await test_scheduler())
+    # Sprint 4: haven-aol v3 round-trip (additive, does not exercise the
+    # canister or vetkd_py — see the docstring on test_haven_aol_v3_round_trip).
+    results.append(await test_haven_aol_v3_round_trip())
     
     # Summary
     log_section("TEST SUMMARY")
