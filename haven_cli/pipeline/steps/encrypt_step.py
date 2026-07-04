@@ -679,39 +679,63 @@ class EncryptStep(ConditionalStep):
             raise ValueError("encrypt_chunk_size must be > 0")
 
         encrypted_path = f"{video_path}.encrypted"
-        gate = GateParams(
-            chain=chain,
-            token_address=token_address,
-            threshold=threshold,
-            cid=cid_value,
-        )
+        encryption_version = int(context.options.get("encryption_version", 1))
 
-        def on_encrypt_progress(chunk_index: int, source_bytes_processed: int) -> None:
-            self._schedule_encrypt_progress(
-                loop,
-                progress_futures,
-                context,
-                video_path,
-                source_bytes_processed,
-                file_size,
-                "encrypting",
-                chunk_index=chunk_index,
-                force=source_bytes_processed >= file_size,
+        if encryption_version == 3:
+            try:
+                from haven_cli.crypto.haven_aol_v3 import encrypt_file_streaming_v3
+            except ImportError as exc:
+                raise ImportError(
+                    "haven_aol_v3 module not available; "
+                    "ensure the haven-aol package is installed"
+                ) from exc
+
+            def _run_encrypt() -> Dict[str, Any]:
+                return encrypt_file_streaming_v3(
+                    input_path=video_path,
+                    output_path=encrypted_path,
+                    chain=chain,
+                    token_address=token_address,
+                    threshold=threshold,
+                    cid=cid_value,
+                    chunk_size=chunk_size,
+                )
+
+            encrypted = await asyncio.to_thread(_run_encrypt)
+        else:
+            gate = GateParams(
+                chain=chain,
+                token_address=token_address,
+                threshold=threshold,
+                cid=cid_value,
             )
 
-        def _run_encrypt() -> Dict[str, Any]:
-            return encrypt_file_streaming(
-                input_path=video_path,
-                output_path=encrypted_path,
-                private_key="",
-                gate=gate,
-                chunk_size=chunk_size,
-                progress_callback=on_encrypt_progress,
-            )
+            def on_encrypt_progress(chunk_index: int, source_bytes_processed: int) -> None:
+                self._schedule_encrypt_progress(
+                    loop,
+                    progress_futures,
+                    context,
+                    video_path,
+                    source_bytes_processed,
+                    file_size,
+                    "encrypting",
+                    chunk_index=chunk_index,
+                    force=source_bytes_processed >= file_size,
+                )
 
-        encrypted = await asyncio.to_thread(_run_encrypt)
-        for fut in progress_futures:
-            await asyncio.wrap_future(fut)
+            def _run_encrypt() -> Dict[str, Any]:
+                return encrypt_file_streaming(
+                    input_path=video_path,
+                    output_path=encrypted_path,
+                    private_key="",
+                    gate=gate,
+                    chunk_size=chunk_size,
+                    progress_callback=on_encrypt_progress,
+                )
+
+            encrypted = await asyncio.to_thread(_run_encrypt)
+            for fut in progress_futures:
+                await asyncio.wrap_future(fut)
 
         await self._report_encrypt_progress(
             context,

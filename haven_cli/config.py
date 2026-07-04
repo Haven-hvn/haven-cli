@@ -175,6 +175,8 @@ class PipelineConfig:
     token_standard: Optional[str] = None
     owner_wallet: Optional[str] = None
     nft_contract: Optional[str] = None
+    # Encryption version: 1 = AES key per file (v1, default), 3 = AES key per epoch (v3)
+    encryption_version: int = 1
     
     # Upload (Filecoin via Synapse)
     # Note: Synapse RPC is derived from blockchain.filecoin_network_mode (or network_mode)

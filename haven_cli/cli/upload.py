@@ -144,6 +144,14 @@ def upload(
             "Supported: EthMainnet, EthSepolia, ArbitrumOne, BaseMainnet, OptimismMainnet."
         ),
     ),
+    encryption_version: Optional[int] = typer.Option(
+        None,
+        "--encryption-version",
+        help=(
+            "Encryption algorithm version. "
+            "1 = AES key per file (default), 3 = AES key per epoch (reduces canister calls)."
+        ),
+    ),
     no_dedup: bool = typer.Option(
         False,
         "--no-dedup",
@@ -223,6 +231,13 @@ def upload(
     configured_token_standard = token_standard or get_config_value("token_standard", None)
     configured_owner_wallet = owner_wallet or get_config_value("owner_wallet", None)
     configured_nft_contract = nft_contract or get_config_value("nft_contract", None)
+    configured_encryption_version = encryption_version or get_config_value("encryption_version", 1)
+    if configured_encryption_version not in (1, 3):
+        console.print(
+            f"[red]✗[/red] Unsupported encryption version {configured_encryption_version!r}. "
+            "Supported: 1 (per-file) or 3 (per-epoch)."
+        )
+        raise typer.Exit(code=1)
     if encryption_enabled:
         icp_identity_path = os.environ.get("HAVEN_ICP_IDENTITY_PEM_PATH", "").strip()
         if not icp_identity_path:
@@ -297,6 +312,7 @@ def upload(
         "token_standard": configured_token_standard,
         "owner_wallet": configured_owner_wallet,
         "nft_contract": configured_nft_contract,
+        "encryption_version": configured_encryption_version,
     }
     
     # Create pipeline context
