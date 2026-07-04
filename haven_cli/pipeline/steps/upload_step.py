@@ -826,12 +826,17 @@ class UploadStep(ConditionalStep):
         if foc.catalog_owner:
             verify_params["catalogOwner"] = foc.catalog_owner
 
-        await self._js_call_with_retry(
-            "synapse.verifyPieceRetrieval",
-            verify_params,
-            timeout=300.0,
-            max_retries=1,
-        )
+        try:
+            await self._js_call_with_retry(
+                "synapse.verifyPieceRetrieval",
+                verify_params,
+                timeout=600.0,
+                max_retries=1,
+            )
+            logger.info("FOC piece retrievability verified")
+        except Exception as e:
+            # Verification failure is not fatal - the upload succeeded
+            logger.warning(f"FOC retrievability verification failed (non-fatal): {e}")
 
         if config.get("wait_for_deal", False):
             logger.info("Waiting for FOC retrievability confirmation...")
@@ -1197,6 +1202,17 @@ class UploadStep(ConditionalStep):
                 
                 # Also update pipeline snapshot with accurate stage info
                 snapshot_repo = PipelineSnapshotRepository(session)
+                
+                # Check if this job has already failed - don't overwrite failed status
+                existing_snapshot = snapshot_repo.get_by_video_id(video_id)
+                if existing_snapshot and existing_snapshot.overall_status == "failed":
+                    # Job has already failed, only update progress metrics without changing status
+                    snapshot_repo.update_bytes_metrics(
+                        video_id=video_id,
+                        uploaded_bytes=bytes_uploaded,
+                    )
+                    return
+                
                 # Store detailed stage in status field for visibility
                 # Format: "upload:stage_name" to indicate upload sub-stage
                 stage_detail = f"upload:{stage}" if stage != "uploading" else "upload"
@@ -1227,6 +1243,11 @@ class UploadStep(ConditionalStep):
             remote_cid: Remote CID
             piece_cid: Piece CID (if available)
         """
+        # Don't mark as completed if CID is empty - this indicates failure
+        if not remote_cid:
+            logger.warning(f"Cannot complete UploadJob {job_id}: empty remote_cid")
+            return
+            
         try:
             from haven_cli.database.connection import get_db_session
             from haven_cli.database.repositories import UploadJobRepository
