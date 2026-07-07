@@ -53,6 +53,35 @@ class BatchSyncProcessor:
         if not self._arkiv_config.private_key:
             raise PermanentError("No private key configured for Arkiv sync")
 
+        # ── Gate: only sync contexts whose upload actually completed ──
+        # The scheduler only feeds us contexts from pipelines that reported
+        # success, but "success" is derived from the in-memory
+        # ``context.upload_result`` / the ``videos`` row's CID, which can
+        # persist from a *previous* successful run. A fresh re-upload
+        # attempt can fail (e.g. Synapse connection timeout) while a stale
+        # CID lingers, so the pipeline still looks successful and the
+        # context reaches this processor — and we'd create an Arkiv entity
+        # that references a file that is not reliably retrievable
+        # off-cluster. An Arkiv entity is only meaningful if the upload for
+        # *this* attempt completed, so we require an authoritative
+        # completed UploadJob (status='completed' with a recorded remote
+        # CID) plus a populated upload_result. Contexts that fail this gate
+        # are dropped (fall through) so the rest of the batch still syncs —
+        # one bad item must never stall or abort the batch.
+        ready, skipped = self._partition_by_upload_status(batch)
+        for ctx in skipped:
+            logger.warning(
+                "Skipping Arkiv sync for video %s: upload not completed "
+                "(entity would reference an inaccessible file)",
+                getattr(ctx, "video_id", "?"),
+            )
+        if not ready:
+            logger.info(
+                "Batch sync: no contexts with a completed upload; nothing to sync"
+            )
+            return
+        batch = ready
+
         # Separate gated (needs attestation) from non-gated contexts
         gated, non_gated = self._partition_gated(batch)
 
@@ -89,6 +118,71 @@ class BatchSyncProcessor:
     @property
     def processed_batches(self) -> int:
         return self._processed_batches
+
+    def _partition_by_upload_status(
+        self, batch: list[PipelineContext]
+    ) -> tuple[list[PipelineContext], list[PipelineContext]]:
+        """Split a batch into contexts safe to sync vs. not.
+
+        A context is syncable only if its upload for this attempt
+        authoritatively completed: a populated ``upload_result`` (root CID
+        + piece CID) AND a ``completed`` ``UploadJob`` row carrying a
+        remote CID for the video. Anything else (failed upload, stalled
+        job, stale CID from a prior run) is returned in the ``skipped``
+        bucket so the caller can drop it without aborting the batch.
+        """
+        ready: list[PipelineContext] = []
+        skipped: list[PipelineContext] = []
+        for ctx in batch:
+            if self._upload_completed(ctx):
+                ready.append(ctx)
+            else:
+                skipped.append(ctx)
+        return ready, skipped
+
+    def _upload_completed(self, ctx: PipelineContext) -> bool:
+        """Return True iff the upload for ``ctx`` authoritatively completed.
+
+        The in-memory ``upload_result`` is the first gate: if the upload
+        step failed this run, ``upload_result`` is never set and we refuse
+        to sync. When a ``video_id`` is available we additionally consult
+        the authoritative ``upload_jobs`` table — a ``completed`` job with a
+        recorded remote CID is the only reliable proof the file landed on
+        Filecoin and is retrievable off-cluster.
+
+        If the DB is unreachable we cannot verify, so we trust the
+        in-memory result rather than stall the whole batch on a hiccup.
+        """
+        upload_result = getattr(ctx, "upload_result", None)
+        if (
+            not upload_result
+            or not getattr(upload_result, "root_cid", None)
+            or not getattr(upload_result, "piece_cid", None)
+        ):
+            return False
+
+        video_id = getattr(ctx, "video_id", None)
+        if video_id is None:
+            # No video row to verify against; trust the in-memory result.
+            return True
+
+        try:
+            from haven_cli.database.connection import get_db_session
+            from haven_cli.database.repositories import UploadJobRepository
+
+            with get_db_session() as session:
+                jobs = UploadJobRepository(session).get_by_video_id(video_id)
+            return any(
+                job.status == "completed" and bool(job.remote_cid)
+                for job in jobs
+            )
+        except Exception as exc:  # Defensive: never let a DB blip stall the batch
+            logger.warning(
+                "Could not verify upload completion for video %s; "
+                "trusting in-memory upload result to avoid stalling batch: %s",
+                video_id, exc,
+            )
+            return True
 
     @property
     def total_entities_created(self) -> int:

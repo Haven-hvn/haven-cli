@@ -1162,6 +1162,20 @@ class UploadStep(ConditionalStep):
             
             with get_db_session() as session:
                 repo = UploadJobRepository(session)
+
+                # Abandon any prior 'uploading' job for this video. A new
+                # upload attempt is starting, so a still-'uploading' row is
+                # orphaned (e.g. the daemon was restarted/killed mid-upload,
+                # or the connection wedged) and would otherwise leave the
+                # TUI stuck at 0.0% forever. Mark it failed so the operator
+                # sees a terminal state and the next attempt supersedes it.
+                for stale in repo.get_by_video_id(video_id):
+                    if stale.status == "uploading":
+                        stale.status = "failed"
+                        stale.error_message = (
+                            "Abandoned: superseded by a new upload attempt"
+                        )
+
                 job = repo.create(
                     video_id=video_id,
                     target="filecoin",

@@ -282,13 +282,122 @@ class TestBatchSyncProcessor:
         processor = BatchSyncProcessor(arkiv_config=_make_config())
         ctx = _make_context(0, video_id=42)
 
-        with patch.object(processor, "_create_entities") as mock_create, \
+        # This test exercises DB-write plumbing, not the upload-completion
+        # gate; assume the upload is verified complete.
+        with patch.object(processor, "_upload_completed", return_value=True), \
+             patch.object(processor, "_create_entities") as mock_create, \
              patch.object(processor, "_update_database") as mock_db:
             mock_create.return_value = [{"entity_key": "key_0", "transaction_hash": "0x1"}]
             mock_db.return_value = None
             await processor([ctx])
 
             mock_db.assert_called_once_with(ctx, "key_0")
+
+
+class TestUploadCompletionGate:
+    """Arkiv sync must only run for contexts whose upload completed.
+
+    An Arkiv entity references a Filecoin CID. If the upload failed (or a
+    stale CID lingers from a prior run while a fresh re-upload failed) the
+    file may be inaccessible off-cluster, so we must not create the entity.
+    A filtered-out context must fall through so the rest of the batch still
+    syncs.
+    """
+
+    def _patch_db(self, monkeypatch_jobs):
+        """Patch get_db_session + UploadJobRepository.get_by_video_id.
+
+        ``monkeypatch_jobs`` is a callable ``(video_id) -> list[JobLike]``.
+        These are imported lazily inside ``_upload_completed``, so we patch
+        the source modules they resolve to.
+        """
+        mock_session = MagicMock()
+        mock_sess = MagicMock()
+        mock_sess.__enter__.return_value = mock_session
+        mock_sess.__exit__.return_value = False
+
+        repo = MagicMock()
+        repo.get_by_video_id.side_effect = monkeypatch_jobs
+
+        return (
+            patch("haven_cli.database.connection.get_db_session", return_value=mock_sess),
+            patch("haven_cli.database.repositories.UploadJobRepository", return_value=repo),
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_context_without_upload_result(self):
+        processor = BatchSyncProcessor(arkiv_config=_make_config())
+        ctx = _make_context(0, video_id=1)
+        ctx.upload_result = None
+
+        with patch.object(processor, "_create_entities") as mock_create:
+            await processor([ctx])
+            mock_create.assert_not_called()
+        assert ctx.arkiv_entity_key is None
+
+    @pytest.mark.asyncio
+    async def test_skips_context_without_completed_upload_job(self):
+        processor = BatchSyncProcessor(arkiv_config=_make_config())
+        ctx = _make_context(0, video_id=7)
+        # Only a stuck 'uploading' job and a 'failed' job — no completed
+        # upload, so the entity must NOT be created.
+        fake_jobs = [
+            MagicMock(status="uploading", remote_cid=None),
+            MagicMock(status="failed", remote_cid=None),
+        ]
+
+        p1, p2 = self._patch_db(lambda vid: fake_jobs)
+        with p1, p2, patch.object(processor, "_create_entities") as mock_create:
+            await processor([ctx])
+            mock_create.assert_not_called()
+        assert ctx.arkiv_entity_key is None
+
+    @pytest.mark.asyncio
+    async def test_allow_when_completed_upload_job_exists(self):
+        processor = BatchSyncProcessor(arkiv_config=_make_config())
+        ctx = _make_context(0, video_id=8)
+        fake_jobs = [MagicMock(status="completed", remote_cid="bafycompleted")]
+
+        p1, p2 = self._patch_db(lambda vid: fake_jobs)
+        with p1, p2, patch.object(processor, "_create_entities") as mock_create:
+            mock_create.return_value = [{"entity_key": "key_0", "transaction_hash": "0x1"}]
+            await processor([ctx])
+            mock_create.assert_called_once_with([ctx])
+        assert ctx.arkiv_entity_key == "key_0"
+
+    @pytest.mark.asyncio
+    async def test_fall_through_when_some_uploads_incomplete(self):
+        """A failed upload in the batch must not block the others."""
+        processor = BatchSyncProcessor(arkiv_config=_make_config())
+        good = _make_context(0, video_id=10)
+        bad = _make_context(1, video_id=11)
+
+        def fake_get_by_video_id(vid):
+            if vid == 10:
+                return [MagicMock(status="completed", remote_cid="bafyok")]
+            return [MagicMock(status="uploading", remote_cid=None)]
+
+        p1, p2 = self._patch_db(fake_get_by_video_id)
+        with p1, p2, patch.object(processor, "_create_entities") as mock_create:
+            mock_create.return_value = [{"entity_key": "key_0", "transaction_hash": "0x1"}]
+            await processor([good, bad])
+            # Only the completed-upload context is synced.
+            mock_create.assert_called_once_with([good])
+        assert good.arkiv_entity_key == "key_0"
+        assert bad.arkiv_entity_key is None
+        assert processor.processed_batches == 1
+
+    @pytest.mark.asyncio
+    async def test_all_skipped_is_noop(self):
+        processor = BatchSyncProcessor(arkiv_config=_make_config())
+        ctx = _make_context(0, video_id=12)
+        fake_jobs = [MagicMock(status="failed", remote_cid=None)]
+
+        p1, p2 = self._patch_db(lambda vid: fake_jobs)
+        with p1, p2, patch.object(processor, "_create_entities") as mock_create:
+            await processor([ctx])
+            mock_create.assert_not_called()
+        assert processor.processed_batches == 0
 
 
 class TestCreateBatchedPipeline:
