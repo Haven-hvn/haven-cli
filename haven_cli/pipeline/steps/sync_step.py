@@ -294,11 +294,15 @@ class SyncStep(ConditionalStep):
         if not context.encryption_metadata:
             return
 
-        from haven_cli.crypto.gate_metadata import is_gate_metadata
+        from haven_cli.crypto.gate_metadata import is_gate_metadata_any
 
+        # ``is_gate_metadata_any`` accepts both v1 and v3 gate records.
+        # Previously a hard v1-only check silently skipped attestation for
+        # every v3 context (HAVEN_AOL_V3_BUGS.md Bug 2).
         gate = context.encryption_metadata.gate
-        if not is_gate_metadata(gate):
+        if not is_gate_metadata_any(gate):
             return
+
 
         # Need root CID to compute cid_hash
         if not context.upload_result or not context.upload_result.root_cid:

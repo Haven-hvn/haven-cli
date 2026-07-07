@@ -16,7 +16,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Protocol
 
-from haven_cli.crypto.gate_metadata import gate_metadata_to_json, is_gate_metadata
+from haven_cli.crypto.gate_metadata import (
+    GATE_METADATA_VERSION_V3,
+    gate_metadata_any_to_json,
+    is_gate_metadata_any,
+)
+
 from haven_cli.pipeline.context import PipelineContext
 from haven_cli.services.piece_cid import require_piece_cid
 from haven_cli.services.evm_utils import (
@@ -358,12 +363,22 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
     attributes["created_at_ts"] = int(datetime.now(timezone.utc).timestamp())
     
     # ── Gate info in attributes (enables community feed queries) ──
+    #
+    # ``is_gate_metadata_any`` accepts both v1 and v3 records — the shared
+    # attribute names (chain / token / threshold) exist on both. For v3
+    # records we additionally publish ``gate_epoch`` and ``gate_version``
+    # so the dapp/indexer can filter by corpus without JSON-parsing the
+    # encryption_metadata blob (Bug 7).
     if context.encryption_metadata:
         gate = context.encryption_metadata.gate
-        if is_gate_metadata(gate):
+        if is_gate_metadata_any(gate):
             attributes["gate_chain"] = gate["chain"]
             attributes["gate_token"] = gate["tokenAddress"]
             attributes["gate_threshold"] = int(gate.get("threshold", "1"))
+            attributes["gate_version"] = int(gate.get("version", 1))
+            if gate.get("version") == GATE_METADATA_VERSION_V3:
+                attributes["gate_epoch"] = int(gate["epoch"])
+
     
     # Created timestamp (ISO for backward compat)
     attributes["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -398,20 +413,30 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
     
     # For encrypted videos: encrypted_cid is in attributes (public), actual CID is decrypted during restore
     # Store CID encryption metadata in payload so we can decrypt encrypted_cid during restore
+    #
+    # ``is_gate_metadata_any`` / ``gate_metadata_any_to_json`` accept both
+    # v1 and v3 records (fixes Bugs 2 & 3).
     if context.encryption_metadata:
         if (
             context.cid_encryption_metadata
             and context.encrypted_cid
-            and is_gate_metadata(context.cid_encryption_metadata.gate)
+            and is_gate_metadata_any(context.cid_encryption_metadata.gate)
         ):
-            payload["cid_encryption_metadata"] = gate_metadata_to_json(
+            payload["cid_encryption_metadata"] = gate_metadata_any_to_json(
                 context.cid_encryption_metadata.gate
             )
 
-        if is_gate_metadata(context.encryption_metadata.gate):
-            payload["encryption_metadata"] = gate_metadata_to_json(
-                context.encryption_metadata.gate
-            )
+        if is_gate_metadata_any(context.encryption_metadata.gate):
+            content_gate = context.encryption_metadata.gate
+            payload["encryption_metadata"] = gate_metadata_any_to_json(content_gate)
+
+            # Bug 7: expose the v3 corpus epoch as a top-level payload field
+            # so consumers (dapp, indexer) don't have to JSON-parse the
+            # opaque ``encryption_metadata`` string just to filter by
+            # ``(chain, token, threshold, epoch)`` corpus.
+            if content_gate.get("version") == GATE_METADATA_VERSION_V3:
+                payload["gate_version"] = GATE_METADATA_VERSION_V3
+                payload["epoch"] = int(content_gate["epoch"])
 
             if context.video_metadata and context.video_metadata.mime_type:
                 payload["content_mime_type"] = context.video_metadata.mime_type
@@ -421,6 +446,7 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
             original_hash = context.get_step_data("encrypt", "original_hash")
             if original_hash:
                 payload["original_hash"] = original_hash
+
     else:
         # For non-encrypted videos, store filecoin_root_cid in payload (not in attributes for consistency)
         if context.upload_result and context.upload_result.root_cid:

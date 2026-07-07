@@ -98,6 +98,62 @@ def _ibe_encrypt_aes_key_v3(aes_key: bytes, derivation_input: bytes) -> bytes:
     )
 
 
+def _resolve_effective_epoch(threshold: int, epoch: int | None) -> int:
+    """v3 threshold-zero collapse + fresh-per-file wall-clock epoch."""
+    if threshold < 0:
+        raise ValueError("threshold must be >= 0")
+    effective_epoch = 0 if threshold == 0 else (
+        current_epoch() if epoch is None else int(epoch)
+    )
+    if effective_epoch < 0:
+        raise ValueError("epoch must be >= 0")
+    return effective_epoch
+
+
+def _resolve_epoch_key_material(
+    *,
+    aes_key: bytes | None,
+    encrypted_aes_key_b64: str | None,
+    derivation_input: bytes,
+) -> tuple[bytes, str]:
+    """Return ``(raw_aes_key, encrypted_aes_key_b64)`` for a v3 encrypt.
+
+    Three modes, listed in priority order:
+
+      1. Both ``aes_key`` and ``encrypted_aes_key_b64`` supplied — epoch
+         key reuse. Trust the caller: no fresh randomness, no fresh IBE
+         wrap. This is the path the pipeline takes when it has already
+         cached the epoch key via :class:`EpochAesKeyCache`. (Bug 8)
+      2. Only ``aes_key`` supplied — the caller has the raw key (e.g.
+         from a test fixture) but hasn't wrapped it yet. Wrap it now.
+      3. Neither supplied — fresh random AES key + fresh IBE wrap.
+         Pre-Sprint-4-bug-fix behaviour. Kept for tests and single-file
+         encrypts where per-epoch reuse doesn't matter.
+    """
+    if aes_key is not None:
+        if len(aes_key) != 32:
+            raise ValueError(f"aes_key must be 32 bytes, got {len(aes_key)}")
+        if encrypted_aes_key_b64 is not None:
+            return aes_key, encrypted_aes_key_b64
+        wrapped_key = _ibe_encrypt_aes_key_v3(aes_key, derivation_input)
+        return aes_key, base64.b64encode(wrapped_key).decode("ascii")
+
+    # aes_key is None. The pre-fix code accepted ``encrypted_aes_key_b64``
+    # here as a test-stub, but that broke correctness (the raw key was
+    # random, the ciphertext was sealed under it, and the wrapped blob
+    # said something else). Reject that combination now — it's never
+    # correct.
+    if encrypted_aes_key_b64 is not None:
+        raise ValueError(
+            "encrypted_aes_key_b64 must be paired with aes_key; "
+            "otherwise the ciphertext cannot be decrypted by v3 consumers"
+        )
+
+    fresh_key = os.urandom(32)
+    wrapped_key = _ibe_encrypt_aes_key_v3(fresh_key, derivation_input)
+    return fresh_key, base64.b64encode(wrapped_key).decode("ascii")
+
+
 def encrypt_bytes_v3(
     plaintext: bytes,
     *,
@@ -106,6 +162,7 @@ def encrypt_bytes_v3(
     threshold: int,
     cid: str,
     encrypted_aes_key_b64: str | None = None,
+    aes_key: bytes | None = None,
     epoch: int | None = None,
 ) -> dict[str, Any]:
     """Encrypt ``plaintext`` under a v3 corpus-scoped gate.
@@ -120,36 +177,36 @@ def encrypt_bytes_v3(
     Threshold-zero collapse: if ``threshold == 0`` we force ``epoch = 0``
     regardless of the caller-supplied or wall-clock value.
 
+    Epoch-key reuse (Bug 4/8 fix): callers who want to seal N files
+    under one shared per-epoch AES key can pass both ``aes_key`` (raw 32
+    bytes) and ``encrypted_aes_key_b64`` (already-IBE-wrapped form).
+    When supplied together, the function skips fresh randomness / IBE
+    wrap and reuses the caller-supplied material. Passing only
+    ``encrypted_aes_key_b64`` (without ``aes_key``) is now rejected —
+    it was a test-only stub that produced undecryptable ciphertexts.
+
     Returns a dict with the v3 gate-metadata record under ``"gate"`` and
     the ciphertext bytes under ``"ciphertext_bytes"``. The ``"gate"`` dict
     is the canonical shape produced by
     :func:`haven_aol.v3.build_gate_metadata_v3`.
     """
-    if threshold < 0:
-        raise ValueError("threshold must be >= 0")
-    effective_epoch = 0 if threshold == 0 else (
-        current_epoch() if epoch is None else int(epoch)
-    )
-    if effective_epoch < 0:
-        raise ValueError("epoch must be >= 0")
+    effective_epoch = _resolve_effective_epoch(threshold, epoch)
 
-    aes_key = os.urandom(32)
-    iv = os.urandom(12)
     derivation_input = compute_derivation_input_v3(
         chain=chain,
         token_address=token_address,
         threshold=threshold,
         epoch=effective_epoch,
     )
-    aesgcm = AESGCM(aes_key)
-    ciphertext_bytes = iv + aesgcm.encrypt(iv, plaintext, None)
-    wrapped_key = _ibe_encrypt_aes_key_v3(aes_key, derivation_input)
-    wrapped_key_b64 = base64.b64encode(wrapped_key).decode("ascii")
+    raw_aes_key, wrapped_key_b64 = _resolve_epoch_key_material(
+        aes_key=aes_key,
+        encrypted_aes_key_b64=encrypted_aes_key_b64,
+        derivation_input=derivation_input,
+    )
 
-    # ``encrypted_aes_key_b64`` exists only as an injection point for tests
-    # that want to stub out IBE; production callers leave it as ``None``.
-    if encrypted_aes_key_b64 is None:
-        encrypted_aes_key_b64 = wrapped_key_b64
+    iv = os.urandom(12)
+    aesgcm = AESGCM(raw_aes_key)
+    ciphertext_bytes = iv + aesgcm.encrypt(iv, plaintext, None)
 
     gate = build_gate_metadata_v3(
         cid=cid,
@@ -157,22 +214,23 @@ def encrypt_bytes_v3(
         token_address=token_address,
         threshold=threshold,
         epoch=effective_epoch,
-        encrypted_aes_key_b64=encrypted_aes_key_b64,
+        encrypted_aes_key_b64=wrapped_key_b64,
     )
 
     logger.info(
-        "haven-aol v3 encrypt: chain=%s threshold=%d epoch=%d cid=%s",
-        chain, threshold, effective_epoch, cid,
+        "haven-aol v3 encrypt: chain=%s threshold=%d epoch=%d cid=%s reused_key=%s",
+        chain, threshold, effective_epoch, cid, aes_key is not None,
     )
 
     return {
         "ciphertext_bytes": ciphertext_bytes,
         "data_to_encrypt_hash": derivation_input.hex(),
-        "encrypted_key_b64": encrypted_aes_key_b64,
-        "key_hash": hashlib.sha256(aes_key).hexdigest(),
+        "encrypted_key_b64": wrapped_key_b64,
+        "key_hash": hashlib.sha256(raw_aes_key).hexdigest(),
         "iv_b64": base64.b64encode(iv).decode("ascii"),
         "gate": gate,
     }
+
 
 
 def encrypt_file_streaming_v3(
@@ -185,6 +243,8 @@ def encrypt_file_streaming_v3(
     cid: str,
     chunk_size: int = 1024 * 1024,
     epoch: int | None = None,
+    aes_key: bytes | None = None,
+    encrypted_aes_key_b64: str | None = None,
 ) -> dict[str, Any]:
     """Encrypt a file with chunked AES-GCM under a v3 gate.
 
@@ -196,11 +256,25 @@ def encrypt_file_streaming_v3(
     The epoch is computed per-file **here**, after the file is opened and
     before the IBE wrap. Snapshotting outside is prohibited (proposal
     §1.7 scenario (C)).
+
+    Epoch-key reuse (Bug 4 / Bug 5 / Bug 8 fix):
+
+      * ``aes_key`` — 32 raw bytes. If supplied the file is sealed under
+        this key instead of a fresh ``os.urandom(32)``. Callers who cache
+        per-epoch AES keys (see :class:`haven_cli.crypto.epoch_key_cache.EpochAesKeyCache`)
+        pass the cached raw bytes here.
+      * ``encrypted_aes_key_b64`` — the already-IBE-wrapped base64 form of
+        that same ``aes_key``. If both are supplied the function does
+        NOT call IBE at all; if only ``aes_key`` is supplied the wrap is
+        performed here (single-file case). Passing only
+        ``encrypted_aes_key_b64`` (with ``aes_key is None``) is rejected
+        because the ciphertext and metadata would disagree.
+
+    Both new parameters default to ``None`` so all pre-fix call sites
+    (including tests) remain byte-identical (fresh random key per file).
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be > 0")
-    if threshold < 0:
-        raise ValueError("threshold must be >= 0")
 
     src_path = Path(input_path)
     dst_path = Path(output_path)
@@ -209,22 +283,22 @@ def encrypt_file_streaming_v3(
     # ``test_per_file_epoch_recomputation`` — a batch loop that calls
     # encrypt_file_streaming_v3 for two files at different wall-clock
     # times must reflect two different epochs in metadata.
-    effective_epoch = 0 if threshold == 0 else (
-        current_epoch() if epoch is None else int(epoch)
-    )
-    if effective_epoch < 0:
-        raise ValueError("epoch must be >= 0")
+    effective_epoch = _resolve_effective_epoch(threshold, epoch)
 
-    aes_key = os.urandom(32)
-    base_iv = os.urandom(12)
     derivation_input = compute_derivation_input_v3(
         chain=chain,
         token_address=token_address,
         threshold=threshold,
         epoch=effective_epoch,
     )
-    wrapped_key = _ibe_encrypt_aes_key_v3(aes_key, derivation_input)
-    aesgcm = AESGCM(aes_key)
+    raw_aes_key, wrapped_key_b64 = _resolve_epoch_key_material(
+        aes_key=aes_key,
+        encrypted_aes_key_b64=encrypted_aes_key_b64,
+        derivation_input=derivation_input,
+    )
+
+    base_iv = os.urandom(12)
+    aesgcm = AESGCM(raw_aes_key)
 
     with src_path.open("rb") as src, dst_path.open("wb") as dst:
         dst.write(base_iv)
@@ -240,28 +314,29 @@ def encrypt_file_streaming_v3(
             dst.write(encrypted_chunk)
             chunk_index += 1
 
-    encrypted_aes_key_b64 = base64.b64encode(wrapped_key).decode("ascii")
     gate = build_gate_metadata_v3(
         cid=cid,
         chain=chain,
         token_address=token_address,
         threshold=threshold,
         epoch=effective_epoch,
-        encrypted_aes_key_b64=encrypted_aes_key_b64,
+        encrypted_aes_key_b64=wrapped_key_b64,
     )
 
     logger.info(
-        "haven-aol v3 stream encrypt done chunks=%d chain=%s threshold=%d epoch=%d cid=%s",
-        chunk_index, chain, threshold, effective_epoch, cid,
+        "haven-aol v3 stream encrypt done chunks=%d chain=%s threshold=%d "
+        "epoch=%d cid=%s reused_key=%s",
+        chunk_index, chain, threshold, effective_epoch, cid, aes_key is not None,
     )
 
     return {
         "data_to_encrypt_hash": derivation_input.hex(),
-        "encrypted_key_b64": encrypted_aes_key_b64,
-        "key_hash": hashlib.sha256(aes_key).hexdigest(),
+        "encrypted_key_b64": wrapped_key_b64,
+        "key_hash": hashlib.sha256(raw_aes_key).hexdigest(),
         "iv_b64": base64.b64encode(base_iv).decode("ascii"),
         "gate": gate,
     }
+
 
 
 # ── Decrypt ──────────────────────────────────────────────────────────

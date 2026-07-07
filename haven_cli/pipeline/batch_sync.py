@@ -97,8 +97,13 @@ class BatchSyncProcessor:
     def _partition_gated(
         self, batch: list[PipelineContext]
     ) -> tuple[list[PipelineContext], list[PipelineContext]]:
-        """Split batch into gated (needs attestation) and non-gated."""
-        from haven_cli.crypto.gate_metadata import is_gate_metadata
+        """Split batch into gated (needs attestation) and non-gated.
+
+        Uses :func:`is_gate_metadata_any` so v3 corpus-scoped contexts are
+        recognized as gated (Bug 2 fix). Under the pre-fix behaviour every
+        v3 context fell into the non-gated bucket and skipped attestation.
+        """
+        from haven_cli.crypto.gate_metadata import is_gate_metadata_any
 
         gated: list[PipelineContext] = []
         non_gated: list[PipelineContext] = []
@@ -106,7 +111,7 @@ class BatchSyncProcessor:
         for ctx in batch:
             if (
                 ctx.encryption_metadata
-                and is_gate_metadata(ctx.encryption_metadata.gate)
+                and is_gate_metadata_any(ctx.encryption_metadata.gate)
                 and ctx.upload_result
                 and ctx.upload_result.root_cid
             ):
@@ -115,6 +120,7 @@ class BatchSyncProcessor:
                 non_gated.append(ctx)
 
         return gated, non_gated
+
 
     async def _attest_batch(self, gated: list[PipelineContext]) -> None:
         """Run batch attestation, chunking if > HAVEN_AOL_MAX_PER_CALL."""

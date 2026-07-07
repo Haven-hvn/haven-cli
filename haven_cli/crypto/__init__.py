@@ -31,8 +31,10 @@ from .haven_aol_v3 import (
     decrypt_file_dispatch,
 )
 from .gate_key_cache import CachedVetKey, GateKeyCache, gate_key_cache
+from .epoch_key_cache import EpochAesKey, EpochAesKeyCache, epoch_aes_key_cache
 
 __all__ = [
+
     # v1 surface (unchanged)
     "EncryptionMetadata",
     "load_encryption_metadata",
@@ -55,4 +57,8 @@ __all__ = [
     "CachedVetKey",
     "GateKeyCache",
     "gate_key_cache",
+    "EpochAesKey",
+    "EpochAesKeyCache",
+    "epoch_aes_key_cache",
 ]
+

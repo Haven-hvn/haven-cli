@@ -175,8 +175,11 @@ class PipelineConfig:
     token_standard: Optional[str] = None
     owner_wallet: Optional[str] = None
     nft_contract: Optional[str] = None
-    # Encryption version: 1 = AES key per file (v1, default), 3 = AES key per epoch (v3)
+    # Encryption version: 1 = CID-bound gate metadata (v1, default),
+    # 3 = corpus-scoped gate metadata (v3, per-epoch AES key reuse via
+    # EpochAesKeyCache — see haven_cli/crypto/epoch_key_cache.py).
     encryption_version: int = 1
+
     
     # Upload (Filecoin via Synapse)
     # Note: Synapse RPC is derived from blockchain.filecoin_network_mode (or network_mode)

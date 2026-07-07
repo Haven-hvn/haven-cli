@@ -684,11 +684,68 @@ class EncryptStep(ConditionalStep):
         if encryption_version == 3:
             try:
                 from haven_cli.crypto.haven_aol_v3 import encrypt_file_streaming_v3
+                from haven_cli.crypto.epoch_key_cache import (
+                    EpochAesKey,
+                    EpochAesKeyCache,
+                    epoch_aes_key_cache,
+                )
+                # Import the SDK helper for wall-clock epoch here so the
+                # cache lookup uses the same value the encryptor would.
+                from haven_aol.v3 import current_epoch
             except ImportError as exc:
                 raise ImportError(
                     "haven_aol_v3 module not available; "
                     "ensure the haven-aol package is installed"
                 ) from exc
+
+            # ── Per-epoch AES key reuse (Bug 4 / 5 / 6 / 8 fix) ──
+            #
+            # Before this patch every file in a batch got a fresh
+            # ``os.urandom(32)`` AES key and a fresh IBE wrap, so a
+            # 1000-file corpus produced 1000 distinct ``encryptedAesKey``
+            # blobs on-chain even though every file belonged to the same
+            # ``(chain, token, threshold, epoch)`` bucket. Now we look up
+            # (or lazily miss-fill) an :class:`EpochAesKey` in
+            # ``epoch_aes_key_cache`` keyed by the same 4-tuple the
+            # decrypt-side :class:`GateKeyCache` uses, so N files in one
+            # epoch share one AES key + one IBE wrap.
+            #
+            # Threshold-zero collapse: the effective epoch is forced to
+            # 0 for threshold == 0 corpuses, matching the canister rule.
+            effective_epoch = 0 if threshold == 0 else current_epoch()
+            cache_key = EpochAesKeyCache.make_key(
+                chain=chain,
+                token_address=token_address,
+                threshold=threshold,
+                epoch=effective_epoch,
+            )
+
+            def _mint_epoch_key() -> EpochAesKey:
+                # Miss-fill: encrypt_file_streaming_v3 with only ``aes_key``
+                # supplied wraps it once and returns the b64. We could
+                # call the wrapper directly, but doing the raw randomness
+                # + IBE wrap inline keeps this factory pure Python and
+                # trivially test-mockable.
+                from haven_cli.crypto.haven_aol_v3 import (
+                    _ibe_encrypt_aes_key_v3,
+                )
+                from haven_aol.v3 import compute_derivation_input_v3
+                import base64 as _base64
+                import os as _os
+
+                raw = _os.urandom(32)
+                deriv = compute_derivation_input_v3(
+                    chain=chain,
+                    token_address=token_address,
+                    threshold=threshold,
+                    epoch=effective_epoch,
+                )
+                wrapped_b64 = _base64.b64encode(
+                    _ibe_encrypt_aes_key_v3(raw, deriv)
+                ).decode("ascii")
+                return EpochAesKey(raw_key=raw, encrypted_aes_key_b64=wrapped_b64)
+
+            epoch_key = epoch_aes_key_cache.get_or_create(cache_key, _mint_epoch_key)
 
             def _run_encrypt() -> Dict[str, Any]:
                 return encrypt_file_streaming_v3(
@@ -699,9 +756,13 @@ class EncryptStep(ConditionalStep):
                     threshold=threshold,
                     cid=cid_value,
                     chunk_size=chunk_size,
+                    epoch=effective_epoch,
+                    aes_key=epoch_key.raw_key,
+                    encrypted_aes_key_b64=epoch_key.encrypted_aes_key_b64,
                 )
 
             encrypted = await asyncio.to_thread(_run_encrypt)
+
         else:
             gate = GateParams(
                 chain=chain,
@@ -1041,10 +1102,11 @@ class EncryptStep(ConditionalStep):
             )
 
     def _metadata_to_json(self, metadata: EncryptionMetadata) -> str:
-        """Convert encryption metadata to JSON string (gate v1)."""
-        from haven_cli.crypto.gate_metadata import gate_metadata_to_json
+        """Convert encryption metadata to JSON string (v1 or v3, dispatched)."""
+        from haven_cli.crypto.gate_metadata import gate_metadata_any_to_json
 
-        return gate_metadata_to_json(metadata.gate)
+        return gate_metadata_any_to_json(metadata.gate)
+
 
     async def on_skip(self, context: PipelineContext, reason: str) -> None:
         """Handle step skip - encryption not requested."""
