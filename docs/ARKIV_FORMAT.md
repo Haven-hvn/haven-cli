@@ -1,4 +1,4 @@
-# Arkiv Data Format
+# Arkiv Data Format — v2.0.0
 
 This document describes the data format used by haven-cli when writing to the Arkiv blockchain.
 
@@ -7,233 +7,327 @@ This document describes the data format used by haven-cli when writing to the Ar
 > - [Integration Guide](INTEGRATION_GUIDE.md) - Developer integration guide
 > - [Migration Notes](MIGRATION_NOTES.md) - Migration guide for data format changes
 > - [Python API Reference](api.md) - Python SDK documentation
+> - Shared media spec: `docs/entities/MEDIA_CONTENT_SPEC.md` (haven-docs repo) — normative for key names
 
 ## Overview
 
-haven-cli uses the Haven Cross-Application Data Format v1.0.0, ensuring full compatibility with:
-- **haven-player** (Gold Standard - reference implementation)
-- **haven-dapp** (reader application)
+haven-cli uses the Haven Cross-Application Data Format **v2.0.0**. Straight migration from v1.x:
+no backwards compatibility, no alias readers, no dual keys. Old entities are left to expire
+(CLI records expire by default — see Expiry) except long-pinned drip records, which must be
+explicitly deleted (see Straight-migration checklist).
 
-## Entity Structure
+Design goals: **few attributes, numeric types, one hierarchical group key, zero mirrors.**
+Arkiv is a blockchain — every stored byte is paid for (see Cost model).
 
-Each video upload creates an Arkiv entity with two main components:
+## Cost model
 
-- **Attributes**: Public, searchable metadata indexed on-chain
-- **Payload**: Private, encrypted metadata stored on-chain
+An Arkiv `Attribute` is `{ name; valueType; value }` — roughly **~6 words ≈ 192 bytes on-chain
+per attribute, independent of value length**. A `str` always occupies its full 128-byte slot,
+so `language:"en"` (2 B) costs the same on-chain as a 128 B string.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Arkiv Entity                              │
-├──────────────────────────┬──────────────────────────────────┤
-│      Attributes          │           Payload                │
-│  (Public, Searchable)    │    (Private, Encrypted)          │
-├──────────────────────────┼──────────────────────────────────┤
-│ • title                  │ • filecoin_root_cid              │
-│ • creator_handle         │ • is_encrypted                   │
-│ • source_uri             │ • cid_hash                       │
-│ • cid_hash               │ • vlm_json_cid                   │
-│ • is_encrypted           │ • encryption_metadata            │
-│ • encrypted_cid          │ • segment_metadata               │
-│ • phash                  │ • codec_variants                 │
-│ • analysis_model         │ • duration                       │
-│ • mint_id                │ • file_size                      │
-│ • created_at             │                                  │
-│ • updated_at             │                                  │
-└──────────────────────────┴──────────────────────────────────┘
-```
+Rules that follow:
 
-## Payload Schema
+1. **Attribute *count* dominates cost.** 17–20 attrs ≈ 3.3–3.8 KB/entity before payload.
+   Prefer fewer attributes over shorter values.
+2. **`str` → numeric saves ~96 B/attr** (4 words → 1 word). Shortening a string value saves
+   only calldata, not storage.
+3. **An attribute must justify itself with a query pattern.** If no reader filters, sorts, or
+   displays from it on-chain, it belongs in the payload (or Filecoin), not in attributes.
 
-The payload contains sensitive data that should remain private. It is stored as encrypted bytes on the Arkiv blockchain.
+## Query language (SDK semantics — normative for what may be an attribute)
 
-### JSON Structure
+From `@arkiv-network/sdk` `src/query/expression.ts` + `src/attr/types.ts` (develop):
 
-```json
-{
-  "filecoin_root_cid": "Qm...",
-  "is_encrypted": true,
-  "cid_hash": "sha256...",
-  "vlm_json_cid": "Qm...",
-  "encryption_metadata": "{...}",
-  "cid_encryption_metadata": "{...}",
-  "segment_metadata": {
-    "segment_index": 0,
-    "start_timestamp": "2026-02-20T10:00:00Z",
-    "end_timestamp": "2026-02-20T10:05:00Z",
-    "mint_id": "...",
-    "recording_session_id": "..."
-  },
-  "codec_variants": ["h264", "hevc"],
-  "duration": 300.5,
-  "file_size": 10485760
-}
-```
+- **Operators:** `=` / `!=` on all types; `<` `<=` `>` `>=` only on ordered types
+  (`i32`, `u64`, `u256`, `dec`); `STARTSWITH` on `str` only (raw UTF-8 byte-prefix index);
+  `EXISTS(name)`; `TYPEOF(name) = tag`; `NOT` / `AND` / `OR`. **No joins.**
+- **Comparisons are type-exact.** Literals: bare number → `i32`, bare string → `str`,
+  bare bool → `bool`; tagged: `i32(4)`, `u64(…)`, `str('…')`, `addr(0x…)`, `key(0x…)`,
+  `bytes32(0x…)`, `dec(…)`. A query for `gate_type = i32(4)` never matches a `str` of the
+  same digits — writers must use the exact tagged type in the tables below.
+- **`!=` is typed negation:** entities that never set the attribute (or set it with another
+  type) do **not** match. Use `NOT attr = value` for the complement.
+- **Attribute types:** `bool`, `i32`, `u64`, `u256`, `dec`, `bytes32`, `str` (≤128 B), `addr`, `key`.
+  `bytes` is system-only (backs `$payload`), never settable.
+- **`key` is a weak entity reference** (dangling refs permitted), equality-indexed.
+  Series→parts fan-out is ONE indexed query (`series_ref = key(0x…)`), not N+1.
+- **Queryable system attributes:** `$key`, `$owner`, `$creator`, `$expiresAt` (u64).
+  **Result-only (selectable, not filterable):** `$createdAt`, `$updatedAt`, `$contentType`,
+  `$payload`. Recency/ordering uses `$createdAt` — never a custom timestamp attribute.
 
-### Field Descriptions
+> **Wire-vocabulary note.** Older Haven docs describe `valueType: 1=ATTR_UINT, 2=ATTR_STRING,
+> 3=ATTR_ENTITY_KEY`. The current SDK wire uses `bool=1, i32=2, u64=3, u256=4, dec=5,
+> bytes32=6, str=8, addr=9, key=10`. v2.0.0 specifies SDK tags. The CLI Python lib's
+> tag mapping must be verified against the target chain at implementation time.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `filecoin_root_cid` | string | CID of video on Filecoin (NEVER use `root_cid`) |
-| `is_encrypted` | boolean | Encryption status (`true` or `false`) |
-| `cid_hash` | string | SHA256 hash of `filecoin_root_cid` |
-| `vlm_json_cid` | string | CID of VLM analysis JSON on Filecoin |
-| `encryption_metadata` | string | JSON string of Haven-AOL encryption metadata |
-| `cid_encryption_metadata` | string | JSON string of CID encryption metadata (for encrypted videos) |
-| `segment_metadata` | object | Multi-segment recording information |
-| `codec_variants` | array | Available codec variants (e.g., `["h264", "hevc"]`) |
-| `duration` | number | Video duration in seconds |
-| `file_size` | number | File size in bytes |
+## Taxonomy (`grp` — the single group key)
 
-### Haven-AOL Gate Metadata (v1)
+Usenet/Big-8 style dot hierarchy. One `str` attribute replaces `project` + `type` + `category`
+(+ `tags`, which were never indexed — free text moves to payload or dies).
 
-Both `encryption_metadata` and `cid_encryption_metadata` use the same gate object:
+| `grp` value | Producer | Content |
+|---|---|---|
+| `haven.video.full` | haven-cli | Full media record (v1 per-file / v3 per-epoch gates) |
+| `haven.video.drip.series` | haven-dapp | v4 drip series header (shared facts, stored once) |
+| `haven.video.drip.part` | haven-dapp | v4 drip chunk (per-stage facts + crypto material) |
+| `haven.audio.full` | reserved | Future audio uploads |
+| `haven.image.full` | reserved | Future image uploads |
+| `haven.text.full` | reserved | Future text uploads |
+| `haven.meta.gate` | reserved | Future shared gate-corpus records |
 
-```json
-{
-  "version": 1,
-  "cid": "bafy... or sha256:...",
-  "chain": "EthMainnet",
-  "tokenAddress": "0x...",
-  "threshold": "1",
-  "encryptedAesKey": "base64..."
-}
-```
+Query patterns: exact `grp = str('haven.video.full')`; subtree `grp STARTSWITH str('haven.video.')`.
+`STARTSWITH` matches raw bytes — always lowercase ASCII, never trailing-dot the prefix.
 
-### Gate type marker (`gate_type`: 1/3/4)
+## Attributes schema
 
-Arkiv entities carry a minimal numeric gate-type marker so indexers can filter without JSON-parsing `encryption_metadata`:
+All keys lowercase snake_case. Types are SDK tags (`str`, `i32`, `addr`, `bytes32`, `key`).
 
-| `gate_type` | Meaning | Gate JSON `version` | Extra Arkiv fields |
+### `haven.video.full` (haven-cli)
+
+| Key | Type | When | Query justification |
 |---|---|---|---|
-| `1` | per-file (v1, unique key per CID) | `1` | — (v1 emits no payload mirror) |
-| `3` | per-epoch (v3 corpus, one key per epoch) | `3` | attributes `gate_epoch` + payload `gate_type:3`, `epoch` |
-| `4` | per-marketcap (v4 drip chunk) | `4` | attributes `market_cap_target_usd`, `drip_index/total/id`, `oracle_address` |
+| `grp` | `str` | always `haven.video.full` | subtree/exact scoping |
+| `title` | `str` | always (≤128 B) | list display + prefix search |
+| `gate_type` | `i32` | always, `1`\|`3` | gate-class filter; `== gate.version` numerically |
+| `gate_token` | `addr` | always | co-membership / community discovery |
+| `gate_chain` | `i32` | always | EIP chain id (`1, 10, 56, 137, 42161, 8453, …`) — replaces `EthMainnet`-style strings |
+| `gate_threshold` | `i32` | always | threshold filter (must fit i32; revisit as `u256` if raw-unit thresholds outgrow it) |
+| `gate_epoch` | `i32` | v3 only | epoch corpus grouping |
+| `sha256_ct` | `bytes32` | always | sha256 of **ciphertext bytes**; dedup lookup (`find_existing_entity`) + restore locator. Renamed from `cid_hash` (which never hashed a CID). Attrs-side only — never mirrored in payload |
+| `mime` | `i32` | always | MIME enum (see table); viewer dispatch without fetching payload |
+| `dur_s` | `i32` | when known, whole seconds (`0`/omit = unknown) | duration display/sort without payload |
 
-Rules: writers emit ONLY `gate_type` (`ATTR_UINT`). Readers read ONLY `gate_type` — no `gate_version` fallback. `gate_type == gate.version` numerically. Queries: `gate_type = 4` (numeric).
+Max **10 attributes** (typical encrypted v3 record: 10; v1: 9).
 
-Optional payload fields (not inside gate JSON):
+### `haven.video.drip.series` (haven-dapp publisher)
 
-| Field | Description |
-|-------|-------------|
-| `content_mime_type` | Original MIME type (e.g. `video/mp4`) |
-| `content_file_size` | Original file size in bytes |
-| `original_hash` | SHA-256 of plaintext before encryption |
+Shared facts stored **once** per drip run — never repeated per chunk.
 
-### Segment Metadata Structure
+| Key | Type | Notes |
+|---|---|---|
+| `grp` | `str` | `haven.video.drip.series` |
+| `title` | `str` | series title |
+| `gate_type` | `i32` | always `4` |
+| `gate_token` | `addr` | drip token contract (lowercased) |
+| `gate_chain` | `i32` | EIP chain id |
+| `drip_id` | `str` | stable run id (uuid, 36 B) — the thread key |
+| `drip_total` | `i32` | stage count |
 
-For multi-segment recordings (e.g., live streams):
+Series payload: `{ targets: <uint[] per-stage whole-USD unlock targets>, creator?: <handle> }`.
+The feed lists **parts**, not series; the series is fetched once per `drip_id` for title/total.
+
+### `haven.video.drip.part` (haven-dapp publisher)
+
+| Key | Type | Notes |
+|---|---|---|
+| `grp` | `str` | `haven.video.drip.part` |
+| `gate_type` | `i32` | always `4` |
+| `drip_id` | `str` | thread key (joins to series) |
+| `drip_idx` | `i32` | 0-based stage index |
+| `series_ref` | `key` | entity key of the series header — one indexed query fans out |
+| `mcap_usd` | `i32` | whole-USD unlock target for **this** stage; range-indexed (`mcap_usd >= i32(50000)`); i32 caps a stage at ~$2.1 B |
+| `sha256_ct` | `bytes32` | sha256 of ciphertext bytes |
+
+Max **7 attributes** (was 17). No `title` (join series once), no `drip_total` (on series),
+no `oracle_address` (unused — re-add only when enforced on-chain), no `published_by`
+(never queried — provenance is `$creator`), no `epoch` mirror (lives inside the v4 gate JSON).
+
+Part payload: `{ piece, gate }` — see Payload schema.
+
+### Deleted in 2.0.0 (do not write, do not read)
+
+`project`, `type`, `category`, `tags`, `language`, `is_encrypted` (infer from `gate_type`
+presence), `encrypted_cid` (locator is now `sha256_ct` + payload `piece`), `cid_hash`
+(renamed `sha256_ct`), `created_at` / `updated_at` / `created_at_ts` (use system `$createdAt`),
+`creator_handle` / `source_uri` / `phash` / `analysis_model` / `mint_id` as attributes
+(payload-only now, see below), `published_by`, `oracle_address`, `description` (unbounded —
+dropped; long-form text lives off-chain behind a CID), `thumbnail_cid` (specified but never
+written/read — stays out until a writer exists), `gate_version` (already removed in 1.1.0).
+
+## Payload schema
+
+JSON, `snake_case`, **short keys**. Payload mirrors of attributes are forbidden (Q: no
+Filecoin-without-Arkiv restore requirement — attrs are always readable alongside payload,
+so mirrors only ever duplicated bytes).
+
+### `haven.video.full` payload
 
 ```json
 {
-  "segment_index": 0,
-  "start_timestamp": "2026-02-20T10:00:00Z",
-  "end_timestamp": "2026-02-20T10:05:00Z",
-  "mint_id": "nft-mint-id",
-  "recording_session_id": "session-uuid"
+  // Encrypted records carry "piece"; clear records carry "fcid" instead — never both.
+  "piece": "bafkzcib…",
+  // "fcid": "Qm…/bafy…",
+  "gate": "<v1/v3 gate JSON string: version,cid,chain,tokenAddress,threshold[,epoch],encryptedAesKey>",
+  "cid_gate": "<CID-gate JSON string, only if distinct from content gate>",
+  "size": 10485760,
+  "pt_hash": "0x… (sha256 of plaintext before encryption)",
+  "seg": { "segment_index": 0, "start_timestamp": "…", "end_timestamp": "…", "mint_id": "…", "recording_session_id": "…" },
+  "codecs": ["h264", "hevc"],
+  "vlm": "Qm… (VLM analysis JSON CID)",
+  "vlm_model": "zai-org/glm-4.6v-flash",
+  "src": "https://… (provenance URI)",
+  "creator": "@handle",
+  "phash": "<perceptual hash>",
+  "attn": "{…single attestation…} | {…merkle-v2…}"
 }
 ```
 
-## Attributes Schema
+Key renames (old → new): `filecoin_root_cid` → `fcid` (clear only) / `piece_cid` → `piece`
+(encrypted only — one locator per record class, never both, never thrice);
+`encryption_metadata` → `gate`; `cid_encryption_metadata` → `cid_gate`;
+`content_file_size`/`file_size` → `size`; `original_hash` → `pt_hash`;
+`vlm_json_cid` → `vlm`; `analysis_model` → `vlm_model`; `source_uri` → `src`;
+`creator_handle` → `creator`; `codec_variants` → `codecs`; `segment_metadata` → `seg`;
+`attestation` → `attn`.
 
-Attributes are public, indexed fields that enable searching and duplicate detection on-chain.
+Dropped from payload: `is_encrypted` (infer from `gate` presence), `cid_hash` (attrs-side
+`sha256_ct`), `gate_type`/`epoch` top-level mirrors (inside `gate` JSON already),
+`duration` float mirror (attr `dur_s`), `content_mime_type` (attr `mime`),
+`expires_at_block` (use system `$expiresAt`), `created_at_block` (use `$createdAt`),
+`has_ai_data` (infer from `vlm` presence), `description` (off-chain).
 
-### JSON Structure
+### MIME enum (`mime: i32`, shared across all future `haven.*` groups)
 
-```json
-{
-  "title": "Video Title",
-  "creator_handle": "@username",
-  "source_uri": "https://youtube.com/watch?v=...",
-  "mint_id": "nft-mint-identifier",
-  "is_encrypted": 1,
-  "encrypted_cid": "encrypted-cid-string",
-  "phash": "perceptual-hash",
-  "analysis_model": "zai-org/glm-4.6v-flash",
-  "cid_hash": "sha256-hash-of-cid",
-  "created_at": "2026-02-20T10:00:00Z",
-  "updated_at": "2026-02-20T10:00:00Z"
-}
+| Value | MIME | Value | MIME |
+|---|---|---|---|
+| 1 | `video/mp4` | 7 | `image/png` |
+| 2 | `video/webm` | 8 | `image/jpeg` |
+| 3 | `video/quicktime` | 9 | `image/webp` |
+| 4 | `audio/mpeg` | 10 | `image/gif` |
+| 5 | `audio/wav` | 11 | `image/svg+xml` |
+| 6 | `audio/ogg` | 12 | `text/plain` |
+| 13 | `text/markdown` | 14 | `application/pdf` |
+
+`0` / omitted = unknown. Extend by appending — never renumber.
+
+### Gate JSON (frozen — Haven-AOL layer, NOT changed by 2.0.0)
+
+`version: 1` / `3` (+`epoch`, 2592000 s epochs) / `4` (+`marketCapTarget`, `oracleAddress`).
+`gate_type == gate.version` numerically, always. The verbose in-JSON spellings
+(`chain: "EthMainnet"`, `threshold: "1"` string) stay frozen inside the blob; the compact
+forms (`gate_chain: i32`, `gate_threshold: i32`) live in attributes.
+
+## Expiry (BTL) policy
+
+Storage cost scales with block-to-live. Defaults:
+
+| Record class | Default BTL | Mechanism |
+|---|---|---|
+| `haven.video.full` (CLI) | **4 weeks** | unchanged; `ARKIV_EXPIRATION_WEEKS` env (min 1) |
+| `haven.video.drip.series` | **52 weeks** | series header outlives parts |
+| `haven.video.drip.part` | **12 weeks** | `EXTEND` (op 3) while the series is active; expire after |
+
+The dapp's former 10-year pin (`expiresIn: 315360000`) is abolished — pinning ~5 KB/chunk
+for a decade is the single most expensive line in the old format.
+
+## Query cookbook (exact SDK spellings)
+
+```
+// All Haven video (feed scope)
+grp STARTSWITH str('haven.video.')
+
+// Drip feed: attributes only — never select payload for list rows
+// (old feed over-fetched encryptedAesKey per row and ignored it)
+AND(grp = str('haven.video.drip.part'), gate_type = i32(4))
+
+// Stages of one drip (one indexed query, no N+1)
+series_ref = key(0x<series entity key>)
+
+// Dedup on upload (CLI find_existing_entity)
+sha256_ct = bytes32(0x…)
+
+// Price-gated discovery (ordered index)
+mcap_usd >= i32(50000)
+
+// Complement (NOT != — != misses entities lacking the attribute)
+NOT gate_type = i32(4)
+
+// Recency: select $createdAt (+ $expiresAt for staleness), sort client-side
 ```
 
-### Field Descriptions
+`select()` only what the view renders: list rows need key + attributes; detail/decrypt
+views add payload. Every selected field is fetched over the wire.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `title` | string | Video title |
-| `creator_handle` | string | Content creator handle (e.g., `@username`) |
-| `source_uri` | string | Original source URL for provenance |
-| `mint_id` | string | NFT mint identifier |
-| `is_encrypted` | integer | `0` or `1` (use integer for gold standard compatibility) |
-| `encrypted_cid` | string | Encrypted CID (only if `is_encrypted=1`) |
-| `phash` | string | Perceptual hash for content matching |
-| `analysis_model` | string | VLM model used for analysis |
-| `cid_hash` | string | SHA256 hash of CID for duplicate detection |
-| `created_at` | string | ISO8601 timestamp of creation |
-| `updated_at` | string | ISO8601 timestamp of last update |
-
-## Privacy Rules
+## Privacy rules
 
 ### ⚠️ CRITICAL: Never Store in Attributes (Public)
 
-- **Raw CID** - Always use `cid_hash` in attributes, never the actual CID
-- **Encryption Ciphertext** - Ciphertext is stored on Filecoin, never in payload or attributes
-- **Encryption Keys** - Store only encrypted key metadata
+- **Raw CIDs** — `sha256_ct` in attributes, CIDs only in payload
+- **Ciphertext** — on Filecoin, never in payload or attributes
+- **Encryption keys** — only IBE-wrapped key metadata inside `gate` JSON
 
-### ✅ Store in Payload (Private)
+### ✅ Store in Payload
 
-- Full `filecoin_root_cid`
-- Encryption metadata (encrypted key, IV, etc.)
-- VLM analysis CID
-- Segment metadata
+- Locator CID (`piece` / `fcid`), `gate` / `cid_gate` JSON, `vlm`, `seg`, `attn`,
+  provenance (`src`, `creator`, `phash`)
 
-### ✅ Store in Attributes (Public)
+### ✅ Store in Attributes
 
-- `cid_hash` for duplicate detection
-- `title` for searching
-- `is_encrypted` flag
-- Timestamps
-- `encrypted_cid` (already encrypted, safe for public)
+- `grp`, `title`, gate corpus (`gate_type/token/chain/threshold[/epoch]`),
+  `sha256_ct`, `mime`, `dur_s`, drip coordinates (`drip_id/idx/total`, `mcap_usd`, `series_ref`)
 
-## Field Name Standards
+### Design notes (preserved from v1.x)
 
-### Correct Field Names (MUST USE)
+- `title` is required and public: anyone can read the table of contents while content stays
+  sealed. There is no member-visible-but-not-public tier (see gaps note in the shared spec).
+- The gate attributes are public **by design**: `gate_token` / `gate_chain` / `gate_threshold`
+  in the clear make the co-membership graph computable from public chain state — the
+  protocol's discovery and recommendation mechanism needs no server and no tracking.
+  Do not blind these. Addresses are pseudonyms; Haven records **no view events**, so the
+  graph states who *can* read what, never who read what.
 
-| Purpose | Correct Name | Incorrect Names |
-|---------|--------------|-----------------|
-| Filecoin CID (payload) | `filecoin_root_cid` | `root_cid` |
-| Encryption status | `is_encrypted` | `encrypted` |
-| CID hash | `cid_hash` | - |
-| VLM CID | `vlm_json_cid` | `vlm_cid` |
-| Encryption metadata | `encryption_metadata` | `encryption_metadata` |
-| CID encryption | `cid_encryption_metadata` | `cid_encryption` |
+## Field name standards (v2.0.0 canonical)
 
-## Cross-Application Compatibility
+| Purpose | v2.0.0 name | v1.x name(s) — do not use |
+|---|---|---|
+| Group / namespace | `grp` | `project` + `type` (+ `category`, `tags`) |
+| Ciphertext hash | `sha256_ct` (attrs, `bytes32`) | `cid_hash` |
+| Chain | `gate_chain` (`i32` EIP id) | `gate_chain` (`str` `EthMainnet`…) |
+| MIME | `mime` (`i32` enum) | `content_mime_type` (`str`) |
+| Duration | `dur_s` (`i32` seconds) | `duration` (`UINT` + float mirror) |
+| Filecoin locator | `piece` / `fcid` (payload) | `piece_cid` + `filecoin_root_cid` + `cid_hash` (all three) |
+| Content gate | `gate` (payload) | `encryption_metadata` |
+| CID gate | `cid_gate` (payload) | `cid_encryption_metadata` |
+| Plaintext hash | `pt_hash` (payload) | `original_hash` |
+| Size | `size` (payload) | `content_file_size` / `file_size` |
+| VLM CID / model | `vlm` / `vlm_model` (payload) | `vlm_json_cid` / `analysis_model` |
+| Provenance | `src` / `creator` (payload) | `source_uri` / `creator_handle` |
+| Segments / codecs / attestation | `seg` / `codecs` / `attn` (payload) | `segment_metadata` / `codec_variants` / `attestation` |
+| Drip stage target | `mcap_usd` (attrs, `i32`) | `market_cap_target_usd` |
+| Drip index / total / id | `drip_idx` / `drip_total` / `drip_id` | `drip_index` / `drip_total` / `drip_id` |
+| Series link | `series_ref` (attrs, `key`) | (new — repeated series facts per chunk) |
+| Created / expiry | system `$createdAt` / `$expiresAt` | `created_at` / `updated_at` / `created_at_ts` / `expires_at_block` / `created_at_block` |
 
-### Gold Standard (haven-player)
+## Cross-application compatibility
 
-The haven-player backend is the gold standard. All field names and structures must match:
+- **haven-cli** (writer, `haven.video.full`): `_build_attributes()` / `_build_payload()` in
+  `haven_cli/services/arkiv_sync.py`; dedup via `sha256_ct = bytes32(…)` (`find_existing_entity`).
+- **haven-dapp** (writer `haven.video.drip.*`, reader): drip publisher + feed query
+  (`grp = str('haven.video.drip.part')`, attributes-only select for rows).
+- **haven-mobile** (reader): tolerant single-casing parse (snake_case canonical — the
+  `firstString`×4 alias chains collapse), gateway `GET /api/arkiv/media` family unchanged.
+- **haven-player**: gold-standard reference; must adopt `grp` scoping on read.
 
-```python
-# Reference: backend/app/services/arkiv_sync.py
-# _build_payload() - lines 406-475
-# _build_attributes() - lines 346-380
-```
+## Straight-migration checklist (no backcompat)
 
-### Reader Application (haven-dapp)
-
-The haven-dapp reads entities created by both haven-cli and haven-player:
-
-```typescript
-// Reference: src/services/videoService.ts lines 38-163
-// Reference: src/types/video.ts
-```
+1. CLI: rewrite `_build_attributes` / `_build_payload` to the `haven.video.full` tables;
+   verify Python lib tag mapping (`addr`/`bytes32`/`i32`) against the chain.
+2. dapp: publisher emits series + parts; feed queries parts (attributes-only) + one series
+   fetch per `drip_id`; delete camelCase/snake duals and payload mirrors.
+3. Mobile: parse canonical keys; drop alias chains; no `gate_version`/`gateVersion` anywhere.
+4. Data: CLI v1.x records self-clean via 4-week BTL. All 10-year-pinned v4 drip records
+   must be explicitly `DELETE`d (op 5) — list them via the old markers (`gate_type = i32(4)`
+   and the pre-1.1.0 `gate_version = str('v4')`), then delete by entity key.
+5. Docs: shared spec `MEDIA_CONTENT_SPEC.md` is normative on key names; this file is
+   normative on CLI wire shape. On conflict, file an issue — do not fork keys locally.
 
 ## Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-02 | Initial standardized format |
-| 1.1.0 | 2026-09 | `gate_version` → `gate_type` (numeric `1`/`3`/`4` = per-file/per-epoch/per-marketcap; `ATTR_UINT` to save bytes; no backcompat) |
+| 1.1.0 | 2026-09 | `gate_version` → `gate_type` (numeric `1`/`3`/`4`; no backcompat) |
+| 2.0.0 | 2026-09 | Usenet-style `grp` taxonomy replaces `project`/`type`/`category`/`tags`; numeric SDK types (`addr`/`bytes32`/`i32` chain ids, MIME enum); drip threading (series + `series_ref: key` parts); payload short keys; all mirrors deleted; `$createdAt`/`$expiresAt` replace timestamp attrs; BTL policy (4 w full / 52 w series / 12 w parts); 10-year pins abolished. Straight migration, no backcompat. |
 
 ## Related Documentation
 
