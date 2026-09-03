@@ -441,10 +441,10 @@ class TestBug4And5EpochKeyReuseAcrossFiles:
 
 
 class TestBug7TopLevelEpochInPayload:
-    """``_build_payload`` publishes ``epoch`` + ``gate_type`` at the top
-    level of the entity payload when the content gate is v3, so consumers
-    can filter by corpus without JSON-parsing the ``encryption_metadata``
-    string.
+    """``_build_attributes`` publishes ``gate_epoch`` + ``gate_type`` for v3
+    gates so consumers can filter by corpus without JSON-parsing the
+    ``gate`` payload blob. 2.0 carries no top-level payload mirrors — the
+    epoch lives inside the ``gate`` JSON and in ``gate_epoch`` only.
     """
 
     def _pipeline_context_with_v3_gate(self, tmp_path):
@@ -512,15 +512,15 @@ class TestBug7TopLevelEpochInPayload:
         payload = _build_payload(ctx)
         attributes = _build_attributes(ctx)
 
-        # Bug 7: top-level fields on payload.
-        assert payload["epoch"] == 17
-        assert payload["gate_type"] == GATE_METADATA_VERSION_V3
-        # And attribute-side exposure so on-chain queries can filter.
+        # 2.0: no payload mirrors — epoch lives in gate JSON + gate_epoch attr.
+        assert "epoch" not in payload
+        assert "gate_type" not in payload
+        # Attribute-side exposure so on-chain queries can filter.
         assert attributes["gate_epoch"] == 17
         assert attributes["gate_type"] == GATE_METADATA_VERSION_V3
-        # The full v3 encryption_metadata blob is also still there for
-        # decryptors that want it whole.
-        enc_meta = json.loads(payload["encryption_metadata"])
+        assert attributes["gate_chain"] == 1  # EthMainnet -> EIP-155
+        # The full v3 gate blob is still there for decryptors that want it whole.
+        enc_meta = json.loads(payload["gate"])
         assert enc_meta["version"] == GATE_METADATA_VERSION_V3
         assert enc_meta["epoch"] == 17
 
@@ -538,6 +538,7 @@ class TestBug7TopLevelEpochInPayload:
         # But the attribute-side ``gate_type`` IS emitted for both v1
         # and v3 (that's an additive extension, not a semantic change).
         assert attributes["gate_type"] == 1
+        assert attributes["gate_chain"] == 1
         assert "gate_epoch" not in attributes
 
 

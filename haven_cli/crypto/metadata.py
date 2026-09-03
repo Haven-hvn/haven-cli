@@ -1,4 +1,4 @@
-"""Encryption metadata handling for Haven-AOL gate v1."""
+"""Encryption metadata handling for Haven-AOL gates (v1/v3 content gates)."""
 
 from __future__ import annotations
 
@@ -131,12 +131,15 @@ async def find_encryption_metadata(
 
 
 def _gate_from_arkiv_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    enc_meta_raw = payload.get("encryption_metadata")
-    if not enc_meta_raw:
+    """Extract the content gate (v1 or v3) from a 2.0 entity payload.
+
+    2.0 payloads carry the gate under ``gate`` (``cid_gate`` is the
+    CID-layer gate, only needed to decrypt the locator itself).
+    """
+    gate_raw = payload.get("gate")
+    if not gate_raw:
         return None
-    if isinstance(enc_meta_raw, str):
-        return parse_gate_metadata(enc_meta_raw)
-    return parse_gate_metadata(enc_meta_raw)
+    return parse_gate_metadata(gate_raw)
 
 
 async def load_encryption_metadata_from_arkiv_entity(
@@ -163,7 +166,7 @@ async def load_encryption_metadata_from_arkiv_entity(
         payload = json.loads(entity.payload.decode("utf-8"))
         gate = _gate_from_arkiv_payload(payload)
         if not gate:
-            logger.warning(f"Entity {entity_key} has no gate v1 encryption_metadata")
+            logger.warning(f"Entity {entity_key} has no content gate")
             return None
         return EncryptionMetadata(gate=gate)
 
@@ -176,10 +179,16 @@ async def load_encryption_metadata_from_arkiv_entity(
 
 
 async def load_encryption_metadata_from_arkiv_query(
-    cid_hash: str,
+    sha256_ct: str,
     rpc_url: str,
     private_key: str,
 ) -> Optional[EncryptionMetadata]:
+    """Find a gated entity by locator hash and return its content gate.
+
+    Queries ``sha256_ct`` (near-unique) and picks the first hit whose
+    payload parses to a valid v1/v3 gate — gate presence is decided
+    client-side since 2.0 carries no ``is_encrypted`` flag.
+    """
     try:
         from arkiv import Arkiv
         from arkiv.account import NamedAccount
@@ -192,29 +201,32 @@ async def load_encryption_metadata_from_arkiv_query(
 
         entities = list(
             client.arkiv.query_entities(
-                query=f'cid_hash = "{cid_hash}" AND is_encrypted = 1',
+                query=f'sha256_ct = "{sha256_ct}"',
                 options=QueryOptions(max_results_per_page=5),
             )
         )
 
         if not entities:
-            logger.warning(f"No encrypted entities found for CID hash {cid_hash}")
+            logger.warning(f"No entities found for locator hash {sha256_ct}")
             return None
 
-        entity = client.arkiv.get_entity(EntityKey(str(entities[0].key)))
+        for candidate in entities:
+            entity = client.arkiv.get_entity(EntityKey(str(candidate.key)))
 
-        if not entity or not entity.payload:
-            return None
+            if not entity or not entity.payload:
+                continue
 
-        payload = json.loads(entity.payload.decode("utf-8"))
-        gate = _gate_from_arkiv_payload(payload)
-        if not gate:
-            return None
-        return EncryptionMetadata(gate=gate)
+            payload = json.loads(entity.payload.decode("utf-8"))
+            gate = _gate_from_arkiv_payload(payload)
+            if gate:
+                return EncryptionMetadata(gate=gate)
+
+        logger.warning(f"No gated entity found for locator hash {sha256_ct}")
+        return None
 
     except ImportError:
         logger.warning("arkiv package not installed, cannot query Arkiv")
         return None
     except Exception as e:
-        logger.warning(f"Failed to query Arkiv for CID hash {cid_hash}: {e}")
+        logger.warning(f"Failed to query Arkiv for locator hash {sha256_ct}: {e}")
         return None

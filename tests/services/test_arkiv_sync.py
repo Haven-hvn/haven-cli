@@ -172,7 +172,7 @@ class TestBuildPayloadGoldStandard:
     """
     
     def test_filecoin_root_cid_field_name(self):
-        """Ensure payload uses filecoin_root_cid, not root_cid."""
+        """Ensure clear payloads use fcid, not root_cid (and never piece)."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
@@ -182,22 +182,29 @@ class TestBuildPayloadGoldStandard:
             )
         )
         payload = _build_payload(context)
-        
-        assert "filecoin_root_cid" in payload
-        assert payload["filecoin_root_cid"] == "QmTest123abc"
+
+        assert "fcid" in payload
+        assert payload["fcid"] == "QmTest123abc"
         assert "root_cid" not in payload
-    
+        assert "filecoin_root_cid" not in payload
+        # Clear records carry fcid only — never piece.
+        assert "piece" not in payload
+        assert "piece_cid" not in payload
+
     def test_is_encrypted_field_name(self):
-        """Ensure payload uses is_encrypted (int 0 or 1), not encrypted."""
+        """Ensure gate presence (not is_encrypted) marks encrypted records."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             encryption_metadata=_content_encryption_metadata(),
         )
         payload = _build_payload(context)
-        
-        assert "is_encrypted" in payload
-        assert payload["is_encrypted"] == 1  # Gold standard uses int (0 or 1)
+
+        assert "gate" in payload
+        assert "is_encrypted" not in payload
         assert "encrypted" not in payload
+
+        clear = PipelineContext(source_path=Path("/tmp/test.mp4"))
+        assert "gate" not in _build_payload(clear)
     
     def test_no_ciphertext_in_payload(self):
         """Ensure ciphertext is not stored in payload (it's on Filecoin)."""
@@ -221,7 +228,7 @@ class TestBuildPayloadGoldStandard:
         assert "ciphertext" not in payload
     
     def test_encryption_metadata_structure(self):
-        """Ensure encryption_metadata has correct gold standard structure."""
+        """Ensure gate payload has correct 2.0 structure (short keys, no mirrors)."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -238,20 +245,27 @@ class TestBuildPayloadGoldStandard:
 
         payload = _build_payload(context)
 
-        assert "encryption_metadata" in payload
-        encryption_meta = json.loads(payload["encryption_metadata"])
+        assert "gate" in payload
+        encryption_meta = json.loads(payload["gate"])
 
         assert encryption_meta["version"] == 1
         assert encryption_meta["encryptedAesKey"] == "base64encryptedkey"
         assert encryption_meta["chain"] == "EthMainnet"
         assert encryption_meta["tokenAddress"] == "0x" + "11" * 20
 
-        assert payload["content_mime_type"] == "video/mp4"
-        assert payload["content_file_size"] == 10485760
-        assert payload["original_hash"] == "sha256originalhash"
-    
+        assert payload["size"] == 10485760
+        assert payload["pt_hash"] == "sha256originalhash"
+
+        # No attribute mirrors in payload.
+        assert "encryption_metadata" not in payload
+        assert "content_mime_type" not in payload
+        assert "content_file_size" not in payload
+        assert "original_hash" not in payload
+        assert "gate_type" not in payload
+        assert "epoch" not in payload
+
     def test_cid_hash_in_payload(self):
-        """Ensure cid_hash is present in payload and is valid SHA256."""
+        """Ensure no locator hash lives in payload (attrs-side sha256_ct only)."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
@@ -261,17 +275,13 @@ class TestBuildPayloadGoldStandard:
             )
         )
         payload = _build_payload(context)
-        
-        assert "cid_hash" in payload
-        # Verify it's a valid SHA256 hash (64 hex characters)
-        assert len(payload["cid_hash"]) == 64
-        assert all(c in "0123456789abcdef" for c in payload["cid_hash"])
-        # Verify correct hash
-        expected_hash = hashlib.sha256("QmTestCID123".encode()).hexdigest()
-        assert payload["cid_hash"] == expected_hash
+
+        assert "cid_hash" not in payload
+        assert "sha256_ct" not in payload
+        assert payload["fcid"] == "QmTestCID123"
     
     def test_vlm_json_cid_present(self):
-        """Ensure vlm_json_cid is present when VLM analysis exists."""
+        """Ensure vlm is present when VLM analysis exists."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
@@ -282,12 +292,13 @@ class TestBuildPayloadGoldStandard:
             )
         )
         payload = _build_payload(context)
-        
-        assert "vlm_json_cid" in payload
-        assert payload["vlm_json_cid"] == "QmVlmAnalysisCID456"
-    
+
+        assert "vlm" in payload
+        assert payload["vlm"] == "QmVlmAnalysisCID456"
+        assert "vlm_json_cid" not in payload
+
     def test_vlm_json_cid_with_bafy_prefix(self):
-        """Ensure vlm_json_cid handles bafy prefix CIDs."""
+        """Ensure vlm handles bafy prefix CIDs."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
@@ -298,12 +309,12 @@ class TestBuildPayloadGoldStandard:
             )
         )
         payload = _build_payload(context)
-        
-        assert "vlm_json_cid" in payload
-        assert payload["vlm_json_cid"].startswith("bafy")
+
+        assert "vlm" in payload
+        assert payload["vlm"].startswith("bafy")
     
     def test_non_encrypted_video_structure(self):
-        """Ensure non-encrypted videos have correct gold standard structure."""
+        """Ensure non-encrypted videos have correct 2.0 structure."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -319,26 +330,32 @@ class TestBuildPayloadGoldStandard:
             )
         )
         payload = _build_payload(context)
-        
-        # Required fields (gold standard uses int 0/1 for is_encrypted)
-        assert "is_encrypted" in payload
-        assert payload["is_encrypted"] == 0
-        assert "filecoin_root_cid" in payload
-        assert payload["filecoin_root_cid"] == "QmNonEncryptedCID"
-        assert "cid_hash" in payload
-        
+
+        # Clear records: fcid locator + size, no gate material.
+        assert payload["fcid"] == "QmNonEncryptedCID"
+        assert payload["size"] == 1024000
+
         # Should NOT have encrypted-specific fields
-        assert "encrypted_cid" not in payload
+        assert "piece" not in payload
+        assert "gate" not in payload
+        assert "cid_gate" not in payload
+        assert "pt_hash" not in payload
+
+        # 2.0 carries no legacy mirrors or flags
+        assert "is_encrypted" not in payload
+        assert "filecoin_root_cid" not in payload
+        assert "cid_hash" not in payload
+        assert "piece_cid" not in payload
         assert "encryption_metadata" not in payload
         assert "cid_encryption_metadata" not in payload
-        
+
         # Gold standard does NOT include these fields (minimized payload)
         assert "version" not in payload
         assert "type" not in payload
         assert "archived_at" not in payload
-    
+
     def test_encrypted_video_structure(self):
-        """Ensure encrypted videos have correct gold standard structure."""
+        """Ensure encrypted videos have correct 2.0 structure."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
@@ -354,26 +371,30 @@ class TestBuildPayloadGoldStandard:
         )
         payload = _build_payload(context)
 
-        assert payload["piece_cid"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
-        assert payload["is_encrypted"] == 1
-        assert "encryption_metadata" in payload
-        assert "cid_encryption_metadata" in payload
+        assert payload["piece"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
+        assert "gate" in payload
+        assert "cid_gate" in payload
 
-        encryption_meta = json.loads(payload["encryption_metadata"])
+        encryption_meta = json.loads(payload["gate"])
         assert encryption_meta["version"] == 1
         assert encryption_meta["encryptedAesKey"] == "base64encryptedkey"
 
-        cid_meta = json.loads(payload["cid_encryption_metadata"])
+        cid_meta = json.loads(payload["cid_gate"])
         assert cid_meta["version"] == 1
         assert cid_meta["encryptedAesKey"] == "cidencryptedkey"
-        
-        # For encrypted videos, filecoin_root_cid should NOT be in payload (privacy)
+
+        # For encrypted videos, fcid should NOT be in payload (privacy)
+        assert "fcid" not in payload
+        # No legacy mirrors or flags
+        assert "is_encrypted" not in payload
         assert "filecoin_root_cid" not in payload
-        # But cid_hash should still be present for deduplication
-        assert "cid_hash" in payload
-    
+        assert "cid_hash" not in payload
+        assert "piece_cid" not in payload
+        assert "encryption_metadata" not in payload
+        assert "cid_encryption_metadata" not in payload
+
     def test_segment_metadata_structure(self):
-        """Ensure segment_metadata has correct gold standard structure."""
+        """Ensure seg has correct 2.0 structure."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             segment_metadata=SegmentMetadata(
@@ -385,29 +406,24 @@ class TestBuildPayloadGoldStandard:
             )
         )
         payload = _build_payload(context)
-        
-        assert "segment_metadata" in payload
-        segment_data = payload["segment_metadata"]
+
+        assert "seg" in payload
+        assert "segment_metadata" not in payload
+        segment_data = payload["seg"]
         assert segment_data["segment_index"] == 0
         assert segment_data["start_timestamp"] == "2026-02-20T10:00:00Z"
         assert segment_data["end_timestamp"] == "2026-02-20T10:05:00Z"
         assert segment_data["mint_id"] == "test-mint-id-123"
         assert segment_data["recording_session_id"] == "session-uuid-456"
-    
+
     def test_payload_without_upload_result(self):
         """Ensure payload handles missing upload_result gracefully."""
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
         payload = _build_payload(context)
-        
-        # Gold standard: minimal payload without unnecessary fields
-        # Should only have is_encrypted (as int 0/1)
-        assert payload["is_encrypted"] == 0
-        
-        # Should NOT have upload-specific fields
-        assert "filecoin_root_cid" not in payload
-        assert "cid_hash" not in payload
-        assert "vlm_json_cid" not in payload
-        
+
+        # 2.0: bare contexts produce an empty payload — no flags, no mirrors.
+        assert payload == {}
+
         # Gold standard does NOT include these fields (minimized payload)
         assert "version" not in payload
         assert "type" not in payload
@@ -418,21 +434,21 @@ class TestBuildPayload:
     """Tests for _build_payload function."""
     
     def test_basic_payload(self):
-        """Test basic payload structure matches gold standard."""
+        """Test basic payload structure — 2.0 bare contexts are empty."""
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
-        
+
         payload = _build_payload(context)
-        
-        # Gold standard: minimal payload - only is_encrypted (as int 0/1)
-        assert payload["is_encrypted"] == 0
-        
+
+        # 2.0: no flags, no mirrors — empty payload.
+        assert payload == {}
+
         # Gold standard does NOT include these fields (minimized payload)
         assert "version" not in payload
         assert "type" not in payload
         assert "archived_at" not in payload
     
     def test_payload_with_video_metadata(self):
-        """Test payload with video metadata - gold standard excludes recalculable fields."""
+        """Test payload with video metadata — only non-recalculable hints."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -443,20 +459,21 @@ class TestBuildPayload:
                 codec="h264"
             )
         )
-        
+
         payload = _build_payload(context)
-        
-        # Gold standard: duration, file_size, codec are NOT in payload
-        # (they can be recalculated from the video file during restore)
+
+        # duration/file_size live in attrs (dur_s) or with uploads (size);
+        # codec survives as a playback hint.
         assert "duration" not in payload
         assert "file_size" not in payload
         assert "codec" not in payload
-        
-        # Only is_encrypted should be present
-        assert payload["is_encrypted"] == 0
-    
+        assert payload["codecs"] == ["h264"]
+
+        # No flags in 2.0.
+        assert "is_encrypted" not in payload
+
     def test_payload_with_upload_result(self):
-        """Test payload with upload result - gold standard structure."""
+        """Test payload with upload result — clear records carry fcid only."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
@@ -465,20 +482,34 @@ class TestBuildPayload:
                 piece_cid="bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq",
             )
         )
-        
-        payload = _build_payload(context)
-        
-        # Gold standard includes filecoin_root_cid for non-encrypted videos
-        assert payload["filecoin_root_cid"] == "QmTest123"
-        # cid_hash should be in payload for verification (same as in attributes)
-        assert "cid_hash" in payload
-        expected_hash = hashlib.sha256("QmTest123".encode()).hexdigest()
-        assert payload["cid_hash"] == expected_hash
-        
-        assert payload["piece_cid"] == "bafkzcibe2hzbcd4t6clvsb3mfrezyxl75gl3gzcsqi42dd27gktq4nk75rr62ciuaq"
 
-    def test_payload_requires_piece_cid_when_root_cid_present(self):
-        """Arkiv sync must not proceed without piece_cid (haven-dapp Synapse-only path)."""
+        payload = _build_payload(context)
+
+        # Clear records: fcid locator; piece_cid is ignored for clear records.
+        assert payload["fcid"] == "QmTest123"
+        assert "piece" not in payload
+        assert "piece_cid" not in payload
+        # No locator hash in payload (attrs-side sha256_ct only).
+        assert "cid_hash" not in payload
+        assert "sha256_ct" not in payload
+
+    def test_payload_requires_piece_cid_for_encrypted_records(self):
+        """Encrypted Arkiv records must carry piece (haven-dapp Synapse path)."""
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            upload_result=UploadResult(
+                video_path="/tmp/test.mp4",
+                root_cid="QmTest123",
+                piece_cid="",
+            ),
+            encryption_metadata=_content_encryption_metadata(),
+        )
+
+        with pytest.raises(ValueError, match="piece_cid"):
+            _build_payload(context)
+
+    def test_payload_clear_records_do_not_require_piece_cid(self):
+        """Clear records resolve bytes via fcid — no piece requirement."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             upload_result=UploadResult(
@@ -488,11 +519,11 @@ class TestBuildPayload:
             ),
         )
 
-        with pytest.raises(ValueError, match="piece_cid is required"):
-            _build_payload(context)
+        payload = _build_payload(context)
+        assert payload["fcid"] == "QmTest123"
     
     def test_payload_with_analysis(self):
-        """Test payload with analysis result - gold standard excludes recalculable fields."""
+        """Test payload with analysis result - recalculable fields excluded."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             analysis_result=AIAnalysisResult(
@@ -502,21 +533,21 @@ class TestBuildPayload:
                 confidence=0.85
             )
         )
-        
+
         payload = _build_payload(context)
-        
+
         # Gold standard: has_ai_data, tag_count, timestamp_count, analysis_confidence
         # are NOT in payload (they can be recalculated from VLM JSON during restore)
         assert "has_ai_data" not in payload
         assert "tag_count" not in payload
         assert "timestamp_count" not in payload
         assert "analysis_confidence" not in payload
-        
-        # Only is_encrypted should be present
-        assert payload["is_encrypted"] == 0
-    
+
+        # 2.0: model-less analysis leaves no trace.
+        assert payload == {}
+
     def test_payload_with_encryption(self):
-        """Test payload with encryption metadata includes encryption_metadata."""
+        """Test payload with encryption metadata includes gate."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             encryption_metadata=_content_encryption_metadata(
@@ -526,18 +557,19 @@ class TestBuildPayload:
 
         payload = _build_payload(context)
 
-        assert payload["is_encrypted"] == 1
+        assert "is_encrypted" not in payload
         assert "encryption_chain" not in payload
         assert "encryption_data_hash" not in payload
-        assert "encryption_metadata" in payload
+        assert "encryption_metadata" not in payload
+        assert "gate" in payload
 
-        encryption_metadata = json.loads(payload["encryption_metadata"])
+        encryption_metadata = json.loads(payload["gate"])
         assert encryption_metadata["version"] == 1
         assert encryption_metadata["encryptedAesKey"] == "base64encryptedkey"
         assert encryption_metadata["chain"] == "EthMainnet"
 
     def test_payload_with_encryption_and_video_metadata(self):
-        """Test payload includes optional content fields beside gate metadata."""
+        """Test payload includes size beside gate metadata (mime lives in attrs)."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -551,18 +583,19 @@ class TestBuildPayload:
 
         payload = _build_payload(context)
 
-        assert payload["is_encrypted"] == 1
-        assert payload["content_mime_type"] == "video/mp4"
-        assert payload["content_file_size"] == 10485760
-    
+        assert "is_encrypted" not in payload
+        assert "content_mime_type" not in payload
+        assert "content_file_size" not in payload
+        assert payload["size"] == 10485760
+
     def test_payload_without_encryption(self):
-        """Test payload without encryption does not include encryption_metadata."""
+        """Test payload without encryption does not include gate."""
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
-        
+
         payload = _build_payload(context)
-        
-        # Gold standard uses int (0 or 1) for is_encrypted
-        assert payload["is_encrypted"] == 0
+
+        assert "is_encrypted" not in payload
+        assert "gate" not in payload
         assert "encryption_metadata" not in payload
     
     def test_payload_with_cid_encryption(self):
@@ -580,19 +613,21 @@ class TestBuildPayload:
 
         payload = _build_payload(context)
 
-        assert "cid_encryption_metadata" in payload
+        assert "cid_gate" in payload
+        assert "cid_encryption_metadata" not in payload
 
-        cid_metadata = json.loads(payload["cid_encryption_metadata"])
+        cid_metadata = json.loads(payload["cid_gate"])
         assert cid_metadata["version"] == 1
         assert cid_metadata["encryptedAesKey"] == "cidlayerkey"
         assert cid_metadata["chain"] == "EthMainnet"
-    
+
     def test_payload_without_cid_encryption(self):
-        """Test payload without CID encryption does not include cid_encryption_metadata."""
+        """Test payload without CID encryption does not include cid_gate."""
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
-        
+
         payload = _build_payload(context)
-        
+
+        assert "cid_gate" not in payload
         assert "cid_encryption_metadata" not in payload
     
     def test_payload_with_segment_metadata(self):
@@ -609,9 +644,10 @@ class TestBuildPayload:
         )
         
         payload = _build_payload(context)
-        
-        assert "segment_metadata" in payload
-        segment_data = payload["segment_metadata"]
+
+        assert "seg" in payload
+        assert "segment_metadata" not in payload
+        segment_data = payload["seg"]
         assert segment_data["segment_index"] == 0
         assert segment_data["start_timestamp"] == "2026-02-20T10:00:00Z"
         assert segment_data["end_timestamp"] == "2026-02-20T10:05:00Z"
@@ -628,22 +664,24 @@ class TestBuildPayload:
         )
         
         payload = _build_payload(context)
-        
-        assert "segment_metadata" in payload
-        segment_data = payload["segment_metadata"]
+
+        assert "seg" in payload
+        assert "segment_metadata" not in payload
+        segment_data = payload["seg"]
         assert segment_data["segment_index"] == 1
         # Optional fields should not be present when not set
         assert "start_timestamp" not in segment_data
         assert "end_timestamp" not in segment_data
         assert "mint_id" not in segment_data
         assert "recording_session_id" not in segment_data
-    
+
     def test_payload_without_segment_metadata(self):
-        """Test payload without segment metadata does not include segment_metadata field."""
+        """Test payload without segment metadata does not include seg field."""
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
-        
+
         payload = _build_payload(context)
-        
+
+        assert "seg" not in payload
         assert "segment_metadata" not in payload
 
 
@@ -701,62 +739,64 @@ class TestBuildAttributesGoldStandard:
         return context
     
     def test_no_root_cid_in_attributes(self):
-        """Ensure CID is not exposed in public attributes."""
+        """Ensure no locator CIDs are exposed in public attributes."""
         context = self.create_test_context(uploaded=True)
         attributes = _build_attributes(context)
-        
+
         assert "root_cid" not in attributes
         assert "filecoin_root_cid" not in attributes
-    
+        assert "fcid" not in attributes
+        assert "piece" not in attributes
+        assert "piece_cid" not in attributes
+        assert "encrypted_cid" not in attributes
+
     def test_cid_hash_in_attributes(self):
-        """Ensure cid_hash is present in attributes for verification."""
+        """Ensure sha256_ct is present in attributes for dedup/restore."""
         context = self.create_test_context(uploaded=True, root_cid="QmTestCID456")
         attributes = _build_attributes(context)
-        
-        assert "cid_hash" in attributes
+
+        assert "sha256_ct" in attributes
+        assert "cid_hash" not in attributes
         # Verify it's a valid SHA256 hash (64 hex characters)
-        assert len(attributes["cid_hash"]) == 64
+        assert len(attributes["sha256_ct"]) == 64
         # Verify correct hash
         expected_hash = hashlib.sha256("QmTestCID456".encode()).hexdigest()
-        assert attributes["cid_hash"] == expected_hash
-    
+        assert attributes["sha256_ct"] == expected_hash
+
     def test_required_attributes_present(self):
         """Ensure all required attributes are present."""
         context = self.create_test_context()
         attributes = _build_attributes(context)
-        
+
+        assert attributes["grp"] == "haven.video.full"
         assert "title" in attributes
-        assert "created_at" in attributes
-    
+
     def test_is_encrypted_as_integer(self):
-        """Ensure is_encrypted is 0 or 1 (not boolean)."""
+        """Ensure gate_type (int) marks gated records; clear records omit it."""
         # Non-encrypted
         context = self.create_test_context(encrypted=False)
         attributes = _build_attributes(context)
-        # When not encrypted, is_encrypted should not be in attributes
+        assert "gate_type" not in attributes
         assert "is_encrypted" not in attributes
-        
+
         # Encrypted
         context = self.create_test_context(encrypted=True)
         attributes = _build_attributes(context)
-        assert attributes["is_encrypted"] == 1
-        assert isinstance(attributes["is_encrypted"], int)
-        assert attributes["is_encrypted"] is not True  # Should not be boolean
-    
-    def test_iso8601_timestamps(self):
-        """Ensure timestamps are in ISO8601 format."""
+        assert attributes["gate_type"] == 1
+        assert isinstance(attributes["gate_type"], int)
+        assert attributes["gate_type"] is not True  # Should not be boolean
+
+    def test_no_timestamps_in_attributes(self):
+        """Ensure recency comes from system attrs, not custom timestamp keys."""
         context = self.create_test_context()
         attributes = _build_attributes(context)
-        
-        import re
-        iso8601_pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}'
-        
-        assert re.match(iso8601_pattern, attributes["created_at"])
-        if "updated_at" in attributes:
-            assert re.match(iso8601_pattern, attributes["updated_at"])
-    
+
+        assert "created_at" not in attributes
+        assert "updated_at" not in attributes
+        assert "created_at_ts" not in attributes
+
     def test_optional_attributes(self):
-        """Ensure optional attributes are included when available."""
+        """Ensure provenance moved payload-side (off the indexed surface)."""
         context = self.create_test_context(
             creator_handle="@testuser",
             source_uri="https://example.com/video.mp4",
@@ -765,21 +805,39 @@ class TestBuildAttributesGoldStandard:
             analysis_model="llava-1.5-7b"
         )
         attributes = _build_attributes(context)
-        
-        assert attributes.get("creator_handle") == "@testuser"
-        assert attributes.get("source_uri") == "https://example.com/video.mp4"
-        assert attributes.get("phash") == "a1b2c3d4"
-        assert attributes.get("mint_id") == "mint-123"
-        assert attributes.get("analysis_model") == "llava-1.5-7b"
-    
-    def test_updated_at_attribute(self):
-        """Ensure updated_at is present."""
-        context = self.create_test_context()
+
+        assert "creator_handle" not in attributes
+        assert "source_uri" not in attributes
+        assert "phash" not in attributes
+        assert "mint_id" not in attributes
+        assert "analysis_model" not in attributes
+
+    def test_provenance_lives_in_payload(self):
+        """Ensure src/creator/phash/vlm_model land in payload, not attrs."""
+        context = self.create_test_context(
+            creator_handle="@testuser",
+            source_uri="https://example.com/video.mp4",
+            phash="a1b2c3d4",
+            analysis_model="llava-1.5-7b"
+        )
+        payload = _build_payload(context)
+
+        assert payload["creator"] == "@testuser"
+        assert payload["src"] == "https://example.com/video.mp4"
+        assert payload["phash"] == "a1b2c3d4"
+        assert payload["vlm_model"] == "llava-1.5-7b"
+
+    def test_gate_corpus_attributes(self):
+        """Ensure the gate corpus is filterable without payload fetch."""
+        context = self.create_test_context(encrypted=True)
         attributes = _build_attributes(context)
-        
-        assert "updated_at" in attributes
-        # For new uploads, should be same as created_at
-        assert attributes["updated_at"] == attributes["created_at"]
+
+        assert attributes["gate_type"] == 1
+        assert attributes["gate_token"] == "0x" + "11" * 20
+        # EthMainnet variant maps to EIP-155 id 1.
+        assert attributes["gate_chain"] == 1
+        assert attributes["gate_threshold"] == 1
+        assert "gate_epoch" not in attributes  # v1 has no epoch
     
     def test_title_handling(self):
         """Ensure title is properly set or defaulted."""
@@ -808,21 +866,20 @@ class TestBuildAttributesGoldStandard:
         context.encrypted_cid = "encryptedcid123"
         context.cid_encryption_metadata = _cid_encryption_metadata()
         attributes = _build_attributes(context)
-        
-        # Should not contain these sensitive fields
-        # Note: encrypted_cid IS allowed in attributes (it's the encrypted CID, safe for public)
+
+        # Should not contain these sensitive fields.
+        # Note: encrypted_cid is NOT in attributes in 2.0 — the locator is
+        # sha256_ct + payload piece; nothing raw-gated stays indexed.
         sensitive_fields = [
             "root_cid", "filecoin_root_cid",
+            "fcid", "piece", "piece_cid",
             "vlm_json_cid", "encryption_metadata",
-            "ciphertext", "encryption_key"
+            "ciphertext", "encryption_key",
+            "encrypted_cid",
         ]
-        
+
         for field in sensitive_fields:
             assert field not in attributes, f"Sensitive field '{field}' found in attributes"
-        
-        # encrypted_cid SHOULD be present when CID encryption metadata exists
-        assert "encrypted_cid" in attributes
-        assert attributes["encrypted_cid"] == "encryptedcid123"
 
 
 class TestBuildAttributes:
@@ -833,33 +890,38 @@ class TestBuildAttributes:
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4")
         )
-        
+
         attrs = _build_attributes(context)
-        
-        assert "title" in attrs
-        assert "created_at" in attrs
+
+        assert attrs["grp"] == "haven.video.full"
         assert attrs["title"] == "test"  # stem of filename
-    
+        assert "created_at" not in attrs
+
     def test_attributes_with_metadata(self):
-        """Test attributes with video metadata."""
+        """Test attributes with video metadata (provenance stays payload-side)."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
                 path="/tmp/test.mp4",
                 title="My Video",
+                duration=125.7,
                 creator_handle="@creator",
                 source_uri="https://example.com/video",
                 phash="abc123"
             )
         )
-        
+
         attrs = _build_attributes(context)
-        
+
         assert attrs["title"] == "My Video"
-        assert attrs["creator_handle"] == "@creator"
-        assert attrs["source_uri"] == "https://example.com/video"
-        assert attrs["phash"] == "abc123"
-    
+        # Provenance is payload-only in 2.0.
+        assert "creator_handle" not in attrs
+        assert "source_uri" not in attrs
+        assert "phash" not in attrs
+        # mime defaults to video/mp4 -> enum 1; duration truncates to seconds.
+        assert attrs["mime"] == 1
+        assert attrs["dur_s"] == 125
+
     def test_attributes_with_upload(self):
         """Test attributes with upload result."""
         context = PipelineContext(
@@ -870,33 +932,33 @@ class TestBuildAttributes:
                 piece_cid=TEST_PIECE_CID,
             ),
         )
-        
+
         attrs = _build_attributes(context)
-        
-        assert "cid_hash" in attrs
-        
-        # Verify CID hash calculation (root_cid is NOT stored in attributes for privacy)
+
+        assert "sha256_ct" in attrs
+        assert "cid_hash" not in attrs
+
+        # Verify locator hash calculation (root_cid is NOT stored in attributes for privacy)
         expected_hash = hashlib.sha256("QmTest123".encode()).hexdigest()
-        assert attrs["cid_hash"] == expected_hash
-    
+        assert attrs["sha256_ct"] == expected_hash
+
     def test_attributes_with_encryption(self):
         """Test attributes with encryption."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             encryption_metadata=_content_encryption_metadata()
         )
-        
+
         attrs = _build_attributes(context)
-        
-        assert attrs["is_encrypted"] == 1
-    
-    def test_mime_type_not_in_attributes(self):
-        """Test that MIME type is NOT in attributes (gold standard excludes it).
-        
-        The gold standard (haven-player) does not include mime_type in attributes
-        because it can be stored in encryption_metadata for encrypted videos
-        or recalculated from the file during restore.
-        """
+
+        assert attrs["gate_type"] == 1
+        assert attrs["gate_token"] == "0x" + "11" * 20
+        assert attrs["gate_chain"] == 1
+        assert attrs["gate_threshold"] == 1
+        assert "is_encrypted" not in attrs
+
+    def test_mime_enum_in_attributes(self):
+        """Test that MIME types map to the shared enum (unknowns omitted)."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -904,36 +966,53 @@ class TestBuildAttributes:
                 mime_type="video/mp4"
             )
         )
-        
+
         attrs = _build_attributes(context)
-        
-        # Gold standard: mime_type is NOT in attributes
-        assert "mime_type" not in attrs
-    
+
+        assert attrs["mime"] == 1
+
+        context.video_metadata.mime_type = "application/x-unknown"
+        attrs = _build_attributes(context)
+        assert "mime" not in attrs
+
+    def test_title_truncated_to_128_bytes(self):
+        """Test that overlong titles truncate at a UTF-8 boundary."""
+        context = PipelineContext(
+            source_path=Path("/tmp/test.mp4"),
+            video_metadata=VideoMetadata(
+                path="/tmp/test.mp4",
+                title="é" * 100,  # 200 bytes in UTF-8
+            )
+        )
+
+        attrs = _build_attributes(context)
+
+        assert len(attrs["title"].encode("utf-8")) <= 128
+
     def test_attributes_with_cid_encryption(self):
-        """Test attributes with CID-level encryption includes encrypted_cid."""
+        """Test CID-level encryption alone adds no gate attributes."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             encrypted_cid="encryptedcid123",
             cid_encryption_metadata=_cid_encryption_metadata(),
         )
-        
+
         attrs = _build_attributes(context)
-        
-        # encrypted_cid should be in attributes (it's already encrypted, so safe for public)
-        assert "encrypted_cid" in attrs
-        assert attrs["encrypted_cid"] == "encryptedcid123"
-    
+
+        # encrypted_cid is never indexed in 2.0; gate corpus needs content gate.
+        assert "encrypted_cid" not in attrs
+        assert "gate_type" not in attrs
+
     def test_attributes_without_cid_encryption(self):
         """Test attributes without CID encryption does not include encrypted_cid."""
         context = PipelineContext(source_path=Path("/tmp/test.mp4"))
-        
+
         attrs = _build_attributes(context)
-        
+
         assert "encrypted_cid" not in attrs
-    
+
     def test_attributes_with_mint_id(self):
-        """Test attributes with mint_id for NFT tracking."""
+        """Test mint_id stays payload-side (seg only, never attrs)."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             video_metadata=VideoMetadata(
@@ -942,10 +1021,10 @@ class TestBuildAttributes:
                 mint_id="nft-mint-123"
             )
         )
-        
+
         attrs = _build_attributes(context)
-        
-        assert attrs["mint_id"] == "nft-mint-123"
+
+        assert "mint_id" not in attrs
     
     def test_attributes_without_mint_id(self):
         """Test attributes without mint_id does not include mint_id field."""
@@ -962,7 +1041,7 @@ class TestBuildAttributes:
         assert "mint_id" not in attrs
     
     def test_attributes_with_analysis_model(self):
-        """Test attributes with analysis_model from VLM analysis."""
+        """Test vlm_model lands in payload, never in attributes."""
         context = PipelineContext(
             source_path=Path("/tmp/test.mp4"),
             analysis_result=AIAnalysisResult(
@@ -973,10 +1052,11 @@ class TestBuildAttributes:
                 analysis_model="llava-1.5-7b"
             )
         )
-        
+
         attrs = _build_attributes(context)
-        
-        assert attrs["analysis_model"] == "llava-1.5-7b"
+
+        assert "analysis_model" not in attrs
+        assert _build_payload(context)["vlm_model"] == "llava-1.5-7b"
     
     def test_attributes_without_analysis_model(self):
         """Test attributes without analysis_model does not include analysis_model field."""

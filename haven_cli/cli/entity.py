@@ -141,7 +141,7 @@ def get_entity(
 def query_entities(
     query: str = typer.Argument(
         ...,
-        help="Arkiv query string (e.g., 'cid_hash = \"abc123\"').",
+        help="Arkiv query string (e.g., 'sha256_ct = \"abc123\"').",
     ),
     config_file: Optional[Path] = typer.Option(
         None,
@@ -163,17 +163,17 @@ def query_entities(
     ),
 ) -> None:
     """Query Arkiv entities using attribute filters.
-    
+
     Search for entities using Arkiv's query syntax. Common queries:
-    - By CID hash: 'cid_hash = "abc123..."'
+    - By locator hash: 'sha256_ct = "abc123..."'
     - By title: 'title = "My Video"'
-    - By creator: 'creator_handle = "@username"'
-    - By encryption status: 'is_encrypted = 1'
-    
+    - By group: 'grp = "haven.video.full"'
+    - By gate class: 'gate_type = 1'
+
     Example:
-        haven entity query 'cid_hash = "abc123..."'
+        haven entity query 'sha256_ct = "abc123..."'
         haven entity query 'title = "Test Video"' --limit 5
-        haven entity query 'creator_handle = "@testuser"' --json
+        haven entity query 'grp = "haven.video.full"' --json
     """
     import asyncio
     

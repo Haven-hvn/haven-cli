@@ -13,7 +13,6 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Protocol
 
 from haven_cli.crypto.gate_metadata import (
@@ -34,6 +33,70 @@ from haven_cli.services.evm_utils import (
 
 # Minimum arkiv-sdk for Braga (RLP storage transactions via eth_sendTransaction).
 MIN_ARKIV_SDK_VERSION = "1.0.0b2"
+
+# ── ARKIV_FORMAT 2.0.0 wire tables ──────────────────────────────────────
+#
+# The Python SDK (arkiv-sdk 1.0.0b2) only expresses two annotation types:
+# ``str`` and ``int`` (``Attributes = dict[str, str | int]``). The spec's
+# ``addr``/``bytes32``/``i32`` tags are therefore realized as:
+#   * gate_token / sha256_ct → lowercase hex ``str`` (≤128 B: 42 / 64 chars)
+#   * gate_type / gate_chain / gate_threshold / gate_epoch / mime / dur_s → ``int``
+# The chain stores one numeric annotation kind, so Python-written ints match
+# JS ``i32(…)`` queries on the same attribute. Revisit if the SDK gains
+# tagged constructors.
+
+#: Usenet-style group taxonomy (replaces project/type/category/tags).
+ARKIV_GROUP_VIDEO_FULL = "haven.video.full"
+
+#: Haven-AOL chain variant → EIP-155 id (replaces "EthMainnet"-style strings).
+CHAIN_VARIANT_TO_EIP155: dict[str, int] = {
+    "EthMainnet": 1,
+    "EthSepolia": 11155111,
+    "ArbitrumOne": 42161,
+    "BaseMainnet": 8453,
+    "OptimismMainnet": 10,
+}
+
+#: Shared MIME enum (spec §MIME enum). Extend by appending, never renumber.
+MIME_TO_ENUM: dict[str, int] = {
+    "video/mp4": 1,
+    "video/webm": 2,
+    "video/quicktime": 3,
+    "audio/mpeg": 4,
+    "audio/wav": 5,
+    "audio/ogg": 6,
+    "image/png": 7,
+    "image/jpeg": 8,
+    "image/webp": 9,
+    "image/gif": 10,
+    "image/svg+xml": 11,
+    "text/plain": 12,
+    "text/markdown": 13,
+    "application/pdf": 14,
+}
+
+#: Arkiv ``str`` slots are 128 bytes — truncate titles at a UTF-8 boundary.
+TITLE_MAX_BYTES = 128
+
+
+def _truncate_title(title: str) -> str:
+    """Truncate *title* to ``TITLE_MAX_BYTES`` UTF-8 bytes (never split a char)."""
+    raw = title.encode("utf-8")[:TITLE_MAX_BYTES]
+    # Drop a trailing partial sequence (decode back-off).
+    while raw:
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = raw[:-1]
+    return ""
+
+
+def _mime_to_enum(mime_type: str | None) -> int | None:
+    """Map a MIME string to the shared enum; ``None`` when unmapped/empty."""
+    if not mime_type:
+        return None
+    return MIME_TO_ENUM.get(mime_type.split(";")[0].strip().lower())
+
 
 logger = logging.getLogger(__name__)
 
@@ -295,190 +358,155 @@ def _log_transaction_info(
 
 def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
     """
-    Build public attributes for Arkiv entity indexing.
-    
-    Attributes are indexed and queryable on-chain for searching
-    and duplicate detection.
-    
-    Aligned with gold standard (haven-player) for cross-application compatibility.
-    
+    Build public attributes for Arkiv entity indexing (ARKIV_FORMAT 2.0.0).
+
+    Max 10 attributes for ``haven.video.full``. Attributes are indexed and
+    queryable on-chain; every key below carries the query pattern that pays
+    for its ~192 bytes. Cross-application contract: shared spec
+    ``docs/entities/MEDIA_CONTENT_SPEC.md``.
+
+    Tag mapping (Python SDK expresses str|int only): ``gate_token`` is a
+    lowercase hex ``str`` (spec ``addr``), ``sha256_ct`` a 64-hex ``str``
+    (spec ``bytes32``); all gate/enum facts are ``int``.
+
     Args:
         context: Pipeline context with video metadata
-        
+
     Returns:
         Dictionary of attributes for Arkiv
     """
     attributes: dict[str, str | int] = {}
-    
+
+    # ── Group taxonomy + title (list display + prefix search) ──
+    attributes["grp"] = ARKIV_GROUP_VIDEO_FULL
+    title = context.title or ""
+    if title:
+        attributes["title"] = _truncate_title(title)
+
     # Get video metadata if available
     video_metadata = context.video_metadata
-    
-    # Title
-    if video_metadata and video_metadata.title:
-        attributes["title"] = video_metadata.title
-    else:
-        # Use filename as fallback
-        attributes["title"] = context.title
-    
-    # Creator handle
-    if video_metadata and video_metadata.creator_handle:
-        attributes["creator_handle"] = video_metadata.creator_handle
-    
-    # Source URI for provenance
-    if video_metadata and video_metadata.source_uri:
-        attributes["source_uri"] = video_metadata.source_uri
-    
-    # pHash for content matching
-    if video_metadata and video_metadata.phash:
-        attributes["phash"] = video_metadata.phash
-    
-    # Mint ID for NFT tracking
-    if video_metadata and video_metadata.mint_id:
-        attributes["mint_id"] = video_metadata.mint_id
-    
-    # CID hash for duplicate detection (present for both encrypted and non-encrypted)
-    if context.upload_result and context.upload_result.root_cid:
-        cid_hash = hashlib.sha256(
-            context.upload_result.root_cid.encode()
-        ).hexdigest()
-        attributes["cid_hash"] = cid_hash
-    
-    # Encryption status - use int (0 or 1) for gold standard compatibility
-    if context.encryption_metadata:
-        attributes["is_encrypted"] = 1
-    
-    # Encrypted CID - stored in attributes (already encrypted, so safe for public)
-    if context.encrypted_cid:
-        attributes["encrypted_cid"] = context.encrypted_cid
-    
-    # Analysis model - track which VLM was used
-    if context.analysis_result and context.analysis_result.analysis_model:
-        attributes["analysis_model"] = context.analysis_result.analysis_model
-    
-    # ── Project namespace + type (enables community feed filtering) ──
-    attributes["project"] = "haven"
-    attributes["type"] = "video"
-    
-    # ── Numeric timestamp for range queries ──
-    attributes["created_at_ts"] = int(datetime.now(timezone.utc).timestamp())
-    
-    # ── Gate info in attributes (enables community feed queries) ──
+
+    # ── Gate corpus (enables community feed queries without payload fetch) ──
     #
-    # ``is_gate_metadata_any`` accepts both v1 and v3 records — the shared
-    # attribute names (chain / token / threshold) exist on both. For v3
-    # records we additionally publish ``gate_epoch`` and ``gate_type``
-    # so the dapp/indexer can filter by corpus without JSON-parsing the
-    # encryption_metadata blob (Bug 7).
-    #
-    # ``gate_type`` (ATTR_UINT 1|3|4 = per-file/per-epoch/per-marketcap)
-    # replaces ``gate_version`` with no fallback. ``gate_type`` ==
-    # gate["version"] numerically.
+    # ``is_gate_metadata_any`` accepts both v1 and v3 records. ``gate_type``
+    # (int 1|3) replaces ``gate_version`` with no fallback; ``gate_type`` ==
+    # gate["version"] numerically. ``gate_chain`` is the EIP-155 id.
     if context.encryption_metadata:
         gate = context.encryption_metadata.gate
         if is_gate_metadata_any(gate):
-            attributes["gate_chain"] = gate["chain"]
-            attributes["gate_token"] = gate["tokenAddress"]
-            attributes["gate_threshold"] = int(gate.get("threshold", "1"))
             attributes["gate_type"] = int(gate.get("version", 1))
+            attributes["gate_token"] = str(gate["tokenAddress"]).lower()
+            chain_id = CHAIN_VARIANT_TO_EIP155.get(str(gate["chain"]))
+            if chain_id is None:
+                logger.warning(
+                    "Unknown gate chain variant %r — omitting gate_chain "
+                    "(known: %s)",
+                    gate["chain"],
+                    sorted(CHAIN_VARIANT_TO_EIP155),
+                )
+            else:
+                attributes["gate_chain"] = chain_id
+            attributes["gate_threshold"] = int(gate.get("threshold", "1"))
             if gate.get("version") == GATE_METADATA_VERSION_V3:
                 attributes["gate_epoch"] = int(gate["epoch"])
 
-    
-    # Created timestamp (ISO for backward compat)
-    attributes["created_at"] = datetime.now(timezone.utc).isoformat()
-    
-    # Set updated_at (for new uploads, same as created_at)
-    if video_metadata and video_metadata.updated_at:
-        attributes["updated_at"] = video_metadata.updated_at.isoformat()
-    else:
-        attributes["updated_at"] = attributes["created_at"]
-    
+    # ── Ciphertext locator + dedup key ──
+    #
+    # ``sha256_ct`` is the hex digest of the record's root locator string
+    # (the same computation the old ``cid_hash`` used, renamed — it never
+    # hashed raw bytes). Stable, computable at sync time, near-unique:
+    # ``find_existing_entity`` queries ``sha256_ct = "<hex>"``.
+    if context.upload_result and context.upload_result.root_cid:
+        attributes["sha256_ct"] = hashlib.sha256(
+            context.upload_result.root_cid.encode()
+        ).hexdigest()
+
+    # ── Viewer dispatch + display/sort without payload fetch ──
+    mime_enum = _mime_to_enum(video_metadata.mime_type if video_metadata else None)
+    if mime_enum is not None:
+        attributes["mime"] = mime_enum
+    if video_metadata and video_metadata.duration and video_metadata.duration > 0:
+        attributes["dur_s"] = int(video_metadata.duration)
+
     return attributes
 
 
 def _build_payload(context: PipelineContext) -> dict[str, Any]:
     """
-    Build the entity payload for Arkiv.
-    
-    The payload contains the video metadata that will be stored on-chain.
-    It includes only essential data that cannot be recalculated or is
-    needed for restoration.
-    
-    Aligned with gold standard (haven-player) for cross-application compatibility.
-    
+    Build the entity payload for Arkiv (ARKIV_FORMAT 2.0.0).
+
+    Short snake_case keys, zero mirrors of attributes (attrs are always
+    readable alongside payload, so mirrors only duplicate bytes).
+    One locator per record class: encrypted records carry ``piece``,
+    clear records carry ``fcid`` — never both.
+
     Args:
         context: Pipeline context with video metadata
-        
+
     Returns:
         Dictionary payload for Arkiv entity
     """
-    # Build minimal payload with only essential encrypted/sensitive data
     payload: dict[str, Any] = {}
-    
-    # For encrypted videos: encrypted_cid is in attributes (public), actual CID is decrypted during restore
-    # Store CID encryption metadata in payload so we can decrypt encrypted_cid during restore
-    #
-    # ``is_gate_metadata_any`` / ``gate_metadata_any_to_json`` accept both
-    # v1 and v3 records (fixes Bugs 2 & 3).
+
+    video_metadata = context.video_metadata
+
     if context.encryption_metadata:
+        # ── Gated record ──
+        # ``is_gate_metadata_any`` / ``gate_metadata_any_to_json`` accept
+        # both v1 and v3 records. The frozen gate spellings
+        # (chain: "EthMainnet", string threshold) stay inside the blob;
+        # compact forms live in attributes.
         if (
             context.cid_encryption_metadata
             and context.encrypted_cid
             and is_gate_metadata_any(context.cid_encryption_metadata.gate)
         ):
-            payload["cid_encryption_metadata"] = gate_metadata_any_to_json(
+            payload["cid_gate"] = gate_metadata_any_to_json(
                 context.cid_encryption_metadata.gate
             )
 
         if is_gate_metadata_any(context.encryption_metadata.gate):
-            content_gate = context.encryption_metadata.gate
-            payload["encryption_metadata"] = gate_metadata_any_to_json(content_gate)
+            payload["gate"] = gate_metadata_any_to_json(
+                context.encryption_metadata.gate
+            )
 
-            # Bug 7: expose the v3 corpus epoch as a top-level payload field
-            # so consumers (dapp, indexer) don't have to JSON-parse the
-            # opaque ``encryption_metadata`` string just to filter by
-            # ``(chain, token, threshold, epoch)`` corpus. ``gate_type``
-            # (1|3|4) replaces ``gate_version`` with no fallback.
-            if content_gate.get("version") == GATE_METADATA_VERSION_V3:
-                payload["gate_type"] = GATE_METADATA_VERSION_V3
-                payload["epoch"] = int(content_gate["epoch"])
-
-            if context.video_metadata and context.video_metadata.mime_type:
-                payload["content_mime_type"] = context.video_metadata.mime_type
-            if context.video_metadata and context.video_metadata.file_size:
-                payload["content_file_size"] = context.video_metadata.file_size
+            if video_metadata and video_metadata.file_size:
+                payload["size"] = video_metadata.file_size
 
             original_hash = context.get_step_data("encrypt", "original_hash")
             if original_hash:
-                payload["original_hash"] = original_hash
+                payload["pt_hash"] = original_hash
 
-    else:
-        # For non-encrypted videos, store filecoin_root_cid in payload (not in attributes for consistency)
+        # Encrypted locator (required for haven-dapp Synapse download).
         if context.upload_result and context.upload_result.root_cid:
-            payload["filecoin_root_cid"] = context.upload_result.root_cid
-    
-    # Filecoin Pin piece CID (bafkzcib…) — required for haven-dapp Synapse download
-    if context.upload_result and context.upload_result.root_cid:
-        payload["piece_cid"] = require_piece_cid(
-            context.upload_result.piece_cid,
-            context="Arkiv payload",
-        )
+            payload["piece"] = require_piece_cid(
+                context.upload_result.piece_cid,
+                context="Arkiv payload",
+            )
+    else:
+        # ── Clear record: Filecoin locator only ──
+        if context.upload_result and context.upload_result.root_cid:
+            payload["fcid"] = context.upload_result.root_cid
+            if video_metadata and video_metadata.file_size:
+                payload["size"] = video_metadata.file_size
 
-    # cid_hash is needed for deduplication during restore (both encrypted and non-encrypted)
-    if context.upload_result and context.upload_result.root_cid:
-        cid_hash = hashlib.sha256(
-            context.upload_result.root_cid.encode()
-        ).hexdigest()
-        payload["cid_hash"] = cid_hash
-    
-    # Include VLM JSON CID if available (primary VLM archival method)
+    # VLM analysis reference (primary VLM archival method).
     if context.upload_result and context.upload_result.vlm_json_cid:
-        payload["vlm_json_cid"] = context.upload_result.vlm_json_cid
-    
-    # Essential flag for restore - use int (0 or 1) for gold standard compatibility
-    payload["is_encrypted"] = 1 if context.encryption_metadata else 0
-    
-    # Segment metadata for multi-segment recordings
+        payload["vlm"] = context.upload_result.vlm_json_cid
+    if context.analysis_result and context.analysis_result.analysis_model:
+        payload["vlm_model"] = context.analysis_result.analysis_model
+
+    # Provenance (payload-only in 2.0.0 — off the indexed surface).
+    if video_metadata and video_metadata.source_uri:
+        payload["src"] = video_metadata.source_uri
+    if video_metadata and video_metadata.creator_handle:
+        payload["creator"] = video_metadata.creator_handle
+    if video_metadata and video_metadata.phash:
+        payload["phash"] = video_metadata.phash
+    if video_metadata and video_metadata.codec:
+        payload["codecs"] = [video_metadata.codec]
+
+    # Segment metadata for multi-segment recordings.
     if context.segment_metadata:
         segment_data: dict[str, Any] = {
             "segment_index": context.segment_metadata.segment_index,
@@ -491,9 +519,9 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
             segment_data["mint_id"] = context.segment_metadata.mint_id
         if context.segment_metadata.recording_session_id:
             segment_data["recording_session_id"] = context.segment_metadata.recording_session_id
-        
-        payload["segment_metadata"] = segment_data
-    
+
+        payload["seg"] = segment_data
+
     # ── Attestation (canister-signed holding proof) ──
     #
     # Two payload shapes are emitted, distinguished by presence of "merkleProof":
@@ -528,8 +556,8 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
         else:
             # Legacy single-CID attestation from attest_holding().
             attestation_payload["signature"] = a["signature"]
-        payload["attestation"] = attestation_payload
-    
+        payload["attn"] = attestation_payload
+
     return payload
 
 
@@ -621,27 +649,27 @@ class ArkivSyncClient:
 
     def find_existing_entity(
         self,
-        cid_hash: str,
+        sha256_ct: str,
     ) -> dict[str, Any] | None:
         """
-        Find an existing entity by CID hash.
-        
+        Find an existing entity by content locator hash.
+
         Args:
-            cid_hash: The CID hash to search for
-            
+            sha256_ct: The ``sha256_ct`` hex digest to search for
+
         Returns:
             Existing entity dict with 'entity_key' if found, None otherwise
         """
         if not self.config.enabled:
             return None
-        
+
         try:
             from arkiv.types import KEY, ATTRIBUTES, PAYLOAD, CONTENT_TYPE, OWNER, CREATED_AT, QueryOptions
-            
+
             client = self._get_client()
-            
-            # Build query for cid_hash attribute
-            query = f'cid_hash = "{cid_hash}"'
+
+            # Build query for sha256_ct attribute
+            query = f'sha256_ct = "{sha256_ct}"'
             
             # Select only necessary fields
             required_fields = KEY | ATTRIBUTES | PAYLOAD | CONTENT_TYPE | OWNER | CREATED_AT
@@ -655,7 +683,7 @@ class ArkivSyncClient:
             
             if entities:
                 entity = entities[0]  # Take first match
-                logger.info("Found existing Arkiv entity for cid_hash: %s", cid_hash)
+                logger.info("Found existing Arkiv entity for sha256_ct: %s", sha256_ct)
                 return {
                     "entity_key": str(entity.key) if hasattr(entity, "key") else None,
                     "entity": entity,
@@ -673,8 +701,8 @@ class ArkivSyncClient:
     ) -> dict[str, Any] | None:
         """
         Sync a pipeline context to Arkiv.
-        
-        Creates a new entity or updates an existing one based on CID hash.
+
+        Creates a new entity or updates an existing one based on locator hash.
         
         Args:
             context: Pipeline context with video metadata
@@ -698,11 +726,11 @@ class ArkivSyncClient:
         # Convert payload to bytes
         payload_bytes = json.dumps(payload).encode("utf-8")
         
-        # Get CID hash for duplicate detection
-        cid_hash = attributes.get("cid_hash", "")
-        
+        # Get sha256_ct for duplicate detection
+        sha256_ct = attributes.get("sha256_ct", "")
+
         # Check for existing entity
-        existing = self.find_existing_entity(cid_hash)
+        existing = self.find_existing_entity(sha256_ct)
         
         try:
             from arkiv.types import Attributes, EntityKey

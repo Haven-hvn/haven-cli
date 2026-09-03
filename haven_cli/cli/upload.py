@@ -18,11 +18,11 @@ app = typer.Typer(
 Creates Arkiv entities with standardized data format compatible with
 haven-player (Gold Standard) and haven-dapp.
 
-Key Fields:
-  • filecoin_root_cid - CID on Filecoin (private payload)
-  • is_encrypted - Encryption status
-  • cid_hash - SHA256 hash for duplicate detection
-  • vlm_json_cid - VLM analysis CID
+Key Fields (ARKIV_FORMAT 2.0.0):
+  • fcid / piece - Filecoin locator (clear / gated records, payload)
+  • gate - Haven-AOL content gate JSON (payload; gate presence = gated)
+  • sha256_ct - locator hash for duplicate detection (attribute)
+  • vlm - VLM analysis CID (payload)
 
 Haven-AOL gated access (when --encrypt is enabled):
   • --evm-chain selects the canister-supported EVM chain
@@ -179,15 +179,14 @@ def upload(
     - --access-pattern (or pipeline.access_pattern)
     - pattern-specific gate fields (see --help option descriptions)
     
-    The created Arkiv entity uses the Haven Cross-Application Data Format v1.0.0,
-    ensuring compatibility with haven-player (Gold Standard) and haven-dapp.
-    
+    The created Arkiv entity uses the Haven Cross-Application Data Format v2.0.0,
+    ensuring compatibility with haven-dapp and haven-mobile.
+
     Key entity fields:
-    • filecoin_root_cid - CID of video on Filecoin (private payload)
-    • is_encrypted - Encryption status (boolean in payload, 0/1 in attributes)
-    • cid_hash - SHA256 hash for duplicate detection (payload & attributes)
-    • vlm_json_cid - CID of VLM analysis JSON (private payload)
-    • encryption_metadata - encryption metadata (private payload)
+    • fcid / piece - Filecoin locator (clear / gated records, payload)
+    • gate - Haven-AOL content gate JSON (payload)
+    • sha256_ct - locator hash for duplicate detection (attribute)
+    • vlm - CID of VLM analysis JSON (payload)
     
     Example:
         haven upload file video.mp4

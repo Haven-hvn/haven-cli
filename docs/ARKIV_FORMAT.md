@@ -56,9 +56,11 @@ From `@arkiv-network/sdk` `src/query/expression.ts` + `src/attr/types.ts` (devel
   `$payload`. Recency/ordering uses `$createdAt` — never a custom timestamp attribute.
 
 > **Wire-vocabulary note.** Older Haven docs describe `valueType: 1=ATTR_UINT, 2=ATTR_STRING,
-> 3=ATTR_ENTITY_KEY`. The current SDK wire uses `bool=1, i32=2, u64=3, u256=4, dec=5,
-> bytes32=6, str=8, addr=9, key=10`. v2.0.0 specifies SDK tags. The CLI Python lib's
-> tag mapping must be verified against the target chain at implementation time.
+> 3=ATTR_ENTITY_KEY`. The current JS SDK wire uses `bool=1, i32=2, u64=3, u256=4, dec=5,
+> bytes32=6, str=8, addr=9, key=10`. v2.0.0 specifies JS SDK tags. The CLI's Python
+> SDK (`arkiv-sdk 1.0.0b2`) expresses only `str`/`int` annotations, so the CLI writer
+> realizes `gate_token`/`sha256_ct` as lowercase-hex `str` and all gate/enum facts as
+> `int` — see `CHAIN_VARIANT_TO_EIP155` / `MIME_TO_ENUM` in `arkiv_sync.py`.
 
 ## Taxonomy (`grp` — the single group key)
 
@@ -93,7 +95,7 @@ All keys lowercase snake_case. Types are SDK tags (`str`, `i32`, `addr`, `bytes3
 | `gate_chain` | `i32` | always | EIP chain id (`1, 10, 56, 137, 42161, 8453, …`) — replaces `EthMainnet`-style strings |
 | `gate_threshold` | `i32` | always | threshold filter (must fit i32; revisit as `u256` if raw-unit thresholds outgrow it) |
 | `gate_epoch` | `i32` | v3 only | epoch corpus grouping |
-| `sha256_ct` | `bytes32` | always | sha256 of **ciphertext bytes**; dedup lookup (`find_existing_entity`) + restore locator. Renamed from `cid_hash` (which never hashed a CID). Attrs-side only — never mirrored in payload |
+| `sha256_ct` | `bytes32` | always | sha256 hex digest of the record's root locator string (dedup lookup + restore key; the locator itself lives in payload `piece`/`fcid`). Renamed from `cid_hash`. Attrs-side only — never mirrored in payload |
 | `mime` | `i32` | always | MIME enum (see table); viewer dispatch without fetching payload |
 | `dur_s` | `i32` | when known, whole seconds (`0`/omit = unknown) | duration display/sort without payload |
 
