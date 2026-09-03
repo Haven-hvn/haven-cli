@@ -366,16 +366,20 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
     #
     # ``is_gate_metadata_any`` accepts both v1 and v3 records — the shared
     # attribute names (chain / token / threshold) exist on both. For v3
-    # records we additionally publish ``gate_epoch`` and ``gate_version``
+    # records we additionally publish ``gate_epoch`` and ``gate_type``
     # so the dapp/indexer can filter by corpus without JSON-parsing the
     # encryption_metadata blob (Bug 7).
+    #
+    # ``gate_type`` (ATTR_UINT 1|3|4 = per-file/per-epoch/per-marketcap)
+    # replaces ``gate_version`` with no fallback. ``gate_type`` ==
+    # gate["version"] numerically.
     if context.encryption_metadata:
         gate = context.encryption_metadata.gate
         if is_gate_metadata_any(gate):
             attributes["gate_chain"] = gate["chain"]
             attributes["gate_token"] = gate["tokenAddress"]
             attributes["gate_threshold"] = int(gate.get("threshold", "1"))
-            attributes["gate_version"] = int(gate.get("version", 1))
+            attributes["gate_type"] = int(gate.get("version", 1))
             if gate.get("version") == GATE_METADATA_VERSION_V3:
                 attributes["gate_epoch"] = int(gate["epoch"])
 
@@ -433,9 +437,10 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
             # Bug 7: expose the v3 corpus epoch as a top-level payload field
             # so consumers (dapp, indexer) don't have to JSON-parse the
             # opaque ``encryption_metadata`` string just to filter by
-            # ``(chain, token, threshold, epoch)`` corpus.
+            # ``(chain, token, threshold, epoch)`` corpus. ``gate_type``
+            # (1|3|4) replaces ``gate_version`` with no fallback.
             if content_gate.get("version") == GATE_METADATA_VERSION_V3:
-                payload["gate_version"] = GATE_METADATA_VERSION_V3
+                payload["gate_type"] = GATE_METADATA_VERSION_V3
                 payload["epoch"] = int(content_gate["epoch"])
 
             if context.video_metadata and context.video_metadata.mime_type:

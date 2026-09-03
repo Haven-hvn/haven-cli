@@ -99,6 +99,18 @@ Both `encryption_metadata` and `cid_encryption_metadata` use the same gate objec
 }
 ```
 
+### Gate type marker (`gate_type`: 1/3/4)
+
+Arkiv entities carry a minimal numeric gate-type marker so indexers can filter without JSON-parsing `encryption_metadata`:
+
+| `gate_type` | Meaning | Gate JSON `version` | Extra Arkiv fields |
+|---|---|---|---|
+| `1` | per-file (v1, unique key per CID) | `1` | — (v1 emits no payload mirror) |
+| `3` | per-epoch (v3 corpus, one key per epoch) | `3` | attributes `gate_epoch` + payload `gate_type:3`, `epoch` |
+| `4` | per-marketcap (v4 drip chunk) | `4` | attributes `market_cap_target_usd`, `drip_index/total/id`, `oracle_address` |
+
+Rules: writers emit ONLY `gate_type` (`ATTR_UINT`). Readers read ONLY `gate_type` — no `gate_version` fallback. `gate_type == gate.version` numerically. Queries: `gate_type = 4` (numeric).
+
 Optional payload fields (not inside gate JSON):
 
 | Field | Description |
@@ -221,6 +233,7 @@ The haven-dapp reads entities created by both haven-cli and haven-player:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-02 | Initial standardized format |
+| 1.1.0 | 2026-09 | `gate_version` → `gate_type` (numeric `1`/`3`/`4` = per-file/per-epoch/per-marketcap; `ATTR_UINT` to save bytes; no backcompat) |
 
 ## Related Documentation
 

@@ -441,7 +441,7 @@ class TestBug4And5EpochKeyReuseAcrossFiles:
 
 
 class TestBug7TopLevelEpochInPayload:
-    """``_build_payload`` publishes ``epoch`` + ``gate_version`` at the top
+    """``_build_payload`` publishes ``epoch`` + ``gate_type`` at the top
     level of the entity payload when the content gate is v3, so consumers
     can filter by corpus without JSON-parsing the ``encryption_metadata``
     string.
@@ -514,10 +514,10 @@ class TestBug7TopLevelEpochInPayload:
 
         # Bug 7: top-level fields on payload.
         assert payload["epoch"] == 17
-        assert payload["gate_version"] == GATE_METADATA_VERSION_V3
+        assert payload["gate_type"] == GATE_METADATA_VERSION_V3
         # And attribute-side exposure so on-chain queries can filter.
         assert attributes["gate_epoch"] == 17
-        assert attributes["gate_version"] == GATE_METADATA_VERSION_V3
+        assert attributes["gate_type"] == GATE_METADATA_VERSION_V3
         # The full v3 encryption_metadata blob is also still there for
         # decryptors that want it whole.
         enc_meta = json.loads(payload["encryption_metadata"])
@@ -532,12 +532,12 @@ class TestBug7TopLevelEpochInPayload:
         attributes = _build_attributes(ctx)
 
         assert "epoch" not in payload
-        # gate_version isn't emitted on payload for v1 (byte-identity with
+        # gate_type isn't emitted on payload for v1 (byte-identity with
         # pre-fix behaviour).
-        assert "gate_version" not in payload
-        # But the attribute-side ``gate_version`` IS emitted for both v1
+        assert "gate_type" not in payload
+        # But the attribute-side ``gate_type`` IS emitted for both v1
         # and v3 (that's an additive extension, not a semantic change).
-        assert attributes["gate_version"] == 1
+        assert attributes["gate_type"] == 1
         assert "gate_epoch" not in attributes
 
 
