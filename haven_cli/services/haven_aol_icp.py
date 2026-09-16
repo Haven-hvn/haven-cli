@@ -38,7 +38,7 @@ class _HavenAolIdentity(Protocol):
     def from_pem(cls, pem: str) -> Self: ...
 
 
-HAVEN_AOL_CANISTER_ID = "dciac-uaaaa-aaaad-qlzuq-cai"
+HAVEN_AOL_CANISTER_ID = os.getenv("HAVEN_AOL_CANISTER_ID", "gny6k-fqaaa-aaaab-ag3ra-cai")
 HAVEN_AOL_MAX_PER_CALL = 20  # Max cidHashes per batchAttestHolding call (1 page of haven-dapp feed)
 # v2: batchAttestHolding now signs ONE Merkle root over all leaves (RFC 6962 domain separation)
 # and returns per-leaf proofs in submission order. See docs/ipld-batch-attestation-proposal-v2.md.
