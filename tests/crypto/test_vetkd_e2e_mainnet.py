@@ -9,7 +9,7 @@ Flow:
   2. Generate an ephemeral EVM private key (eth_account)
   3. Generate a transport keypair locally (vetkd_py)
   4. Construct a valid EIP-712 signed requestDecryptionKey payload
-  5. Call the mainnet canister (dciac-uaaaa-aaaad-qlzuq-cai on https://icp-api.io)
+  5. Call the mainnet canister (gny6k-fqaaa-aaaab-ag3ra-cai on https://icp-api.io)
   6. Receive the EncryptedVetKey blob
   7. Run the full decrypt_and_verify -> ibe_decrypt -> plaintext recovery pipeline
 
@@ -35,7 +35,7 @@ from haven_cli.services.haven_aol_icp import candid_blob_to_bytes, candid_return
 # ---------------------------------------------------------------------------
 # Canister configuration (mainnet)
 # ---------------------------------------------------------------------------
-MAINNET_CANISTER_ID = "dciac-uaaaa-aaaad-qlzuq-cai"
+MAINNET_CANISTER_ID = "gny6k-fqaaa-aaaab-ag3ra-cai"
 MAINNET_HOST = "https://icp-api.io"
 
 # EIP-712 domain parameters for Haven-AOL on Ethereum mainnet

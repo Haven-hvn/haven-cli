@@ -24,7 +24,7 @@ from haven_cli.services import haven_aol_icp as haven_aol_icp_module
 
 
 def test_haven_aol_canister_is_fixed() -> None:
-    assert HAVEN_AOL_CANISTER_ID == "dciac-uaaaa-aaaad-qlzuq-cai"
+    assert HAVEN_AOL_CANISTER_ID == "gny6k-fqaaa-aaaab-ag3ra-cai"
 
 
 def test_candid_blob_to_bytes_from_bytes() -> None:
