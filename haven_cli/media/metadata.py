@@ -51,6 +51,12 @@ VIDEO_EXTENSIONS = frozenset({
     ".ts", ".mts", ".m2ts", ".avchd",
 })
 
+#: Audio extensions accepted by ingest. Frame-based pHash does not apply —
+#: ingest skips it and relies on byte-exact sha256 dedup.
+AUDIO_EXTENSIONS = frozenset({
+    ".mp3", ".wav", ".flac", ".m4a", ".aac", ".opus",
+})
+
 
 def is_video_file(path: Path) -> bool:
     """Check if a file path has a known video extension.
@@ -63,6 +69,24 @@ def is_video_file(path: Path) -> bool:
     """
     ext = path.suffix.lower()
     return ext in VIDEO_EXTENSIONS
+
+
+def is_audio_file(path: Path) -> bool:
+    """Check if a file path has a known audio extension.
+
+    Args:
+        path: Path to check
+
+    Returns:
+        True if the file extension is a known audio format
+    """
+    ext = path.suffix.lower()
+    return ext in AUDIO_EXTENSIONS
+
+
+def is_supported_media_file(path: Path) -> bool:
+    """Check if a file path has a known video or audio extension."""
+    return is_video_file(path) or is_audio_file(path)
 
 
 # Cache for ffprobe results to avoid re-extraction

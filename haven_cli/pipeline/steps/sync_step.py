@@ -264,9 +264,14 @@ class SyncStep(ConditionalStep):
         
         # Get values from config if available
         private_key = self._config.get("arkiv_private_key")
-        
-        # Use config value, network default, or environment variable
-        rpc_url = self._config.get("arkiv_rpc_url") or network_config.arkiv_rpc_url
+
+        # Explicit ARKIV_RPC_URL wins: build_arkiv_config documents env as an
+        # override, but passing the network default explicitly would shadow it.
+        rpc_url = (
+            os.environ.get("ARKIV_RPC_URL")
+            or self._config.get("arkiv_rpc_url")
+            or network_config.arkiv_rpc_url
+        )
         
         enabled = self._config.get("arkiv_sync_enabled")
         expires_in = self._config.get("arkiv_expiration_seconds")

@@ -26,8 +26,8 @@ from haven_cli.services.piece_cid import require_piece_cid
 from haven_cli.services.evm_utils import (
     InsufficientGasError,
     handle_evm_gas_error,
-    is_legacy_kaolin_arkiv_rpc_url,
     is_non_golem_base_transaction_error,
+    is_sunset_arkiv_rpc_url,
     validate_evm_config,
 )
 
@@ -205,10 +205,11 @@ def build_arkiv_config(
     final_enabled = bool(final_private_key) and sync_enabled
     
     # Validate EVM config and log wallet info when enabled
-    if is_legacy_kaolin_arkiv_rpc_url(final_rpc_url):
+    if is_sunset_arkiv_rpc_url(final_rpc_url):
         logger.warning(
-            "⚠️  Arkiv RPC URL targets legacy Kaolin testnet (%s). "
-            "Kaolin was sunset; use Braga: https://braga.hoodi.arkiv.network/rpc",
+            "⚠️  Arkiv RPC URL targets a sunset testnet (%s). "
+            "Kaolin and Braga were sunset; use Tiramisu: "
+            "https://rpc.tiramisu.db-chain.testnet.arkiv.network",
             final_rpc_url,
         )
 
@@ -420,6 +421,12 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
         attributes["sha256_ct"] = hashlib.sha256(
             context.upload_result.root_cid.encode()
         ).hexdigest()
+
+    # Retrieval locator: readers (dapp parse + mobile pieceRef) build their
+    # download reference solely from `piece`. An entity without it lists but
+    # cannot open (mobile NO_PIECE_REF). Payload `fcid` alone is not enough.
+    if context.upload_result and context.upload_result.piece_cid:
+        attributes["piece"] = context.upload_result.piece_cid
 
     # ── Viewer dispatch + display/sort without payload fetch ──
     mime_enum = _mime_to_enum(video_metadata.mime_type if video_metadata else None)

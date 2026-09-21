@@ -169,11 +169,36 @@ class TestLegacyKaolinRpcUrl:
             "https://kaolin.hoodi.arkiv.network/rpc"
         ) is True
 
-    def test_braga_not_legacy(self) -> None:
+    def test_braga_not_kaolin_legacy(self) -> None:
         from haven_cli.services.evm_utils import is_legacy_kaolin_arkiv_rpc_url
 
         assert is_legacy_kaolin_arkiv_rpc_url(
             "https://braga.hoodi.arkiv.network/rpc"
+        ) is False
+
+
+class TestSunsetArkivRpcUrl:
+    """Tests for is_sunset_arkiv_rpc_url (Kaolin and Braga are both dead)."""
+
+    def test_detects_kaolin_host(self) -> None:
+        from haven_cli.services.evm_utils import is_sunset_arkiv_rpc_url
+
+        assert is_sunset_arkiv_rpc_url(
+            "https://kaolin.hoodi.arkiv.network/rpc"
+        ) is True
+
+    def test_detects_braga_host(self) -> None:
+        from haven_cli.services.evm_utils import is_sunset_arkiv_rpc_url
+
+        assert is_sunset_arkiv_rpc_url(
+            "https://braga.hoodi.arkiv.network/rpc"
+        ) is True
+
+    def test_tiramisu_not_sunset(self) -> None:
+        from haven_cli.services.evm_utils import is_sunset_arkiv_rpc_url
+
+        assert is_sunset_arkiv_rpc_url(
+            "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
         ) is False
 
 

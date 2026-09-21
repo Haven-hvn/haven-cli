@@ -31,7 +31,7 @@ network_mode = "testnet"
 
 # Optional: Override specific endpoints
 # filecoin_rpc_override = "https://api.calibration.node.glif.io/rpc/v1"
-# arkiv_rpc_override = "https://braga.hoodi.arkiv.network/rpc"
+# arkiv_rpc_override = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
 
 [pipeline]
 vlm_enabled = true

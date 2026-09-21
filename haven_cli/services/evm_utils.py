@@ -367,6 +367,12 @@ def is_legacy_kaolin_arkiv_rpc_url(rpc_url: str) -> bool:
     return "kaolin" in rpc_url.lower()
 
 
+def is_sunset_arkiv_rpc_url(rpc_url: str) -> bool:
+    """Return True if the RPC URL targets a sunset Arkiv testnet (Kaolin, Braga)."""
+    lowered = rpc_url.lower()
+    return "kaolin" in lowered or "braga" in lowered
+
+
 def is_insufficient_funds_error(error: Exception) -> bool:
     """
     Check if an error indicates insufficient funds for gas.

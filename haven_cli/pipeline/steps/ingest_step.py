@@ -26,10 +26,10 @@ from haven_cli.database.models import Download, TorrentDownload, Video
 
 logger = logging.getLogger(__name__)
 from haven_cli.media import detect_mime_type, extract_video_metadata
-from haven_cli.media.metadata import is_video_file
+from haven_cli.media.metadata import is_audio_file, is_supported_media_file
 from haven_cli.media.exceptions import VideoMetadataError
 from haven_cli.media.phash import calculate_video_phash, VideoHashError
-from haven_cli.pipeline.context import PipelineContext, VideoMetadata
+from haven_cli.pipeline.context import PipelineContext, UploadResult, VideoMetadata
 from haven_cli.pipeline.events import Event, EventType
 from haven_cli.pipeline.results import StepError, StepResult
 from haven_cli.pipeline.step import PipelineStep
@@ -92,22 +92,24 @@ class IngestStep(PipelineStep):
                 ),
             )
         
-        # Check if file is a supported video format before invoking ffprobe
-        if not is_video_file(video_path):
-            print(f"Skipping non-video file: {video_path}")
+        # Check if file is a supported media format before invoking ffprobe
+        if not is_supported_media_file(video_path):
+            print(f"Skipping unsupported file: {video_path}")
             return StepResult.skip(
                 self.name,
-                reason=f"File is not a supported video format: {video_path}",
+                reason=f"File is not a supported media format: {video_path}",
             )
-        
+        is_audio = is_audio_file(video_path)
+
         try:
             # Extract basic file metadata
             file_size = video_path.stat().st_size
             mime_type = detect_mime_type(video_path)
-            
-            # Calculate perceptual hash
+
+            # Calculate perceptual hash (video only — audio has no frames, so
+            # it skips pHash and relies on byte-exact sha256 dedup below).
             # TODO: Implement actual pHash calculation
-            phash = await self._calculate_phash(video_path)
+            phash = "" if is_audio else await self._calculate_phash(video_path)
             
             # Extract video technical metadata using ffprobe
             try:
@@ -120,8 +122,9 @@ class IngestStep(PipelineStep):
                 tech_metadata = None
             
             # Check for pHash near-duplicates (soft signal — only fails the
-            # pipeline when ``duplicate_action == "error"``).
-            is_duplicate = await self._check_duplicate(phash)
+            # pipeline when ``duplicate_action == "error"``). Audio has no
+            # pHash; byte-exact sha256 dedup below covers it.
+            is_duplicate = False if is_audio else await self._check_duplicate(phash)
             
             if is_duplicate:
                 # Store duplicate status in context
@@ -212,6 +215,35 @@ class IngestStep(PipelineStep):
                     self.name, "dedup_match_arkiv_key", dedup_match.arkiv_entity_key
                 )
                 context.video_id = dedup_match.id
+
+                # Resume hydration: the prior run uploaded but never synced
+                # (skip_sync is False exactly then). Rebuild the context the
+                # downstream steps need from the archived row so sync can
+                # register the entity without re-uploading bytes.
+                if not context.skip_sync and dedup_match.cid:
+                    context.video_metadata = VideoMetadata(
+                        path=str(video_path),
+                        title=dedup_match.title or video_path.stem,
+                        duration=dedup_match.duration or 0.0,
+                        file_size=dedup_match.file_size or 0,
+                        mime_type=dedup_match.mime_type or "",
+                        phash=dedup_match.phash or "",
+                        creator_handle=dedup_match.creator_handle or "",
+                        source_uri=dedup_match.source_uri or "",
+                    )
+                    uploaded_at = (
+                        dedup_match.filecoin_uploaded_at.isoformat()
+                        if dedup_match.filecoin_uploaded_at
+                        else None
+                    )
+                    context.upload_result = UploadResult(
+                        video_path=str(video_path),
+                        root_cid=dedup_match.cid,
+                        piece_cid=dedup_match.piece_cid or "",
+                        filecoin_data_set_id=dedup_match.filecoin_data_set_id,
+                        filecoin_uploaded_at=uploaded_at,
+                        vlm_json_cid=dedup_match.vlm_json_cid,
+                    )
 
                 logger.info(
                     "Tier 1 pre-upload dedup hit: original_hash=%s… already "

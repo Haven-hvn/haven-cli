@@ -368,7 +368,7 @@ import json
 import base64
 
 # Create client
-provider = ProviderBuilder().custom("https://braga.hoodi.arkiv.network/rpc").build()
+provider = ProviderBuilder().custom("https://rpc.tiramisu.db-chain.testnet.arkiv.network").build()
 account = NamedAccount.from_private_key("my-account", "0x...")
 client = Arkiv(provider=provider, account=account)
 

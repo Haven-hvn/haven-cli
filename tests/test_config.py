@@ -113,7 +113,7 @@ class TestBlockchainConfigNetwork:
             filecoin_network_mode="mainnet",
             arkiv_network_mode="testnet",
         )
-        assert "hoodi" in bc.get_arkiv_rpc_url() or "braga" in bc.get_arkiv_rpc_url()
+        assert "tiramisu" in bc.get_arkiv_rpc_url()
 
     def test_is_mainnet_follows_filecoin_effective_mode(self) -> None:
         bc = BlockchainConfig(
@@ -400,6 +400,20 @@ class TestConfigValidation:
         ]
         assert len(kaolin_warnings) == 1
         assert kaolin_warnings[0].severity == "warning"
+
+    def test_validate_braga_arkiv_rpc_warning(self) -> None:
+        """Warn when Arkiv sync uses dead Braga RPC."""
+        config = HavenConfig()
+        config.pipeline.sync_enabled = True
+        config.blockchain.arkiv_rpc_override = "https://braga.hoodi.arkiv.network/rpc"
+        errors = validate_config(config)
+
+        braga_warnings = [
+            e for e in errors
+            if e.field == "blockchain.arkiv_rpc_override" and "Braga" in e.message
+        ]
+        assert len(braga_warnings) == 1
+        assert braga_warnings[0].severity == "warning"
     
     def test_validate_missing_api_key_warning(self):
         """Test validation warns about missing API key when multiplexer disabled."""

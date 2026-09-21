@@ -23,6 +23,9 @@ from haven_cli.media.metadata import (
     extract_video_duration,
     extract_video_metadata,
     get_metadata_cache_info,
+    is_audio_file,
+    is_supported_media_file,
+    is_video_file,
 )
 from haven_cli.media.phash import (
     VideoHashError,
@@ -53,6 +56,9 @@ __all__ = [
     "detect_mime_type",
     "clear_metadata_cache",
     "get_metadata_cache_info",
+    "is_audio_file",
+    "is_supported_media_file",
+    "is_video_file",
     # Thumbnail
     "generate_thumbnail",
     "generate_thumbnails_at_intervals",

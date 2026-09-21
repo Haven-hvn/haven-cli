@@ -37,7 +37,7 @@ dependencies = [
     "aiofiles==25.1.0",
     "httpx==0.28.1",
     "Pillow==12.2.0",
-	 "scipy==1.18.0",
+	 "scipy==1.17.1",
     "ImageHash==4.3.2",
     "SQLAlchemy==2.0.51",
     "fastapi==0.138.0",

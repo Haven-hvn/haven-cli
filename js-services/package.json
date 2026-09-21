@@ -1,0 +1,20 @@
+{
+  "name": "js-services",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@filoz/synapse-core": "^0.7.0",
+    "@filoz/synapse-sdk": "^1.0.1",
+    "ethers": "^6.17.0",
+    "filecoin-pin": "^1.0.1",
+    "multiformats": "^14.0.0",
+    "viem": "^2.53.1"
+  }
+}

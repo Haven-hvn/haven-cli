@@ -887,9 +887,22 @@ class SynapseWrapperImpl implements SynapseWrapper {
         });
         
         // Execute upload with race against timeout
+        // Provider pinning (operator override): HAVEN_SYNAPSE_COPIES=1 plus
+        // HAVEN_SYNAPSE_PROVIDER_IDS=9 restricts the upload to a single known-good
+        // SP. Unset = SDK default selection (multi-copy). Needed because some
+        // calibration SPs accept commits but never advertise on IPNI, which fails
+        // filecoin-pin's post-upload verification for the whole batch.
+        const pinnedCopies = Number(Deno.env.get('HAVEN_SYNAPSE_COPIES') ?? '');
+        const pinnedProviders = (Deno.env.get('HAVEN_SYNAPSE_PROVIDER_IDS') ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => /^\d+$/.test(s))
+          .map((s) => BigInt(s));
         const uploadPromise = executeUpload(synapse, stream, rootCid, {
           logger: this._logger,
           contextId: filePath.split('/').pop() || 'upload',
+          ...(Number.isFinite(pinnedCopies) && pinnedCopies > 0 ? { copies: pinnedCopies } : {}),
+          ...(pinnedProviders.length > 0 ? { providerIds: pinnedProviders } : {}),
           onProgress: (event: { type: string; data?: Record<string, unknown> }) => {
             // filecoin-pin 0.21+ UploadProgressEvents (legacy on* names kept for safety)
             //
