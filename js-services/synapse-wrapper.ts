@@ -43,6 +43,11 @@ import {
 import { CID } from 'multiformats/cid';
 
 import { carFileByteLength, openCarReadableStream, streamHttpResponseToFile } from './car_stream.ts';
+import {
+  buildSingleBlockCar,
+  removeSingleBlockCar,
+  shouldPackSingleBlock,
+} from './single-block-car.ts';
 
 // Import pino Logger type
 import type { Logger } from 'npm:pino@^10.0.0';
@@ -571,6 +576,45 @@ class SynapseWrapperImpl implements SynapseWrapper {
     });
   }
 
+  /**
+   * Build a CAR for *filePath*, choosing the packing by size.
+   *
+   * Files at or under the single-block threshold pack as one raw block (no
+   * UnixFS chunking, so the CAR is always a single block); larger files use
+   * the standard chunked UnixFS builder. The result's `dispose` deletes the
+   * temp CAR (or runs the builder cleanup) — callers must always call it.
+   */
+  private async buildCarSmart(
+    filePath: string,
+    createCarOptions: CreateCarOptions
+  ): Promise<{ carPath: string; rootCid: string; dispose: () => Promise<void> }> {
+    if (await shouldPackSingleBlock(filePath)) {
+      console.error(`[synapse-wrapper] single-block CAR (raw, no chunking): ${filePath}`);
+      const built = await buildSingleBlockCar(filePath);
+      return {
+        carPath: built.carPath,
+        rootCid: built.rootCid,
+        dispose: () => removeSingleBlockCar(built.carPath),
+      };
+    }
+    const unixfsCarBuilder = createUnixfsCarBuilder();
+    const carBuildResult: CarBuildResult = await unixfsCarBuilder.buildCar(
+      filePath,
+      createCarOptions
+    );
+    return {
+      carPath: carBuildResult.carPath,
+      rootCid: carBuildResult.rootCid.toString(),
+      dispose: async () => {
+        try {
+          await unixfsCarBuilder.cleanup(carBuildResult.carPath, this._logger);
+        } catch {
+          // Ignore cleanup errors
+        }
+      },
+    };
+  }
+
   async upload(
     params: Record<string, unknown>,
     onProgress?: ProgressCallback
@@ -649,17 +693,13 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 10,
       });
 
-      // Create CAR file
-      const unixfsCarBuilder = createUnixfsCarBuilder();
+      // Create CAR file (single-block for small files, chunked UnixFS above)
       const createCarOptions: CreateCarOptions = {
         logger: this._logger,
-        bare: true, // Create bare file CID without directory wrapper
       };
 
-      const carBuildResult: CarBuildResult = await unixfsCarBuilder.buildCar(
-        filePath,
-        createCarOptions
-      );
+      const carBuild = await this.buildCarSmart(filePath, createCarOptions);
+      const carBuildResult = { carPath: carBuild.carPath, rootCid: carBuild.rootCid };
 
       onProgress?.({
         bytesUploaded: 0,
@@ -725,11 +765,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
       );
 
       // Clean up CAR file
-      try {
-        await unixfsCarBuilder.cleanup(carBuildResult.carPath, this._logger);
-      } catch {
-        // Ignore cleanup errors
-      }
+      await carBuild.dispose();
 
       onProgress?.({
         bytesUploaded: carFileSize,
@@ -1140,26 +1176,17 @@ class SynapseWrapperImpl implements SynapseWrapper {
     }
 
     // Create CAR file to get the CID
-    const unixfsCarBuilder = createUnixfsCarBuilder();
     const createCarOptions: CreateCarOptions = {
       logger: this._logger,
-      bare: true,
     };
 
     try {
-      const carBuildResult: CarBuildResult = await unixfsCarBuilder.buildCar(
-        filePath,
-        createCarOptions
-      );
+      const carBuild = await this.buildCarSmart(filePath, createCarOptions);
 
       // Clean up the CAR file immediately (we just wanted the CID)
-      try {
-        await unixfsCarBuilder.cleanup(carBuildResult.carPath, this._logger);
-      } catch {
-        // Ignore cleanup errors
-      }
+      await carBuild.dispose();
 
-      return { cid: carBuildResult.rootCid.toString() };
+      return { cid: carBuild.rootCid };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to calculate CID: ${errorMessage}`);
@@ -1320,29 +1347,21 @@ class SynapseWrapperImpl implements SynapseWrapper {
     }
 
     // Create CAR file
-    const unixfsCarBuilder = createUnixfsCarBuilder();
     const createCarOptions: CreateCarOptions = {
       logger: this._logger,
-      bare: true,
     };
 
     try {
-      const carBuildResult: CarBuildResult = await unixfsCarBuilder.buildCar(
-        filePath,
-        createCarOptions
-      );
+      const carBuild = await this.buildCarSmart(filePath, createCarOptions);
+      const carBuildResult = { carPath: carBuild.carPath, rootCid: carBuild.rootCid };
 
       // If outputPath is specified, copy the CAR file there
       if (outputPath && outputPath !== carBuildResult.carPath) {
         await Deno.copyFile(carBuildResult.carPath, outputPath);
         const carSize = await carFileByteLength(outputPath);
-        
+
         // Clean up the original CAR file
-        try {
-          await unixfsCarBuilder.cleanup(carBuildResult.carPath, this._logger);
-        } catch {
-          // Ignore cleanup errors
-        }
+        await carBuild.dispose();
 
         return {
           carPath: outputPath,
