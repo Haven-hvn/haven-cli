@@ -422,11 +422,9 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
             context.upload_result.root_cid.encode()
         ).hexdigest()
 
-    # Retrieval locator: readers (dapp parse + mobile pieceRef) build their
-    # download reference solely from `piece`. An entity without it lists but
-    # cannot open (mobile NO_PIECE_REF). Payload `fcid` alone is not enough.
-    if context.upload_result and context.upload_result.piece_cid:
-        attributes["piece"] = context.upload_result.piece_cid
+    # Retrieval locator lives in the payload (`piece` for gated records,
+    # `fcid` for clear ones) — readers merge payload over attributes, so no
+    # attributes copy (ARKIV_FORMAT 2.0.0: nothing indexed beyond sha256_ct).
 
     # ── Viewer dispatch + display/sort without payload fetch ──
     mime_enum = _mime_to_enum(video_metadata.mime_type if video_metadata else None)
@@ -670,34 +668,38 @@ class ArkivSyncClient:
         if not self.config.enabled:
             return None
 
+        # NOTE: the bundled `arkiv` SDK (0.3.0) speaks the pre-Tiramisu query
+        # dialect (`includeData`), which the live chain rejects. Query
+        # `arkiv_query` directly in the current dialect until the SDK catches
+        # up: `attr = str('…')`, options `{select, limit}`.
         try:
-            from arkiv.types import KEY, ATTRIBUTES, PAYLOAD, CONTENT_TYPE, OWNER, CREATED_AT, QueryOptions
+            import requests
 
-            client = self._get_client()
-
-            # Build query for sha256_ct attribute
-            query = f'sha256_ct = "{sha256_ct}"'
-            
-            # Select only necessary fields
-            required_fields = KEY | ATTRIBUTES | PAYLOAD | CONTENT_TYPE | OWNER | CREATED_AT
-            query_options = QueryOptions(
-                attributes=required_fields,
-                max_results_per_page=10,
+            resp = requests.post(
+                self.config.rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "arkiv_query",
+                    "params": [
+                        f"sha256_ct = str('{sha256_ct}')",
+                        {"select": {"key": True}, "limit": 10},
+                    ],
+                },
+                timeout=30,
             )
-            
-            # Query entities
-            entities = list(client.arkiv.query_entities(query=query, options=query_options))
-            
-            if entities:
-                entity = entities[0]  # Take first match
+            resp.raise_for_status()
+            data = resp.json().get("result", {}).get("data", [])
+
+            if data:
                 logger.info("Found existing Arkiv entity for sha256_ct: %s", sha256_ct)
                 return {
-                    "entity_key": str(entity.key) if hasattr(entity, "key") else None,
-                    "entity": entity,
+                    "entity_key": data[0].get("key"),
+                    "entity": data[0],
                 }
-            
+
             return None
-            
+
         except Exception as exc:
             logger.warning("Failed to find existing Arkiv entity: %s", exc)
             return None
