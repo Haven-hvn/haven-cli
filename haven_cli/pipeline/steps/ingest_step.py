@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 from haven_cli.media import detect_mime_type, extract_video_metadata
 from haven_cli.media.metadata import is_audio_file, is_supported_media_file
 from haven_cli.media.exceptions import VideoMetadataError
+from haven_cli.media.filetype import POINTER_KINDS, detect_mime, media_kind, mime_matches
 from haven_cli.media.phash import calculate_video_phash, VideoHashError
 from haven_cli.pipeline.context import PipelineContext, UploadResult, VideoMetadata
 from haven_cli.pipeline.events import Event, EventType
@@ -92,39 +93,54 @@ class IngestStep(PipelineStep):
                 ),
             )
         
-        # Check if file is a supported media format before invoking ffprobe
+        # Check if file is a supported media format before invoking ffprobe.
+        # Files that are not audio/video may still be admitted through the
+        # generic-file path when the caller opts in (``generic_files_enabled``).
+        generic_kind: Optional[str] = None
+        generic_mime: Optional[str] = None
         if not is_supported_media_file(video_path):
-            print(f"Skipping unsupported file: {video_path}")
-            return StepResult.skip(
-                self.name,
-                reason=f"File is not a supported media format: {video_path}",
-            )
+            admitted = self._admit_generic_file(video_path, context)
+            if isinstance(admitted, str):
+                print(f"Skipping unsupported file: {video_path}")
+                return StepResult.skip(self.name, reason=admitted)
+            generic_mime, generic_kind = admitted
+            context.media_kind = generic_kind
+            context.set_step_data(self.name, "media_kind", generic_kind)
         is_audio = is_audio_file(video_path)
 
         try:
             # Extract basic file metadata
             file_size = video_path.stat().st_size
-            mime_type = detect_mime_type(video_path)
 
-            # Calculate perceptual hash (video only — audio has no frames, so
-            # it skips pHash and relies on byte-exact sha256 dedup below).
-            # TODO: Implement actual pHash calculation
-            phash = "" if is_audio else await self._calculate_phash(video_path)
-            
-            # Extract video technical metadata using ffprobe
-            try:
-                tech_metadata = await extract_video_metadata(video_path)
-                duration = tech_metadata.duration
-            except VideoMetadataError as e:
-                # Log warning but continue with default values
-                print(f"Warning: Failed to extract full metadata: {e}")
+            if generic_kind is not None:
+                # Generic files have no frames or streams: skip ffprobe and
+                # pHash; byte-exact sha256 dedup below still applies.
+                mime_type = generic_mime or "application/octet-stream"
+                phash = ""
                 duration = 0.0
                 tech_metadata = None
-            
-            # Check for pHash near-duplicates (soft signal — only fails the
-            # pipeline when ``duplicate_action == "error"``). Audio has no
-            # pHash; byte-exact sha256 dedup below covers it.
-            is_duplicate = False if is_audio else await self._check_duplicate(phash)
+                is_duplicate = False
+            else:
+                mime_type = detect_mime_type(video_path)
+
+                # Calculate perceptual hash (video only — audio has no frames, so
+                # it skips pHash and relies on byte-exact sha256 dedup below).
+                phash = "" if is_audio else await self._calculate_phash(video_path)
+
+                # Extract video technical metadata using ffprobe
+                try:
+                    tech_metadata = await extract_video_metadata(video_path)
+                    duration = tech_metadata.duration
+                except VideoMetadataError as e:
+                    # Log warning but continue with default values
+                    print(f"Warning: Failed to extract full metadata: {e}")
+                    duration = 0.0
+                    tech_metadata = None
+
+                # Check for pHash near-duplicates (soft signal — only fails the
+                # pipeline when ``duplicate_action == "error"``). Audio has no
+                # pHash; byte-exact sha256 dedup below covers it.
+                is_duplicate = False if is_audio else await self._check_duplicate(phash)
             
             if is_duplicate:
                 # Store duplicate status in context
@@ -350,6 +366,7 @@ class IngestStep(PipelineStep):
                 "duration": duration,
                 "is_duplicate": is_duplicate,
                 "mime_type": mime_type,
+                "media_kind": generic_kind or ("audio" if is_audio else "video"),
                 "container": video_metadata.container,
                 "resolution": f"{video_metadata.width}x{video_metadata.height}",
                 "codec": video_metadata.codec,
@@ -372,6 +389,42 @@ class IngestStep(PipelineStep):
                 StepError.from_exception(e, code="INGEST_ERROR"),
             )
     
+    @staticmethod
+    def _admit_generic_file(
+        path: Path, context: PipelineContext
+    ) -> "tuple[str, str] | str":
+        """Decide whether a non-audio/video file may enter the pipeline.
+
+        Controlled by context options:
+
+        * ``generic_files_enabled`` (bool, default ``False``) — opt in.
+        * ``generic_file_accept`` (list of kinds / MIME globs, default
+          ``["*"]``) — which detected types are admitted.
+        * ``generic_file_reject`` (list, default empty) — types refused even
+          when accepted above.
+
+        ``.torrent``/``.nzb``/magnet files are pointers to content and are
+        always refused here; acquisition layers resolve them first.
+
+        Returns:
+            ``(mime, kind)`` when admitted, otherwise a skip reason.
+        """
+        if not context.options.get("generic_files_enabled", False):
+            return f"File is not a supported media format: {path}"
+        mime = detect_mime(path)
+        kind = media_kind(mime)
+        if kind in POINTER_KINDS:
+            return f"File is a {kind} pointer, not content ({mime}): {path}"
+        accept = context.options.get("generic_file_accept") or ["*"]
+        reject = context.options.get("generic_file_reject") or []
+        if isinstance(accept, str):
+            accept = [accept]
+        if isinstance(reject, str):
+            reject = [reject]
+        if not mime_matches(mime, accept) or mime_matches(mime, reject):
+            return f"File type {mime} ({kind}) is not accepted by generic_file_accept/reject: {path}"
+        return mime, kind
+
     async def _calculate_phash(self, path: Path) -> str:
         """Calculate perceptual hash for the video.
         

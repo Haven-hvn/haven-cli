@@ -83,6 +83,7 @@ For detailed format documentation, see [Arkiv Data Format](docs/ARKIV_FORMAT.md)
 - [User Guide](docs/user-guide.md) - Comprehensive guide to using Haven CLI
 - [Configuration](docs/configuration.md) - Configuration options and environment variables
 - [Plugins](docs/plugins.md) - Plugin system documentation
+- [Prowlarr Plugin](docs/prowlarr.md) - Scheduled archiving from Prowlarr indexers
 - [API Reference](docs/api.md) - Python API documentation
 - [CLI Reference](docs/cli-reference.md) - Command-line reference
 - [Arkiv Data Format](docs/ARKIV_FORMAT.md) - Data format specification

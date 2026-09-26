@@ -80,7 +80,28 @@ class AnalyzeStep(ConditionalStep):
     def default_enabled(self) -> bool:
         """VLM analysis is disabled by default."""
         return False
-    
+
+    async def should_skip(self, context: PipelineContext) -> bool:
+        """Skip when disabled, or when the file is not video/audio.
+
+        VLM analysis samples video frames, so files admitted through the
+        generic-file ingest path (documents, images, archives, ...) never
+        run it regardless of ``vlm_enabled``.
+        """
+        self._generic_skip_reason: Optional[str] = None
+        if context.media_kind is not None:
+            self._generic_skip_reason = (
+                f"VLM analysis applies to video only (file kind: {context.media_kind})"
+            )
+            return True
+        return await super().should_skip(context)
+
+    async def _get_skip_reason(self, context: PipelineContext) -> str:
+        reason = getattr(self, "_generic_skip_reason", None)
+        if reason:
+            return reason
+        return await super()._get_skip_reason(context)
+
     async def process(self, context: PipelineContext) -> StepResult:
         """Process VLM analysis.
         

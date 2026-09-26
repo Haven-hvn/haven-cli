@@ -625,8 +625,36 @@ def _format_toml_inline_array(elements: list[Any]) -> str:
     return "[" + ", ".join(parts) + "]"
 
 
+_BARE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_key(key: str) -> str:
+    """A TOML key, quoted when it is not a valid bare key."""
+    if _BARE_TOML_KEY.match(key):
+        return key
+    return f'"{_toml_escape_basic_string(key)}"'
+
+
+def _toml_inline_value(value: Any) -> str:
+    """Format a value for use inside an inline array or inline table."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float, str)):
+        return _format_toml_inline_array([value])[1:-1]
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_inline_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        inner = ", ".join(f"{_toml_key(str(k))} = {_toml_inline_value(v)}" for k, v in value.items())
+        return "{" + inner + "}" if inner else "{}"
+    raise TypeError(f"Unsupported TOML value type: {type(value).__name__}")
+
+
 def _plugin_setting_scalar_line(key: str, value: Any) -> str:
-    """One ``key = value`` line for a plugin settings table (non-list values)."""
+    """One ``key = value`` line for a plugin settings table.
+
+    Scalars as before; lists and dicts (e.g. inside array-of-tables rows)
+    are written as inline arrays / inline tables so they round-trip.
+    """
     if isinstance(value, str):
         return f'{key} = "{_toml_escape_basic_string(value)}"'
     if isinstance(value, bool):
@@ -635,6 +663,8 @@ def _plugin_setting_scalar_line(key: str, value: Any) -> str:
         return f"{key} = {value}"
     if isinstance(value, float):
         return f"{key} = {repr(value)}"
+    if isinstance(value, (list, tuple, dict)):
+        return f"{_toml_key(key)} = {_toml_inline_value(value)}"
     raise TypeError(
         f"Unsupported plugin setting scalar for {key!r}: {type(value).__name__}"
     )

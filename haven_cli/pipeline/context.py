@@ -201,6 +201,12 @@ class PipelineContext:
     segment_metadata: Optional[SegmentMetadata] = None
     arkiv_entity_key: Optional[str] = None
 
+    # Coarse kind of a *non-audio/video* file admitted by IngestStep's
+    # generic-file path ("document", "image", "text", "archive", "other").
+    # ``None`` means the file took the original audio/video path, so every
+    # video-specific step keeps its existing behavior unchanged.
+    media_kind: Optional[str] = None
+
     # Tier 1 pre-upload deduplication state.
     #
     # ``original_hash`` is set by ``IngestStep`` to ``sha256(file_bytes)``
@@ -254,6 +260,11 @@ class PipelineContext:
         """Get the video filename."""
         return self.source_path.name
     
+    @property
+    def is_generic_file(self) -> bool:
+        """Whether this file was ingested via the generic (non-A/V) path."""
+        return self.media_kind is not None
+
     @property
     def title(self) -> str:
         """Get video title from metadata or derive from filename."""

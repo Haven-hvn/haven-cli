@@ -77,6 +77,34 @@ max_bandwidth_up = 1024
 max_bandwidth_down = 8192
 ```
 
+### Prowlarr Plugin
+
+Runs saved searches against any indexers configured in Prowlarr and archives
+the results. It handles direct files, Prowlarr's download proxy, torrents (the
+built-in client, qBittorrent or Transmission), Usenet (SABnzbd or NZBGet), or
+grabs through Prowlarr's own download clients. Files that are not video
+(documents, images, archives) use the pipeline's generic-file path.
+
+```toml
+[plugins.settings.ProwlarrPlugin]
+base_url = "http://localhost:9696"      # API key from $PROWLARR_API_KEY
+
+[[plugins.settings.ProwlarrPlugin.searches]]
+name = "example"
+query = "search terms"
+indexers = ["My Indexer"]
+max_age_hours = 24
+accept = ["document"]
+```
+
+`haven prowlarr indexers | search | preview | schedule | pending` help set it
+up. See the [Prowlarr plugin guide](prowlarr.md) for every option.
+
+Plugins may also implement `discover_sources_for(options)` to receive a job's
+`--option` values. They may return several files per source through
+`ArchiveResult.metadata["output_paths"]`, and set
+`supports_concurrent_archive = True` to archive a job's sources in parallel.
+
 ### PumpFun Plugin
 
 Records PumpFun live streams.

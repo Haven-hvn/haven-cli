@@ -1,4 +1,4 @@
-# Arkiv Data Format — v2.0.0
+# Arkiv Data Format — v2.1.0
 
 This document describes the data format used by haven-cli when writing to the Arkiv blockchain.
 
@@ -72,12 +72,18 @@ Usenet/Big-8 style dot hierarchy. One `str` attribute replaces `project` + `type
 | `haven.video.full` | haven-cli | Full media record (v1 per-file / v3 per-epoch gates) |
 | `haven.video.drip.series` | haven-dapp | v4 drip series header (shared facts, stored once) |
 | `haven.video.drip.part` | haven-dapp | v4 drip chunk (per-stage facts + crypto material) |
-| `haven.audio.full` | reserved | Future audio uploads |
-| `haven.image.full` | reserved | Future image uploads |
-| `haven.text.full` | reserved | Future text uploads |
+| `haven.audio.full` | reserved | Future audio uploads (audio currently writes `haven.video.full`) |
+| `haven.image.full` | haven-cli | Image files from the generic-file ingest path |
+| `haven.text.full` | haven-cli | Documents (PDF, EPUB, office, …) and text from the generic-file path |
+| `haven.file.full` | haven-cli | Any other file (archives, datasets, unknown types) from the generic-file path |
 | `haven.meta.gate` | reserved | Future shared gate-corpus records |
 
 Query patterns: exact `grp = str('haven.video.full')`; subtree `grp STARTSWITH str('haven.video.')`.
+
+The generic-file groups carry the same attribute set as `haven.video.full` minus
+`dur_s`. A writer may override `grp` per record with pipeline option `arkiv_grp`.
+The override must be a lowercase dot hierarchy of at least two labels and at
+most 128 B, for example `acme.reports.full`; invalid overrides are ignored.
 `STARTSWITH` matches raw bytes — always lowercase ASCII, never trailing-dot the prefix.
 
 ## Attributes schema
@@ -203,6 +209,19 @@ Dropped from payload: `is_encrypted` (infer from `gate` presence), `cid_hash` (a
 
 `0` / omitted = unknown. Extend by appending — never renumber.
 
+### Generic-file payload additions (`haven.image.full`, `haven.text.full`, `haven.file.full`, custom `arkiv_grp`)
+
+Same payload as `haven.video.full`, plus:
+
+| Key | When | Content |
+|---|---|---|
+| `name` | always | Original file name (restores the extension on download) |
+| `ct` | MIME has no enum code | MIME string, e.g. `application/epub+zip`; `mime` attr is then omitted |
+| `x` | writer supplied provenance | Small JSON object (≤ 2 KB serialized). The Prowlarr plugin writes `{idx, prot, pub, cat}` (indexer name, protocol, publish date, category ids) for public indexers only |
+
+`x` may also appear on `haven.video.full` records written from Prowlarr sources.
+Readers must ignore unknown keys inside `x`.
+
 ### Gate JSON (frozen — Haven-AOL layer, NOT changed by 2.0.0)
 
 `version: 1` / `3` (+`epoch`, 2592000 s epochs) / `4` (+`marketCapTarget`, `oracleAddress`).
@@ -217,6 +236,7 @@ Storage cost scales with block-to-live. Defaults:
 | Record class | Default BTL | Mechanism |
 |---|---|---|
 | `haven.video.full` (CLI) | **4 weeks** | unchanged; `ARKIV_EXPIRATION_WEEKS` env (min 1) |
+| generic-file groups (CLI) | **4 weeks** | same default; per-record override via pipeline options `arkiv_expires_in` (s) / `arkiv_expiration_weeks` |
 | `haven.video.drip.series` | **52 weeks** | series header outlives parts |
 | `haven.video.drip.part` | **12 weeks** | `EXTEND` (op 3) while the series is active; expire after |
 
@@ -330,6 +350,7 @@ views add payload. Every selected field is fetched over the wire.
 |---------|------|---------|
 | 1.0.0 | 2026-02 | Initial standardized format |
 | 1.1.0 | 2026-09 | `gate_version` → `gate_type` (numeric `1`/`3`/`4`; no backcompat) |
+| 2.1.0 | 2026-09 | Additive: haven-cli writes `haven.image.full` / `haven.text.full` / new `haven.file.full` for non-A/V files; payload keys `name`, `ct`, `x`; per-record `grp` override and BTL override. Existing groups and keys unchanged. |
 | 2.0.0 | 2026-09 | Usenet-style `grp` taxonomy replaces `project`/`type`/`category`/`tags`; numeric SDK types (`addr`/`bytes32`/`i32` chain ids, MIME enum); drip threading (series + `series_ref: key` parts); payload short keys; all mirrors deleted; `$createdAt`/`$expiresAt` replace timestamp attrs; BTL policy (4 w full / 52 w series / 12 w parts); 10-year pins abolished. Straight migration, no backcompat. |
 
 ## Related Documentation

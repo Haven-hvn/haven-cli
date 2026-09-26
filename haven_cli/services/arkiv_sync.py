@@ -9,6 +9,7 @@ Adapted from backend/app/services/arkiv_sync.py for CLI usage.
 from __future__ import annotations
 
 import hashlib
+import re
 import json
 import logging
 import os
@@ -47,6 +48,24 @@ MIN_ARKIV_SDK_VERSION = "1.0.0b2"
 
 #: Usenet-style group taxonomy (replaces project/type/category/tags).
 ARKIV_GROUP_VIDEO_FULL = "haven.video.full"
+#: Groups for files admitted by IngestStep's generic-file path. Audio/video
+#: keep ``haven.video.full`` exactly as before.
+ARKIV_GROUP_IMAGE_FULL = "haven.image.full"
+ARKIV_GROUP_TEXT_FULL = "haven.text.full"
+ARKIV_GROUP_FILE_FULL = "haven.file.full"
+
+#: Generic media kind → group. Kinds not listed fall back to FILE_FULL.
+MEDIA_KIND_TO_GROUP: dict[str, str] = {
+    "image": ARKIV_GROUP_IMAGE_FULL,
+    "document": ARKIV_GROUP_TEXT_FULL,
+    "text": ARKIV_GROUP_TEXT_FULL,
+}
+
+#: Valid ``grp`` override: lowercase dot hierarchy, ≥2 labels.
+_GROUP_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$")
+
+#: Upper bound on the serialized ``x`` (extra provenance) payload object.
+PAYLOAD_EXTRA_MAX_BYTES = 2048
 
 #: Haven-AOL chain variant → EIP-155 id (replaces "EthMainnet"-style strings).
 CHAIN_VARIANT_TO_EIP155: dict[str, int] = {
@@ -89,6 +108,62 @@ def _truncate_title(title: str) -> str:
         except UnicodeDecodeError:
             raw = raw[:-1]
     return ""
+
+
+def arkiv_group_for(context: PipelineContext) -> str:
+    """``grp`` for a context: explicit override, else by generic media kind.
+
+    Records from the audio/video path always map to ``haven.video.full``
+    (unchanged behavior). ``options["arkiv_grp"]`` overrides when it is a
+    valid dot hierarchy of at most 128 bytes; invalid overrides are ignored
+    with a warning.
+    """
+    override = context.options.get("arkiv_grp")
+    if isinstance(override, str) and override:
+        if len(override.encode("utf-8")) <= TITLE_MAX_BYTES and _GROUP_PATTERN.match(override):
+            return override
+        logger.warning("Ignoring invalid arkiv_grp override %r", override)
+    kind = getattr(context, "media_kind", None)
+    if kind is None:
+        return ARKIV_GROUP_VIDEO_FULL
+    return MEDIA_KIND_TO_GROUP.get(kind, ARKIV_GROUP_FILE_FULL)
+
+
+def expires_in_for(context: PipelineContext, default: int) -> int:
+    """Per-context BTL: ``arkiv_expires_in`` (seconds) or ``arkiv_expiration_weeks``.
+
+    Falls back to *default* when neither is set or the value is invalid.
+    """
+    seconds = context.options.get("arkiv_expires_in")
+    weeks = context.options.get("arkiv_expiration_weeks")
+    try:
+        if seconds is not None and int(seconds) > 0:
+            return int(seconds)
+        if weeks is not None and int(weeks) > 0:
+            return int(weeks) * 7 * 24 * 60 * 60
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid Arkiv expiry override: seconds=%r weeks=%r", seconds, weeks)
+    return default
+
+
+def _payload_extra(context: PipelineContext) -> dict[str, Any] | None:
+    """Caller-supplied provenance (``options["arkiv_payload_extra"]``), size-capped."""
+    extra = context.options.get("arkiv_payload_extra")
+    if not isinstance(extra, dict) or not extra:
+        return None
+    try:
+        encoded = json.dumps(extra, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        logger.warning("Dropping non-serializable arkiv_payload_extra")
+        return None
+    if len(encoded.encode("utf-8")) > PAYLOAD_EXTRA_MAX_BYTES:
+        logger.warning(
+            "Dropping arkiv_payload_extra: %d bytes exceeds %d",
+            len(encoded.encode("utf-8")),
+            PAYLOAD_EXTRA_MAX_BYTES,
+        )
+        return None
+    return json.loads(encoded)
 
 
 def _mime_to_enum(mime_type: str | None) -> int | None:
@@ -379,7 +454,7 @@ def _build_attributes(context: PipelineContext) -> dict[str, str | int]:
     attributes: dict[str, str | int] = {}
 
     # ── Group taxonomy + title (list display + prefix search) ──
-    attributes["grp"] = ARKIV_GROUP_VIDEO_FULL
+    attributes["grp"] = arkiv_group_for(context)
     title = context.title or ""
     if title:
         attributes["title"] = _truncate_title(title)
@@ -510,6 +585,18 @@ def _build_payload(context: PipelineContext) -> dict[str, Any]:
         payload["phash"] = video_metadata.phash
     if video_metadata and video_metadata.codec:
         payload["codecs"] = [video_metadata.codec]
+
+    # Generic (non-A/V) files: the MIME string when the shared enum has no
+    # code for it, and the original file name so readers can restore it.
+    if getattr(context, "media_kind", None) is not None:
+        mime = video_metadata.mime_type if video_metadata else ""
+        if mime and _mime_to_enum(mime) is None:
+            payload["ct"] = mime.split(";")[0].strip().lower()
+        if context.source_path and context.source_path.name:
+            payload["name"] = context.source_path.name
+    extra = _payload_extra(context)
+    if extra:
+        payload["x"] = extra
 
     # Segment metadata for multi-segment recordings.
     if context.segment_metadata:
@@ -755,7 +842,7 @@ class ArkivSyncClient:
                     payload=payload_bytes,
                     content_type="application/json",
                     attributes=Attributes(attributes),
-                    expires_in=self.config.expires_in,
+                    expires_in=expires_in_for(context, self.config.expires_in),
                 )
                 
                 _log_transaction_info(receipt, self.config.rpc_url, "update", str(entity_key))
@@ -776,7 +863,7 @@ class ArkivSyncClient:
                     payload=payload_bytes,
                     content_type="application/json",
                     attributes=Attributes(attributes),
-                    expires_in=self.config.expires_in,
+                    expires_in=expires_in_for(context, self.config.expires_in),
                 )
                 
                 _log_transaction_info(receipt, self.config.rpc_url, "create", str(entity_key))
@@ -883,7 +970,7 @@ class ArkivSyncClient:
                         payload=payload_bytes,
                         content_type="application/json",
                         attributes=Attributes(attributes),
-                        expires_in=self.config.expires_in,
+                        expires_in=expires_in_for(ctx, self.config.expires_in),
                     )
 
             # Receipt contains .creates list of CreateEvent(key, owner, expiration)

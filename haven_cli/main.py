@@ -9,7 +9,7 @@ import typer
 from rich.console import Console
 
 from haven_cli import __app_name__, __version__
-from haven_cli.cli import config, download, entity, epoch, jobs, plugins, run, tui, upload
+from haven_cli.cli import config, download, entity, epoch, jobs, plugins, prowlarr, run, tui, upload
 from haven_cli.cli.exit_codes import ExitCode
 
 # Create the main Typer app
@@ -31,6 +31,7 @@ app.add_typer(download.app, name="download")
 app.add_typer(entity.app, name="entity")
 app.add_typer(jobs.app, name="jobs")
 app.add_typer(plugins.app, name="plugins")
+app.add_typer(prowlarr.app, name="prowlarr")
 app.add_typer(config.app, name="config")
 app.add_typer(tui.app, name="tui")
 # Sprint 4 v3 diagnostic — only haven-cli code path that calls

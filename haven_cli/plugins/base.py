@@ -77,6 +77,12 @@ class MediaSource:
 class ArchiveResult:
     """Result of archiving a media source.
     
+    A plugin that produces several files for one source lists them all in
+    ``metadata["output_paths"]`` (``output_path`` is the first); the
+    scheduler enqueues each. ``metadata["output_titles"]`` may map a path
+    to its title and ``metadata["pipeline_options"]`` adds options for
+    every file.
+
     Attributes:
         success: Whether archiving succeeded
         output_path: Path to the archived file
@@ -207,6 +213,19 @@ class ArchiverPlugin(ABC):
         """
         pass
     
+    async def discover_sources_for(self, options: Dict[str, Any]) -> List[MediaSource]:
+        """Discover sources for one scheduled job.
+
+        ``options`` is the job's metadata (``haven jobs create --option``),
+        letting a single plugin serve several differently-scoped jobs. The
+        default ignores it and calls :meth:`discover_sources`.
+        """
+        return await self.discover_sources()
+
+    #: Whether :meth:`archive` may run concurrently for several sources of
+    #: one job. Opt-in; the scheduler archives sequentially otherwise.
+    supports_concurrent_archive: bool = False
+
     @abstractmethod
     async def archive(self, source: MediaSource) -> ArchiveResult:
         """Archive a media source.

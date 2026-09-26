@@ -45,3 +45,6 @@ logs/
 # Environment
 .env
 .env.*
+
+# Local virtualenv
+.venv/

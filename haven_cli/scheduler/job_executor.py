@@ -43,6 +43,7 @@ class MediaSource:
     uri: str
     priority: str = "medium"
     metadata: Dict[str, Any] = None
+    title: str = ""
     
     def __post_init__(self) -> None:
         if self.metadata is None:
@@ -135,7 +136,9 @@ class JobExecutor:
             
             # Discover sources
             logger.info(f"Discovering sources with {job.plugin_name}")
-            sources = await self._discover_sources(plugin, job.plugin_name)
+            sources = await self._discover_sources(
+                plugin, job.plugin_name, options=job.metadata
+            )
             sources_found = len(sources)
             
             logger.info(f"Found {sources_found} sources")
@@ -159,15 +162,27 @@ class JobExecutor:
             
             # Archive sources
             if job.on_success != OnSuccessAction.LOG_ONLY:
-                for source in sources_to_archive:
-                    result = await self._archive_source(plugin, source)
-                    
+                if getattr(plugin, "supports_concurrent_archive", False) is True:
+                    # Opt-in: archive several sources at once (bounded by
+                    # max_concurrent_archives); results handled in order.
+                    async def _bounded(src: MediaSource) -> ArchiveResult:
+                        async with self._archive_semaphore:
+                            return await self._archive_source(plugin, src)
+
+                    results = await asyncio.gather(
+                        *(_bounded(src) for src in sources_to_archive)
+                    )
+                    pairs = list(zip(sources_to_archive, results))
+                else:
+                    pairs = []
+                    for source in sources_to_archive:
+                        pairs.append((source, await self._archive_source(plugin, source)))
+
+                for source, result in pairs:
                     if result.success:
                         sources_archived += 1
                         self._mark_source_known(job.plugin_name, source.source_id)
-                        await self._enqueue_to_pipeline(
-                            result.output_path, job, source
-                        )
+                        await self._enqueue_result(result, job, source)
                     else:
                         logger.warning(
                             f"Failed to archive {source.source_id}: {result.error}"
@@ -249,6 +264,7 @@ class JobExecutor:
         self,
         plugin: ArchiverPlugin,
         plugin_name: str,
+        options: Optional[Dict[str, Any]] = None,
     ) -> List[MediaSource]:
         """Call plugin's discover_sources method.
         
@@ -269,8 +285,16 @@ class JobExecutor:
         except Exception as e:
             raise RuntimeError(f"Plugin {plugin_name} health check failed: {e}")
         
-        # Discover sources
-        plugin_sources = await plugin.discover_sources()
+        # Discover sources. Plugins that override ``discover_sources_for``
+        # receive the job's metadata so one plugin can serve several jobs.
+        overrides_job_hook = (
+            isinstance(plugin, ArchiverPlugin)
+            and type(plugin).discover_sources_for is not ArchiverPlugin.discover_sources_for
+        )
+        if overrides_job_hook:
+            plugin_sources = await plugin.discover_sources_for(dict(options or {}))
+        else:
+            plugin_sources = await plugin.discover_sources()
         
         # Convert to our MediaSource type
         sources: List[MediaSource] = []
@@ -281,6 +305,7 @@ class JobExecutor:
                 uri=s.uri,
                 priority=s.priority,
                 metadata=s.metadata,
+                title=getattr(s, "title", "") or "",
             ))
         
         return sources
@@ -345,6 +370,7 @@ class JobExecutor:
                 source_id=source.source_id,
                 media_type=source.media_type,
                 uri=source.uri,
+                title=getattr(source, "title", "") or "",
                 metadata=source.metadata,
                 priority=source.priority,
             )
@@ -367,11 +393,44 @@ class JobExecutor:
                 error=str(e),
             )
     
+    async def _enqueue_result(
+        self,
+        result: ArchiveResult,
+        job: RecurringJob,
+        source: MediaSource,
+    ) -> None:
+        """Enqueue every file of an archive result.
+
+        Plugins may return several files in ``metadata["output_paths"]``
+        (``output_path`` is the first), optional per-file titles in
+        ``metadata["output_titles"]`` and extra options for all files in
+        ``metadata["pipeline_options"]``.
+        """
+        metadata = result.metadata or {}
+        paths = metadata.get("output_paths")
+        if not isinstance(paths, list) or not paths:
+            paths = [result.output_path]
+        titles = metadata.get("output_titles")
+        titles = titles if isinstance(titles, dict) else {}
+        extra = metadata.get("pipeline_options")
+        extra = extra if isinstance(extra, dict) else {}
+        for path in paths:
+            if not path:
+                continue
+            per_file = dict(extra)
+            if titles.get(str(path)):
+                per_file["title"] = titles[str(path)]
+            if per_file:
+                await self._enqueue_to_pipeline(str(path), job, source, extra_options=per_file)
+            else:
+                await self._enqueue_to_pipeline(str(path), job, source)
+
     async def _enqueue_to_pipeline(
         self,
         output_path: str,
         job: RecurringJob,
         source: MediaSource,
+        extra_options: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Enqueue archived content to the pipeline for processing.
         
@@ -414,6 +473,9 @@ class JobExecutor:
                 # Source and job metadata
                 **source.metadata,
                 **job.metadata,
+                # Per-file values from the archive result win (e.g. titles
+                # of individual files inside a multi-file release).
+                **(extra_options or {}),
             },
         )
         

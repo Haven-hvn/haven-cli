@@ -156,6 +156,26 @@ disabled_plugins = []
 # quality = "best"
 # format = "mp4"
 
+# Prowlarr plugin settings (full reference: docs/prowlarr.md)
+# The API key is read from $PROWLARR_API_KEY (or api_key_env / api_key_file);
+# never put it in this file.
+# [plugins.settings.ProwlarrPlugin]
+# base_url = "http://localhost:9696"
+# max_file_bytes = "4GiB"
+# min_request_interval_s = 0             # spacing between direct fetches per host
+# torrent_client = "internal"            # internal | qbittorrent | transmission | prowlarr | none
+# usenet_client = "none"                 # sabnzbd | nzbget | prowlarr | none
+# pipeline_options = { vlm_enabled = false }
+#
+# [[plugins.settings.ProwlarrPlugin.searches]]
+# name = "example"
+# query = "search terms"
+# indexers = ["My Indexer"]              # or indexer_ids = [1], indexer_tags = ["tag"]
+# categories = ["books"]                 # Newznab ids or names
+# max_age_hours = 24
+# max_results = 25
+# accept = ["document"]                  # kinds or MIME globs, e.g. "image/*"
+
 # BitTorrent plugin settings
 # [plugins.settings.bittorrent]
 # download_dir = "downloads/bittorrent"  # Directory to save downloaded files

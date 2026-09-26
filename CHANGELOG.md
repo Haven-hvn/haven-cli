@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- **Prowlarr plugin** (`ProwlarrPlugin`, `docs/prowlarr.md`): scheduled saved
+  searches across any Prowlarr indexers (typed parameters, id/name/tag
+  selection, filters, sorting, dedupe, paging). Releases are acquired by
+  direct fetch, Prowlarr download proxy, built-in libtorrent, qBittorrent,
+  Transmission, SABnzbd, NZBGet, or a Prowlarr grab plus watch directory.
+  Pending downloads, retry backoff and permanent-failure tracking persist
+  across runs.
+- `haven prowlarr` commands: `status`, `indexers`, `search`, `searches`,
+  `preview`, `pending`, `retry`, `schedule`.
+- `haven jobs create --option KEY=VALUE` / `--options-json` for per-job
+  plugin and pipeline options.
+- Generic-file pipeline path (opt-in via `generic_files_enabled`): non-A/V
+  files are ingested without ffprobe/pHash, skip VLM, keep sha256 dedup, and
+  sync to `haven.image.full` / `haven.text.full` / `haven.file.full`.
+  ARKIV_FORMAT 2.1.0 (additive).
+- Per-record Arkiv options: `arkiv_expires_in` / `arkiv_expiration_weeks`,
+  `arkiv_grp`, `arkiv_payload_extra`.
+- Plugin API: `discover_sources_for(options)`, multi-file `ArchiveResult`
+  (`metadata["output_paths"]`), opt-in `supports_concurrent_archive`.
+
+### Fixed
+- Saving config no longer fails on list or table values inside
+  `[[plugins.settings.*.*]]` rows.
+
 ### Fixed
 - **Batch sync singleton dedup parity** (`BATCH_SYNC_REMEDIATION_PLAN.md`
   Phases 1–3). The accumulator and arkiv-sync code paths now produce the

@@ -1,8 +1,9 @@
 """Haven jobs command - Manage scheduled jobs."""
 
+import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import typer
 from rich.console import Console
@@ -92,12 +93,30 @@ def create_job(
         "-n",
         help="Optional job name.",
     ),
+    option: Optional[List[str]] = typer.Option(
+        None,
+        "--option",
+        "-o",
+        help=(
+            "Job option KEY=VALUE (repeatable). VALUE is parsed as JSON when "
+            "possible (true, 42, [1,2], {...}), else kept as a string. Options "
+            "reach the plugin and override pipeline settings for this job, "
+            "e.g. vlm_enabled=false, arkiv_expires_in=31536000."
+        ),
+    ),
+    options_json: Optional[str] = typer.Option(
+        None,
+        "--options-json",
+        help="Job options as one JSON object (merged before --option values).",
+    ),
 ) -> None:
     """Create a new scheduled job.
     
     Example:
         haven jobs create --plugin YouTubePlugin --schedule "0 * * * *"
         haven jobs create --plugin BitTorrentPlugin --schedule "*/30 * * * *" --on-success archive_all
+        haven jobs create --plugin ProwlarrPlugin --schedule "0 */6 * * *" \
+            -o prowlarr_searches=papers -o arkiv_expires_in=31536000
     """
     from haven_cli.scheduler.job_scheduler import get_scheduler, RecurringJob, OnSuccessAction
     from haven_cli.plugins.registry import get_registry
@@ -125,6 +144,22 @@ def create_job(
         console.print(f"[red]Invalid cron expression: {e}[/red]")
         raise typer.Exit(code=1)
     
+    try:
+        metadata = parse_job_options(option or [], options_json)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+
+    # Let the plugin validate its own options when it can.
+    plugin_class = registry.load(plugin)
+    validator = getattr(plugin_class, "validate_job_options", None) if plugin_class else None
+    if callable(validator):
+        problems = validator(metadata)
+        if problems:
+            for problem in problems:
+                console.print(f"[red]{problem}[/red]")
+            raise typer.Exit(code=1)
+
     # Create job
     scheduler = get_scheduler()
     job = RecurringJob(
@@ -132,6 +167,7 @@ def create_job(
         plugin_name=plugin,
         schedule=schedule,
         on_success=action,
+        metadata=metadata,
     )
     
     scheduler.add_job(job)
@@ -139,7 +175,40 @@ def create_job(
     console.print(f"[green]✓[/green] Job created: {job.job_id}")
     console.print(f"  Plugin: {plugin}")
     console.print(f"  Schedule: {schedule}")
+    if metadata:
+        console.print(f"  Options: {', '.join(sorted(metadata))}")
     console.print(f"  Next run: {job.next_run}")
+
+
+def _parse_option_value(raw: str) -> Any:
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def parse_job_options(pairs: List[str], options_json: Optional[str] = None) -> Dict[str, Any]:
+    """Build job metadata from ``--options-json`` and repeated ``--option K=V``.
+
+    Raises:
+        ValueError: on malformed input.
+    """
+    metadata: Dict[str, Any] = {}
+    if options_json:
+        try:
+            loaded = json.loads(options_json)
+        except ValueError as e:
+            raise ValueError(f"--options-json is not valid JSON: {e}") from e
+        if not isinstance(loaded, dict):
+            raise ValueError("--options-json must be a JSON object")
+        metadata.update(loaded)
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            raise ValueError(f"--option expects KEY=VALUE, got {pair!r}")
+        metadata[key] = _parse_option_value(value)
+    return metadata
 
 
 @app.command("delete")
