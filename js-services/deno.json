@@ -12,12 +12,12 @@
     "test": "deno test --allow-all"
   },
   "imports": {
-    "@filoz/synapse-sdk": "npm:@filoz/synapse-sdk@1.0.1",
-    "@filoz/synapse-core": "npm:@filoz/synapse-core@0.7.0",
+    "@filoz/synapse-sdk": "npm:@filoz/synapse-sdk@2.0.2",
+    "@filoz/synapse-core": "npm:@filoz/synapse-core@0.10.0",
     "ethers": "npm:ethers@6.17.0",
-    "filecoin-pin": "npm:filecoin-pin@1.0.1",
-    "multiformats/cid": "npm:multiformats@14.0.0/cid",
-    "viem": "npm:viem@2.53.1"
+    "filecoin-pin": "npm:filecoin-pin@2.1.1",
+    "multiformats/cid": "npm:multiformats@14.0.5/cid",
+    "viem": "npm:viem@2.56.9"
   },
   "lint": {
     "rules": {

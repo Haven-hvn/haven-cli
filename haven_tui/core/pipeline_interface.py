@@ -51,7 +51,6 @@ from typing import (
     Union,
 )
 
-from sqlalchemy import desc
 from sqlalchemy.orm import Session, joinedload, sessionmaker
 
 from haven_cli.pipeline.events import (
@@ -627,7 +626,7 @@ class PipelineInterface:
             completed_ids = (
                 session.query(PipelineSnapshot.video_id)
                 .filter(PipelineSnapshot.overall_status == "completed")
-                .order_by(desc(PipelineSnapshot.pipeline_completed_at))
+                .order_by(PipelineSnapshot.pipeline_completed_at.desc())
                 .limit(limit)
                 .all()
             )
@@ -821,7 +820,7 @@ class PipelineInterface:
         with self._session_scope() as session:
             all_downloads = (
                 session.query(Download)
-                .order_by(desc(Download.created_at))
+                .order_by(Download.created_at.desc())
                 .limit(limit)
                 .all()
             )
@@ -859,7 +858,7 @@ class PipelineInterface:
 
             all_torrents = (
                 session.query(TorrentDownload)
-                .order_by(desc(TorrentDownload.created_at))
+                .order_by(TorrentDownload.created_at.desc())
                 .limit(limit)
                 .all()
             )

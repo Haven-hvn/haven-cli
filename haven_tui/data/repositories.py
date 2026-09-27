@@ -49,7 +49,7 @@ class PipelineSnapshotRepository:
         query = self.session.query(PipelineSnapshot).filter(
             PipelineSnapshot.overall_status.in_(["active", "pending", "failed"])
         ).order_by(
-            desc(PipelineSnapshot.stage_started_at)
+            PipelineSnapshot.stage_started_at.desc()
         )
 
         if offset:
@@ -75,7 +75,7 @@ class PipelineSnapshotRepository:
             PipelineSnapshot.current_stage == stage.value,
             PipelineSnapshot.overall_status == "active"
         ).order_by(
-            desc(PipelineSnapshot.stage_started_at)
+            PipelineSnapshot.stage_started_at.desc()
         )
 
         if offset:
@@ -117,7 +117,7 @@ class PipelineSnapshotRepository:
         query = self.session.query(PipelineSnapshot).filter(
             PipelineSnapshot.overall_status == status
         ).order_by(
-            desc(PipelineSnapshot.updated_at)
+            PipelineSnapshot.updated_at.desc()
         )
 
         if offset:
@@ -141,7 +141,7 @@ class PipelineSnapshotRepository:
         query = self.session.query(PipelineSnapshot).filter(
             PipelineSnapshot.has_error == True
         ).order_by(
-            desc(PipelineSnapshot.updated_at)
+            PipelineSnapshot.updated_at.desc()
         )
 
         if offset:
@@ -172,7 +172,7 @@ class PipelineSnapshotRepository:
                 "downloading", "paused", "checking", "failed"
             ])
         ).order_by(
-            desc(TorrentDownload.started_at)
+            TorrentDownload.started_at.desc()
         ).limit(limit).all()
 
         # Filter out torrents that have associated videos
@@ -403,7 +403,7 @@ class DownloadRepository:
         ).filter(
             Download.status == "downloading"
         ).order_by(
-            desc(Download.started_at)
+            Download.started_at.desc()
         ).limit(limit).all()
 
     def get_download_by_video(self, video_id: int) -> Optional[Download]:
@@ -418,7 +418,7 @@ class DownloadRepository:
         return self.session.query(Download).filter_by(
             video_id=video_id
         ).order_by(
-            desc(Download.created_at)
+            Download.created_at.desc()
         ).first()
 
     def get_download_history(self, video_id: int, limit: int = 10) -> List[Download]:
@@ -434,7 +434,7 @@ class DownloadRepository:
         return self.session.query(Download).filter_by(
             video_id=video_id
         ).order_by(
-            desc(Download.created_at)
+            Download.created_at.desc()
         ).limit(limit).all()
 
     def get_aggregate_download_speed(self) -> int:
@@ -464,7 +464,7 @@ class DownloadRepository:
         ).filter(
             Download.status == "pending"
         ).order_by(
-            desc(Download.created_at)
+            Download.created_at.desc()
         ).limit(limit).all()
 
 
@@ -491,23 +491,23 @@ class JobHistoryRepository:
         return {
             'downloads': self.session.query(Download).filter_by(
                 video_id=video_id
-            ).order_by(desc(Download.created_at)).all(),
+            ).order_by(Download.created_at.desc()).all(),
 
             'analysis_jobs': self.session.query(AnalysisJob).filter_by(
                 video_id=video_id
-            ).order_by(desc(AnalysisJob.created_at)).all(),
+            ).order_by(AnalysisJob.created_at.desc()).all(),
 
             'encryption_jobs': self.session.query(EncryptionJob).filter_by(
                 video_id=video_id
-            ).order_by(desc(EncryptionJob.created_at)).all(),
+            ).order_by(EncryptionJob.created_at.desc()).all(),
 
             'upload_jobs': self.session.query(UploadJob).filter_by(
                 video_id=video_id
-            ).order_by(desc(UploadJob.created_at)).all(),
+            ).order_by(UploadJob.created_at.desc()).all(),
 
             'sync_jobs': self.session.query(SyncJob).filter_by(
                 video_id=video_id
-            ).order_by(desc(SyncJob.created_at)).all(),
+            ).order_by(SyncJob.created_at.desc()).all(),
         }
 
     def get_latest_cid(self, video_id: int) -> Optional[str]:
@@ -523,7 +523,7 @@ class JobHistoryRepository:
             video_id=video_id,
             status="completed"
         ).order_by(
-            desc(UploadJob.completed_at)
+            UploadJob.completed_at.desc()
         ).first()
 
         return upload.remote_cid if upload else None
@@ -554,7 +554,7 @@ class JobHistoryRepository:
         job = self.session.query(EncryptionJob).filter_by(
             video_id=video_id
         ).order_by(
-            desc(EncryptionJob.created_at)
+            EncryptionJob.created_at.desc()
         ).first()
 
         if not job:
@@ -579,7 +579,7 @@ class JobHistoryRepository:
         job = self.session.query(UploadJob).filter_by(
             video_id=video_id
         ).order_by(
-            desc(UploadJob.created_at)
+            UploadJob.created_at.desc()
         ).first()
 
         if not job:
@@ -606,7 +606,7 @@ class JobHistoryRepository:
         job = self.session.query(SyncJob).filter_by(
             video_id=video_id
         ).order_by(
-            desc(SyncJob.created_at)
+            SyncJob.created_at.desc()
         ).first()
 
         if not job:

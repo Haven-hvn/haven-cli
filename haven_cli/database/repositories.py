@@ -670,7 +670,7 @@ class JobExecutionRepository:
             List of job executions ordered by started_at descending
         """
         query = self.session.query(JobExecution).order_by(
-            desc(JobExecution.started_at)
+            JobExecution.started_at.desc()
         )
 
         if job_id:
@@ -692,7 +692,7 @@ class JobExecutionRepository:
             List of recent job executions
         """
         return self.session.query(JobExecution).order_by(
-            desc(JobExecution.started_at)
+            JobExecution.started_at.desc()
         ).limit(limit).all()
 
     def get_success_count(self, job_id: Optional[UUID] = None) -> int:
@@ -1150,7 +1150,7 @@ class DownloadRepository:
         """
         return self.session.query(Download).filter(
             Download.video_id == video_id
-        ).order_by(desc(Download.created_at)).all()
+        ).order_by(Download.created_at.desc()).all()
     
     def get_active_downloads(self) -> List[Download]:
         """
@@ -1161,7 +1161,7 @@ class DownloadRepository:
         """
         return self.session.query(Download).filter(
             Download.status == "downloading"
-        ).order_by(desc(Download.started_at)).all()
+        ).order_by(Download.started_at.desc()).all()
     
     def get_download_history(self, video_id: int, limit: int = 10) -> List[Download]:
         """
@@ -1176,7 +1176,7 @@ class DownloadRepository:
         """
         return self.session.query(Download).filter(
             Download.video_id == video_id
-        ).order_by(desc(Download.created_at)).limit(limit).all()
+        ).order_by(Download.created_at.desc()).limit(limit).all()
     
     def get_aggregate_download_speed(self) -> int:
         """
@@ -1305,7 +1305,7 @@ class EncryptionJobRepository:
         """Get all encryption jobs for a video."""
         return self.session.query(EncryptionJob).filter(
             EncryptionJob.video_id == video_id
-        ).order_by(desc(EncryptionJob.created_at)).all()
+        ).order_by(EncryptionJob.created_at.desc()).all()
     
     def get_active_jobs(self) -> List[EncryptionJob]:
         """Get all active encryption jobs."""
@@ -1399,7 +1399,7 @@ class UploadJobRepository:
         """Get all upload jobs for a video."""
         return self.session.query(UploadJob).filter(
             UploadJob.video_id == video_id
-        ).order_by(desc(UploadJob.created_at)).all()
+        ).order_by(UploadJob.created_at.desc()).all()
     
     def get_active_uploads(self) -> List[UploadJob]:
         """Get all active uploads."""
@@ -1493,7 +1493,7 @@ class SyncJobRepository:
         """Get all sync jobs for a video."""
         return self.session.query(SyncJob).filter(
             SyncJob.video_id == video_id
-        ).order_by(desc(SyncJob.created_at)).all()
+        ).order_by(SyncJob.created_at.desc()).all()
     
     def get_active_syncs(self) -> List[SyncJob]:
         """Get all active sync jobs."""
@@ -1564,7 +1564,7 @@ class AnalysisJobRepository:
         """Get all analysis jobs for a video."""
         return self.session.query(AnalysisJob).filter(
             AnalysisJob.video_id == video_id
-        ).order_by(desc(AnalysisJob.created_at)).all()
+        ).order_by(AnalysisJob.created_at.desc()).all()
     
     def get_active_analyses(self) -> List[AnalysisJob]:
         """Get all active analysis jobs."""
@@ -1668,7 +1668,7 @@ class PipelineSnapshotRepository:
         return self.session.query(PipelineSnapshot).filter(
             PipelineSnapshot.overall_status.in_(["active", "pending"])
         ).order_by(
-            desc(PipelineSnapshot.stage_started_at)
+            PipelineSnapshot.stage_started_at.desc()
         ).limit(limit).all()
     
     def get_video_summary(self, video_id: int) -> Optional[PipelineSnapshot]:
@@ -1845,19 +1845,19 @@ class JobHistoryRepository:
         return {
             'downloads': self.session.query(Download).filter_by(
                 video_id=video_id
-            ).order_by(desc(Download.created_at)).all(),
+            ).order_by(Download.created_at.desc()).all(),
             'analysis_jobs': self.session.query(AnalysisJob).filter_by(
                 video_id=video_id
-            ).order_by(desc(AnalysisJob.created_at)).all(),
+            ).order_by(AnalysisJob.created_at.desc()).all(),
             'encryption_jobs': self.session.query(EncryptionJob).filter_by(
                 video_id=video_id
-            ).order_by(desc(EncryptionJob.created_at)).all(),
+            ).order_by(EncryptionJob.created_at.desc()).all(),
             'upload_jobs': self.session.query(UploadJob).filter_by(
                 video_id=video_id
-            ).order_by(desc(UploadJob.created_at)).all(),
+            ).order_by(UploadJob.created_at.desc()).all(),
             'sync_jobs': self.session.query(SyncJob).filter_by(
                 video_id=video_id
-            ).order_by(desc(SyncJob.created_at)).all(),
+            ).order_by(SyncJob.created_at.desc()).all(),
         }
     
     def get_failed_jobs(self, limit: int = 50) -> List[Dict[str, Any]]:

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.30.1"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -28,33 +28,34 @@ classifiers = [
     "Topic :: System :: Archiving",
 ]
 dependencies = [
-    "typer==0.26.7",
+    "typer==0.27.2",
     "rich==15.0.0",
-    "pydantic==2.13.4",
-    "pydantic-settings==2.14.2",
-    "apscheduler==3.11.2",
-    "croniter==6.2.2",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.15.0",
+    "apscheduler==3.11.3",
+    "croniter==6.2.4",
     "aiofiles==25.1.0",
     "httpx==0.28.1",
-    "Pillow==12.2.0",
-	 "scipy==1.17.1",
+    "Pillow==12.3.0",
+    "scipy==1.18.1; python_version >= '3.12'",
+    "scipy==1.17.1; python_version < '3.12'",
     "ImageHash==4.3.2",
-    "SQLAlchemy==2.0.51",
-    "fastapi==0.138.0",
-    "uvicorn==0.49.0",
+    "SQLAlchemy==2.1.1",
+    "fastapi==0.141.1",
+    "uvicorn==0.54.0",
     "unidecode==1.4.0",
-    "python-dotenv==1.2.2",
-    "livekit==1.1.10",
+    "python-dotenv==1.2.3",
+    "livekit==1.1.20",
     "psutil==7.2.2",
-    "av==17.1.0",
+    "av==18.1.0",
     "python-multipart==0.0.32",
-    "arkiv-sdk==1.0.0b2",
-    "yt-dlp==2026.6.9",
-    "libtorrent==2.0.13; python_version < '3.14'",
-    "libtorrent @ file:///root/haven-cli/wheels/libtorrent-2.0.13-cp314-cp314-linux_x86_64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "arkiv-sdk==1.0.0b3.dev0",
+    "yt-dlp==2026.8.19",
+    "libtorrent==2.1.1; python_version < '3.14'",
+    "libtorrent @ file:///root/haven-cli/wheels/libtorrent-2.0.11-cp314-cp314-linux_x86_64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'x86_64'",
     "requests==2.34.2",
     "beautifulsoup4==4.15.0",
-    "cryptography==49.0.0",
+    "cryptography==50.0.1",
 ]
 
 [project.optional-dependencies]
@@ -63,18 +64,20 @@ media = [
 ]
 vlm = [
     "vlm-engine==1.0.1",
-    "openai==2.43.0",
+    # Latest allowed by vlm-engine (via multiplexer-llm, requires openai==2.15.0).
+    "openai==2.15.0",
     "google-generativeai==0.8.6",
 ]
 blockchain = [
-    "web3==7.16.0",
+    # Latest allowed by arkiv-sdk (requires web3>=7.13.0,<7.14.0).
+    "web3==7.13.0",
 ]
 icp = [
-    "vetkd_py",
+    "vetkd_py==0.1.0",
     "icp-py-core==2.3.1",
 ]
 tui = [
-    "textual==8.2.7",
+    "textual==8.2.8",
     "plotille==6.0.5",
     "tomli==2.4.1",
 ]
@@ -86,8 +89,8 @@ dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
-    "mypy==2.1.0",
-    "ruff==0.15.18",
+    "mypy==2.3.1",
+    "ruff==0.16.9",
     "types-Pillow==10.2.0.20240822",
     "respx==0.23.1",
 ]
