@@ -351,21 +351,30 @@ def _extract_transaction_hash(receipt: Any) -> str | None:
     if not receipt:
         return None
     
+    def _clean(value: Any) -> str | None:
+        if isinstance(value, (bytes, bytearray)):
+            return "0x" + bytes(value).hex()
+        if value:
+            return str(value)
+        return None
+
     # Try common attribute names (arkiv-sdk uses tx_hash)
     for attr_name in ['tx_hash', 'transactionHash', 'hash', 'txHash', 'transaction_hash']:
         if hasattr(receipt, attr_name):
             try:
-                value = getattr(receipt, attr_name)
-                if value:
-                    return str(value)
+                cleaned = _clean(getattr(receipt, attr_name))
+                if cleaned:
+                    return cleaned
             except Exception:
                 continue
-    
+
     # Try dictionary access if receipt is dict-like
     if isinstance(receipt, dict):
         for key in ['transactionHash', 'hash', 'txHash', 'tx_hash', 'transaction_hash']:
             if key in receipt and receipt[key]:
-                return str(receipt[key])
+                cleaned = _clean(receipt[key])
+                if cleaned:
+                    return cleaned
     
     # Try nested receipt object
     if hasattr(receipt, 'receipt'):
@@ -693,8 +702,297 @@ def _is_413_error(exc: Exception) -> bool:
         
         # Move to the next exception in the chain
         current = getattr(current, '__cause__', None) or getattr(current, '__context__', None)
-    
+
     return False
+
+
+# ── Tiramisu write dialect ──────────────────────────────────────────
+#
+# The bundled ``arkiv`` SDK (1.0.0b3.dev0) only speaks the pre-Tiramisu
+# ``execute`` ABI (full operation tuples), whose selector the live engine
+# rejects (``execution reverted: unknown selector``). Tiramisu narrowed
+# ``execute`` to a tagged union over ABI-encoded per-operation payloads
+# (see ``@arkiv-network/sdk`` ``src/entity/operations.ts``):
+#
+#   execute((uint8 operation, bytes operationData)[])
+#   create: (uint128 salt, uint64 expiresAt, uint64 minLifetime,
+#            uint8 creationFlags, (bytes32 name, uint8 typeId, bytes value)[])
+#   patch:  (bytes32 entityKey, (bytes32 name, uint8 typeId, bytes value)[])
+#
+# The payload and content type travel as the ``$payload`` (bytes) and
+# ``$contentType`` (str) system cells inside the attribute array. Like the
+# query workaround in :meth:`ArkivSyncClient.find_existing_entity`, this
+# path talks to the chain directly until the Python SDK catches up.
+# Detection: the old dialect needs EVM code at the system address; the
+# new engine answers natively (``eth_getCode`` is empty).
+
+#: Arkiv system address (unchanged across dialects).
+TIRAMISU_SYSTEM_ADDRESS = "0x4400000000000000000000000000000000000044"
+
+#: Tiramisu block time; lifetimes must be a whole number of blocks.
+TIRAMISU_BLOCK_TIME_S = 2
+
+#: Engine limits (``@arkiv-network/sdk`` ``src/attr/attributes.ts``).
+TIRAMISU_MAX_ATTRIBUTES = 32
+TIRAMISU_MAX_PAYLOAD_BYTES = 128 * 1024
+
+#: Operation tags of the ``execute`` tagged union.
+TIRAMISU_OP_CREATE = 1
+TIRAMISU_OP_PATCH = 2
+
+#: Attribute type ids used here (full table in the TS SDK ``attr/types``).
+TIRAMISU_TYPE_I32 = 2
+TIRAMISU_TYPE_BYTES = 7
+TIRAMISU_TYPE_STR = 8
+
+#: ``$payload`` / ``$contentType`` system cells.
+TIRAMISU_PAYLOAD_CELL = "$payload"
+TIRAMISU_CONTENT_TYPE_CELL = "$contentType"
+
+#: ``Ident32`` name grammar: leading letter, then letters/digits/``.``/``-``/``_``.
+_TIRAMISU_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+
+#: Query-language words the engine rejects as attribute names.
+_TIRAMISU_RESERVED_NAMES = frozenset({
+    "and", "or", "not", "true", "false", "startswith", "exists", "typeof",
+    "bool", "i32", "u64", "u256", "dec", "bytes32", "bytes", "str",
+    "addr", "key",
+})
+
+_I32_MIN = -(2 ** 31)
+_I32_MAX = 2 ** 31 - 1
+
+
+def _tiramisu_execute_selector() -> bytes:
+    """First 4 bytes of ``keccak("execute((uint8,bytes)[])")``."""
+    from eth_utils import keccak
+
+    return keccak(b"execute((uint8,bytes)[])")[:4]
+
+
+def _tiramisu_entity_created_topic() -> bytes:
+    """Topic0 of ``EntityCreated(bytes32,address,uint64,uint8)``."""
+    from eth_utils import keccak
+
+    return keccak(b"EntityCreated(bytes32,address,uint64,uint8)")
+
+
+def _tiramisu_ident32(name: str) -> bytes:
+    """Validate *name* and encode it as a null-padded 32-byte ``Ident32``."""
+    if not name:
+        raise ValueError("Arkiv attribute name is empty")
+    if name.startswith("$"):
+        raise ValueError(
+            f"Arkiv attribute {name!r}: '$' is reserved for system attributes"
+        )
+    raw = name.encode("utf-8")
+    if len(raw) > 32 or not _TIRAMISU_NAME_RE.match(name):
+        raise ValueError(
+            f"Arkiv attribute {name!r}: must match [A-Za-z][A-Za-z0-9._-]* "
+            "and fit in 32 bytes"
+        )
+    if name.lower() in _TIRAMISU_RESERVED_NAMES:
+        raise ValueError(
+            f"Arkiv attribute {name!r}: reserved by the query language"
+        )
+    return raw + b"\x00" * (32 - len(raw))
+
+
+def _tiramisu_encode_i32(value: int) -> bytes:
+    """Encode *value* as a sign-extended 32-byte ``i32`` word."""
+    if not _I32_MIN <= value <= _I32_MAX:
+        raise ValueError(f"Arkiv i32 attribute out of range: {value!r}")
+    return (value & (2**256 - 1)).to_bytes(32, "big")
+
+
+def tiramisu_encode_cells(
+    attributes: dict[str, str | int],
+    payload: bytes,
+    content_type: str,
+) -> list[tuple[bytes, int, bytes]]:
+    """Encode user attributes plus system cells, sorted by name.
+
+    ``str`` values become ``str`` cells, ``int`` values become ``i32``
+    cells (matching what the old SDK's ints read back as); the payload
+    and content type become the ``$payload``/``$contentType`` cells.
+    """
+    if len(payload) > TIRAMISU_MAX_PAYLOAD_BYTES:
+        raise ValueError(
+            f"Arkiv payload is {len(payload)} bytes, "
+            f"over the {TIRAMISU_MAX_PAYLOAD_BYTES}-byte limit"
+        )
+    cells: list[tuple[bytes, int, bytes]] = []
+    for name, value in attributes.items():
+        ident = _tiramisu_ident32(name)
+        if isinstance(value, bool):
+            raise ValueError(
+                f"Arkiv attribute {name!r}: bool is not expressible; "
+                "use 0/1"
+            )
+        if isinstance(value, int):
+            cells.append((ident, TIRAMISU_TYPE_I32, _tiramisu_encode_i32(value)))
+        elif isinstance(value, str):
+            cells.append((ident, TIRAMISU_TYPE_STR, value.encode("utf-8")))
+        else:
+            raise ValueError(
+                f"Arkiv attribute {name!r}: expected str or int, "
+                f"got {type(value).__name__}"
+            )
+    cells.append((
+        TIRAMISU_PAYLOAD_CELL.encode() + b"\x00" * (32 - len(TIRAMISU_PAYLOAD_CELL)),
+        TIRAMISU_TYPE_BYTES,
+        bytes(payload),
+    ))
+    cells.append((
+        TIRAMISU_CONTENT_TYPE_CELL.encode()
+        + b"\x00" * (32 - len(TIRAMISU_CONTENT_TYPE_CELL)),
+        TIRAMISU_TYPE_STR,
+        content_type.encode("utf-8"),
+    ))
+    if len(cells) > TIRAMISU_MAX_ATTRIBUTES:
+        raise ValueError(
+            f"Arkiv operation carries {len(cells)} attributes, "
+            f"over the {TIRAMISU_MAX_ATTRIBUTES} limit"
+        )
+    cells.sort(key=lambda cell: cell[0])
+    return cells
+
+
+def _tiramisu_min_lifetime(expires_in_s: int) -> int:
+    """Duration in seconds → whole-block lifetime floor (rounds up)."""
+    if expires_in_s <= 0:
+        raise ValueError(f"Arkiv expiry must be positive, got {expires_in_s!r}")
+    return -(-expires_in_s // TIRAMISU_BLOCK_TIME_S)
+
+
+def tiramisu_encode_create(
+    attributes: dict[str, str | int],
+    payload: bytes,
+    content_type: str,
+    expires_in_s: int,
+    salt: int | None = None,
+) -> bytes:
+    """ABI-encode ``execute`` calldata for a single create operation."""
+    import secrets
+
+    from eth_abi import encode
+
+    if salt is None:
+        salt = secrets.randbits(128)
+    if not 0 <= salt < 2**128:
+        raise ValueError("Arkiv create salt must fit in uint128")
+    cells = tiramisu_encode_cells(attributes, payload, content_type)
+    operation_data = encode(
+        ["(uint128,uint64,uint64,uint8,(bytes32,uint8,bytes)[])"],
+        [(salt, 0, _tiramisu_min_lifetime(expires_in_s), 0, cells)],
+    )
+    return _tiramisu_execute_selector() + encode(
+        ["(uint8,bytes)[]"], [[(TIRAMISU_OP_CREATE, operation_data)]]
+    )
+
+
+def tiramisu_encode_patch(
+    entity_key: str,
+    attributes: dict[str, str | int],
+    payload: bytes,
+    content_type: str,
+) -> bytes:
+    """ABI-encode ``execute`` calldata rewriting one entity's cells."""
+    from eth_abi import encode
+
+    key = entity_key.lower()
+    if key.startswith("0x"):
+        key = key[2:]
+    try:
+        key_bytes = bytes.fromhex(key)
+    except ValueError:
+        raise ValueError(f"Arkiv entity key is not hex: {entity_key!r}")
+    if len(key_bytes) != 32:
+        raise ValueError(f"Arkiv entity key must be 32 bytes: {entity_key!r}")
+    cells = tiramisu_encode_cells(attributes, payload, content_type)
+    operation_data = encode(
+        ["(bytes32,(bytes32,uint8,bytes)[])"],
+        [(key_bytes, cells)],
+    )
+    return _tiramisu_execute_selector() + encode(
+        ["(uint8,bytes)[]"], [[(TIRAMISU_OP_PATCH, operation_data)]]
+    )
+
+
+def _chain_uses_tiramisu_dialect(rpc_url: str) -> bool:
+    """Whether the chain answers the system address natively (no EVM code)."""
+    import requests
+
+    resp = requests.post(
+        rpc_url,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getCode",
+            "params": [TIRAMISU_SYSTEM_ADDRESS, "latest"],
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json().get("result") in ("0x", "", None)
+
+
+def _tiramisu_send_transaction(
+    rpc_url: str,
+    private_key: str,
+    calldata: bytes,
+) -> Any:
+    """Sign (legacy gas-price tx) and send ``execute`` calldata, await receipt."""
+    from eth_account import Account
+    from web3 import Web3
+
+    account = Account.from_key(private_key)
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
+    tx = {
+        "from": account.address,
+        "to": Web3.to_checksum_address(TIRAMISU_SYSTEM_ADDRESS),
+        "data": calldata,
+        "value": 0,
+        "chainId": w3.eth.chain_id,
+        "nonce": w3.eth.get_transaction_count(account.address, "pending"),
+    }
+    gas_estimate = w3.eth.estimate_gas(tx)
+    gas_price = w3.eth.gas_price
+    if w3.eth.get_balance(account.address) < gas_estimate * gas_price:
+        raise InsufficientGasError(
+            "Wallet has insufficient funds for the Arkiv transaction",
+            account.address,
+            RuntimeError("insufficient funds for gas"),
+        )
+    tx["gas"] = int(gas_estimate * 1.2)
+    tx["gasPrice"] = gas_price
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+    if receipt.get("status") != 1:
+        raise RuntimeError(
+            f"Arkiv execute transaction {tx_hash.hex()} reverted"
+        )
+    return receipt
+
+
+def _tiramisu_created_key(receipt: Any) -> str | None:
+    """Entity key minted by a create batch: first ``EntityCreated`` log."""
+    address = TIRAMISU_SYSTEM_ADDRESS.lower()
+    topic0 = _tiramisu_entity_created_topic()
+    logs = receipt.get("logs", []) if hasattr(receipt, "get") else []
+    for log in logs:
+        log_address = log.get("address", "")
+        if isinstance(log_address, str):
+            match = log_address.lower() == address
+        else:
+            match = bytes(log_address).hex().lower() == address[2:]
+        if not match:
+            continue
+        topics = log.get("topics", [])
+        if len(topics) >= 2 and bytes(topics[0]) == topic0:
+            return "0x" + bytes(topics[1]).hex()
+    return None
 
 
 class ArkivSyncClient:
@@ -829,10 +1127,18 @@ class ArkivSyncClient:
         existing = self.find_existing_entity(sha256_ct)
         
         try:
+            if _chain_uses_tiramisu_dialect(self.config.rpc_url):
+                return self._sync_tiramisu(
+                    payload_bytes,
+                    attributes,
+                    expires_in_for(context, self.config.expires_in),
+                    existing,
+                )
+
             from arkiv.types import Attributes, EntityKey
-            
+
             client = self._get_client()
-            
+
             if existing and existing.get("entity_key"):
                 # Update existing entity
                 entity_key = EntityKey(existing["entity_key"])
@@ -909,6 +1215,52 @@ class ArkivSyncClient:
             logger.error("❌ Arkiv sync failed: %s", exc, exc_info=True)
             raise
 
+    def _sync_tiramisu(
+        self,
+        payload_bytes: bytes,
+        attributes: dict[str, str | int],
+        expires_in_s: int,
+        existing: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Create or patch one entity in the Tiramisu write dialect."""
+        if not self.config.private_key:
+            raise ValueError("Arkiv private key missing")
+        is_update = bool(existing and existing.get("entity_key"))
+        if is_update:
+            entity_key = str(existing["entity_key"])  # type: ignore[index]
+            calldata = tiramisu_encode_patch(
+                entity_key, attributes, payload_bytes, "application/json"
+            )
+            operation = "update"
+        else:
+            calldata = tiramisu_encode_create(
+                attributes, payload_bytes, "application/json", expires_in_s
+            )
+            operation = "create"
+        receipt = _tiramisu_send_transaction(
+            self.config.rpc_url, self.config.private_key, calldata
+        )
+        if not is_update:
+            minted = _tiramisu_created_key(receipt)
+            if not minted:
+                raise RuntimeError(
+                    "Arkiv execute succeeded but emitted no EntityCreated event"
+                )
+            entity_key = minted
+        _log_transaction_info(receipt, self.config.rpc_url, operation, entity_key)
+        transaction_hash = _extract_transaction_hash(receipt)
+        logger.info("✅ %sd Arkiv entity: %s", operation.capitalize(), entity_key)
+        result: dict[str, Any] = {
+            "entity_key": entity_key,
+            "transaction_hash": transaction_hash or "",
+            "is_update": is_update,
+        }
+        try:
+            result["block_number"] = int(receipt.get("blockNumber", 0))
+            result["gas_used"] = int(receipt.get("gasUsed", 0))
+        except (TypeError, ValueError):
+            pass
+        return result
 
     def batch_sync_contexts(
         self,
