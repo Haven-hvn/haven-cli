@@ -274,83 +274,12 @@ interface HavenAttributes {
 }
 ```
 
-### Lit Encryption Metadata Structure
+### Haven-AOL Gate Metadata Structure
 
-When a video is encrypted using Haven-AOL, the following metadata structure is stored in the payload as a JSON string:
-
-```typescript
-interface EncryptionMetadata {
-  version: 'hybrid-v1';               // Metadata format version
-  encryptedKey: string;               // Base64 BLS-encrypted AES key
-  keyHash: string;                    // SHA256 of original AES key
-  iv: string;                         // Base64-encoded 12-byte IV
-  algorithm: 'AES-GCM';               // Encryption algorithm
-  keyLength: 256;                     // AES key length in bits
-  accessControlConditions: AccessControlCondition[];
-  chain: string;                      // Blockchain chain (e.g., 'ethereum')
-  originalMimeType?: string;          // Original file MIME type
-  originalSize?: number;              // Original file size in bytes
-  originalHash?: string;              // SHA256 hash of original file
-}
-
-interface AccessControlCondition {
-  contractAddress: string;
-  standardContractType: '' | 'ERC20' | 'ERC721' | 'ERC1155';
-  chain: string;
-  method: string;
-  parameters: string[];
-  returnValueTest: {
-    comparator: '=' | '>' | '>=' | '<' | '<=' | 'contains';
-    value: string;
-  };
-}
-```
-
-#### Example Lit Encryption Metadata
-
-```json
-{
-  "version": "hybrid-v1",
-  "encryptedKey": "base64encodedencryptedkey...",
-  "keyHash": "sha256hashofkey...",
-  "iv": "base64encodediv...",
-  "algorithm": "AES-GCM",
-  "keyLength": 256,
-  "accessControlConditions": [
-    {
-      "contractAddress": "",
-      "standardContractType": "",
-      "chain": "ethereum",
-      "method": "",
-      "parameters": [":userAddress"],
-      "returnValueTest": {
-        "comparator": "=",
-        "value": "0x1234567890abcdef..."
-      }
-    }
-  ],
-  "chain": "ethereum",
-  "originalMimeType": "video/mp4",
-  "originalSize": 10485760,
-  "originalHash": "sha256hashoforiginalfile..."
-}
-```
-
-### CID Encryption Metadata Structure
-
-When the CID itself is encrypted (separate from video content encryption):
-
-```typescript
-interface CidEncryptionMetadata {
-  version: 'hybrid-v1';
-  encryptedCid: string;               // Base64 encrypted CID
-  encryptedKey: string;               // BLS-encrypted key
-  iv: string;                         // Base64 IV
-  algorithm: 'AES-GCM';
-  accessControlConditions: AccessControlCondition[];
-  chain: string;
-}
-```
+When a video is encrypted using Haven-AOL, the payload carries integer-versioned
+gate metadata (`version` 1 or 3) with `cid`, `chain`, `tokenAddress`,
+`threshold`, `encryptedAesKey` (plus `epoch` for v3). See
+`haven_cli/crypto/gate_metadata.py` for the authoritative shape.
 
 ---
 
@@ -385,11 +314,10 @@ is_encrypted = payload.get("is_encrypted", False)
 title = attributes.get("title")
 cid_hash = attributes.get("cid_hash")
 
-# Parse Lit encryption metadata (if encrypted)
+# Parse Haven-AOL gate metadata (if encrypted)
 if is_encrypted and payload.get("encryption_metadata"):
     encryption_meta = json.loads(payload["encryption_metadata"])
-    encrypted_key = encryption_meta["encryptedKey"]
-    access_conditions = encryption_meta["accessControlConditions"]
+    encrypted_key = encryption_meta["encryptedAesKey"]
 ```
 
 #### Querying Entities
@@ -441,7 +369,7 @@ for (const entity of entities) {
   const title = attributes.title as string;
   const cidHash = attributes.cid_hash as string;
   
-  // Parse Lit encryption metadata
+  // Parse Haven-AOL gate metadata
   let encryptionMeta: Record<string, unknown> | undefined;
   const rawEncryptionMeta = payload?.encryption_metadata;
   if (rawEncryptionMeta && typeof rawEncryptionMeta === 'string') {
@@ -470,7 +398,7 @@ function parseHavenEntity(entity: ArkivEntity): Video {
   const get = (snakeKey: string, camelKey: string): unknown =>
     data[snakeKey] ?? data[camelKey];
   
-  // Parse Lit encryption metadata
+  // Parse Haven-AOL gate metadata
   let encryptionMeta: Record<string, unknown> | undefined;
   const rawEncryptionMeta = get('encryption_metadata', 'encryptionMetadata');
   if (rawEncryptionMeta) {

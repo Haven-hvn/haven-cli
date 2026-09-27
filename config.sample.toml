@@ -47,7 +47,6 @@ vlm_multiplexer_enabled = true
 vlm_max_concurrent_requests = 15  # Global limit on concurrent requests (admission control)
 
 # Encryption Settings (Haven-AOL)
-# Note: Lit network is derived from blockchain.network_mode
 encryption_enabled = true
 # Required when encryption_enabled = true.
 # Supported: "EthMainnet", "EthSepolia", "ArbitrumOne", "BaseMainnet", "OptimismMainnet"

@@ -447,7 +447,7 @@ class JSRuntimeBridge:
                     if not decoded:
                         continue
                     
-                    # Check for Synapse/Lit SDK logs from underlying packages (filecoin-pin, etc.)
+                    # Check for Synapse SDK logs from underlying packages (filecoin-pin, etc.)
                     # These are non-JSON log messages that should be captured
                     sdk_log_tags = ('[Synapse]', '[filecoin-pin]', '[haven-js]', '[browser-shim]')
                     if any(tag in decoded for tag in sdk_log_tags):
@@ -489,7 +489,7 @@ class JSRuntimeBridge:
                 try:
                     decoded = line.decode().strip()
                     if decoded:
-                        # Log Synapse/Lit SDK messages at appropriate level
+                        # Log Synapse SDK messages at appropriate level
                         if '[Synapse]' in decoded:
                             logger.info(f"JS: {decoded}")
                         elif 'error' in decoded.lower() or 'ERROR' in decoded:

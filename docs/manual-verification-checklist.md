@@ -104,15 +104,14 @@ Verify:
 - [ ] `attributes.is_encrypted` is `1`
 - [ ] `payload.encryption_metadata` exists
 - [ ] `encryption_metadata` is valid JSON (not a string in JSON)
-- [ ] JSON has required fields:
-  - [ ] `version` = "hybrid-v1"
-  - [ ] `encryptedKey` (base64 string)
-  - [ ] `keyHash` (hex string)
-  - [ ] `iv` (base64 string)
-  - [ ] `algorithm` = "AES-GCM"
-  - [ ] `keyLength` = 256
-  - [ ] `accessControlConditions` (array)
-  - [ ] `chain` = "ethereum" (or configured chain)
+- [ ] JSON has required Haven-AOL gate fields:
+  - [ ] `version` = 1 or 3 (integer)
+  - [ ] `cid` (string)
+  - [ ] `chain` (string)
+  - [ ] `tokenAddress` (string)
+  - [ ] `threshold` (integer)
+  - [ ] `encryptedAesKey` (base64 string)
+  - [ ] `epoch` (integer, v3 only)
 - [ ] `attributes.encrypted_cid` exists (encrypted CID for public access)
 - [ ] `payload.encrypted` does NOT exist
 - [ ] `payload.encryption_ciphertext` does NOT exist

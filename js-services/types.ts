@@ -43,34 +43,6 @@ export const ErrorCodes = {
   INSUFFICIENT_BALANCE: -32006, // Actor/wallet has insufficient funds for transaction
 } as const;
 
-/**
- * Hybrid encryption metadata stored alongside the encrypted file
- */
-export interface HybridEncryptionMetadata {
-  /** Version identifier for future compatibility */
-  version: 'hybrid-v1';
-  /** Wrapped AES key (base64) */
-  encryptedKey: string;
-  /** SHA-256 hash of the AES key (for verification) */
-  keyHash: string;
-  /** Base64-encoded 12-byte IV for AES-GCM */
-  iv: string;
-  /** AES algorithm identifier */
-  algorithm: 'AES-GCM';
-  /** Key length in bits */
-  keyLength: 256;
-  /** Access control conditions */
-  accessControlConditions: Record<string, unknown>[];
-  /** Blockchain chain identifier */
-  chain: string;
-  /** Optional: Original file MIME type */
-  originalMimeType?: string;
-  /** Optional: Original file size in bytes */
-  originalSize?: number;
-  /** Optional: SHA-256 hash of original file content */
-  originalHash?: string;
-}
-
 // ============================================================================
 // Synapse SDK Types
 // ============================================================================
