@@ -298,7 +298,82 @@ class BitTorrentPlugin(ArchiverPlugin):
         """
         self._progress_tracker = tracker
         logger.debug("Progress tracker set for BitTorrent plugin")
-    
+
+    @staticmethod
+    def _select_video_files(
+        files: Any,
+        video_extensions: List[str],
+        min_video_size: int,
+        max_video_size: int,
+    ) -> tuple[List[tuple[int, str, int]], List[tuple[int, str, int, str]]]:
+        """Split a torrent's video files into eligible and skipped (B10).
+
+        Every video file whose size is within
+        ``[min_video_size, max_video_size]`` is eligible — not only the
+        largest.  Oversize and undersize videos are reported individually
+        so the caller can archive the rest and explain each skip.
+
+        Returns:
+            ``(eligible, skipped)`` where eligible items are
+            ``(index, file_path, size)`` and skipped items additionally
+            carry a human-readable reason.
+        """
+        eligible: List[tuple[int, str, int]] = []
+        skipped: List[tuple[int, str, int, str]] = []
+        for i in range(files.num_files()):
+            file_path = files.file_path(i)
+            file_size = files.file_size(i)
+            file_ext = os.path.splitext(file_path.lower())[1]
+            if file_ext not in video_extensions:
+                continue
+            if file_size > max_video_size:
+                skipped.append((
+                    i, file_path, file_size,
+                    f"exceeds max size limit of {max_video_size} bytes",
+                ))
+            elif file_size < min_video_size:
+                skipped.append((
+                    i, file_path, file_size,
+                    f"below minimum size limit of {min_video_size} bytes",
+                ))
+            else:
+                eligible.append((i, file_path, file_size))
+        return eligible, skipped
+
+    @staticmethod
+    def _torrent_titles(
+        source: MediaSource,
+        output_paths: List[str],
+    ) -> Dict[str, str]:
+        """Per-file titles for a multi-video torrent (B10).
+
+        Single-file results keep the legacy shape (no per-file titles;
+        the torrent title flows through ``source.metadata``).  With
+        several files each gets ``"<torrent title> - <file name>"`` so
+        the scheduler's per-file ``output_titles`` distinguishes them.
+        """
+        if len(output_paths) <= 1:
+            return {}
+        base = (source.metadata or {}).get("title") or source.title or ""
+        titles: Dict[str, str] = {}
+        for output_path in output_paths:
+            name = Path(output_path).name
+            titles[str(output_path)] = f"{base} - {name}".strip(" -") or name
+        return titles
+
+    @staticmethod
+    def _result_metadata(
+        source: MediaSource,
+        output_paths: List[str],
+        output_titles: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Build the ``ArchiveResult.metadata`` for one or more files."""
+        metadata: Dict[str, Any] = dict(source.metadata or {})
+        metadata["output_paths"] = list(output_paths)
+        if output_titles:
+            metadata["output_titles"] = dict(output_titles)
+        return metadata
+
     async def initialize(self) -> None:
         """Initialize the plugin.
         
@@ -745,11 +820,16 @@ class BitTorrentPlugin(ArchiverPlugin):
         if infohash in self._archived_torrents:
             logger.info(f"Torrent {infohash} already archived")
             archived_info = self._archived_torrents[infohash]
+            cached_paths = archived_info.get("output_paths") or (
+                [archived_info["output_path"]] if archived_info.get("output_path") else []
+            )
+            metadata = self._result_metadata(source, cached_paths,
+                                             archived_info.get("output_titles"))
             return ArchiveResult(
                 success=True,
-                output_path=archived_info.get("output_path", ""),
+                output_path=cached_paths[0] if cached_paths else "",
                 file_size=archived_info.get("file_size", 0),
-                metadata={"already_archived": True, **source.metadata},
+                metadata={"already_archived": True, **metadata},
             )
         
         if not self._session:
@@ -764,11 +844,16 @@ class BitTorrentPlugin(ArchiverPlugin):
             if existing:
                 if existing["status"] == "completed":
                     logger.info(f"Torrent {infohash} already completed")
+                    cached_paths = existing.get("output_paths") or (
+                        [existing["output_path"]] if existing.get("output_path") else []
+                    )
+                    metadata = self._result_metadata(source, cached_paths,
+                                                     existing.get("output_titles"))
                     return ArchiveResult(
                         success=True,
-                        output_path=existing.get("output_path") or "",
+                        output_path=cached_paths[0] if cached_paths else "",
                         file_size=existing.get("downloaded_size", 0),
-                        metadata={"already_archived": True, **source.metadata},
+                        metadata={"already_archived": True, **metadata},
                     )
                 elif existing["status"] in ["downloading", "paused"]:
                     logger.info(f"Resuming existing download for {infohash}")
@@ -856,7 +941,9 @@ class BitTorrentPlugin(ArchiverPlugin):
             )
             files = torrent_info.files()
             
-            # Find the largest video file first, then check size limits (AND logic)
+            # B10: every video file lands in the archive, not only the
+            # largest.  Size limits apply per video, so one oversize
+            # video no longer blocks the eligible siblings.
             video_extensions = self._bt_config.video_extensions
             min_video_size = self._bt_config.min_video_size
             max_video_size = self._bt_config.max_video_size
@@ -881,123 +968,77 @@ class BitTorrentPlugin(ArchiverPlugin):
                     max_video_size,
                 )
 
-            largest_video_index = -1
-            largest_video_size = 0
-            all_video_files = []  # Track all video files found
-            
-            # Step 1: Find all video files and identify the largest one
-            for i in range(files.num_files()):
-                file_path = files.file_path(i)
-                file_size = files.file_size(i)
-                file_ext = os.path.splitext(file_path.lower())[1]
-                
-                # Check if it's a video file
-                if file_ext in video_extensions:
-                    all_video_files.append((i, file_path, file_size))
-                    if file_size > largest_video_size:
-                        largest_video_size = file_size
-                        largest_video_index = i
-            
-            # Step 2: If we found a largest video, check if it's within size limits
-            if largest_video_index != -1:
-                largest_video_path = files.file_path(largest_video_index)
-                
-                if largest_video_size > effective_max_video_size:
-                    # Largest video exceeds max size - fail, don't fall back to smaller files
-                    logger.info(
-                        f"Largest video {largest_video_path}: {largest_video_size / (1024**3):.2f} GB "
-                        f"exceeds effective max limit of {effective_max_video_size / (1024**3):.2f} GB "
-                        f"(Filecoin MAX_UPLOAD_SIZE={max_upload_size()} bytes, "
-                        f"configured max_video_size={max_video_size} bytes)"
-                    )
+            selected_files, skipped_files = self._select_video_files(
+                files,
+                video_extensions,
+                min_video_size,
+                effective_max_video_size,
+            )
+            all_video_files = [
+                (i, path, size)
+                for i, path, size in selected_files
+                + [(i, path, size) for i, path, size, _ in skipped_files]
+            ]
+            for _i, _path, _size, _reason in skipped_files:
+                logger.info(f"Skipping video {_path} ({_size} bytes): {_reason}")
 
-                    max_size_str = (
-                        f"{effective_max_video_size / (1024**3):.1f} GB"
-                        if effective_max_video_size >= 1024**3
-                        else f"{effective_max_video_size / (1024**2):.0f} MB"
-                    )
-                    skip_reason = (
-                        f"Largest video file '{largest_video_path}' ({largest_video_size / (1024**3):.2f} GB) "
-                        f"exceeds max size limit of {max_size_str}. "
-                        f"Found {len(all_video_files)} video files, will not download smaller files."
-                    )
-                    
-                    # Create a skipped record in the database for TUI visibility
-                    await self._create_skipped_record(
-                        infohash=infohash,
-                        source_id=source.source_id,
-                        title=source.metadata.get("title"),
-                        magnet_uri=source.uri,
-                        skip_reason=skip_reason,
-                        total_size=largest_video_size,
-                    )
-                    
-                    # Clean up the torrent handle
-                    async with self._session_lock:
-                        try:
-                            await self._run_in_executor(
-                                self._session.remove_torrent,
-                                handle,
-                                timeout=10.0
-                            )
-                            if infohash in self._active_downloads:
-                                del self._active_downloads[infohash]
-                        except Exception:
-                            pass
-                    
-                    return ArchiveResult(
-                        success=False,
-                        error=skip_reason,
-                    )
-                
-                if largest_video_size < min_video_size:
-                    # Largest video is below min size - fail
-                    logger.debug(
-                        f"Largest video {largest_video_path}: {largest_video_size / (1024**2):.2f} MB "
-                        f"below min limit of {min_video_size / (1024**2):.2f} MB"
-                    )
-                    
-                    skip_reason = (
-                        f"Largest video file '{largest_video_path}' ({largest_video_size / (1024**2):.2f} MB) "
-                        f"is below minimum size limit of {min_video_size / (1024**2):.0f} MB. "
-                        f"Found {len(all_video_files)} video files."
-                    )
-                    
-                    # Create a skipped record in the database for TUI visibility
-                    await self._create_skipped_record(
-                        infohash=infohash,
-                        source_id=source.source_id,
-                        title=source.metadata.get("title"),
-                        magnet_uri=source.uri,
-                        skip_reason=skip_reason,
-                        total_size=largest_video_size,
-                    )
-                    
-                    # Clean up the torrent handle
-                    async with self._session_lock:
-                        try:
-                            await self._run_in_executor(
-                                self._session.remove_torrent,
-                                handle,
-                                timeout=10.0
-                            )
-                            if infohash in self._active_downloads:
-                                del self._active_downloads[infohash]
-                        except Exception:
-                            pass
-                    
-                    return ArchiveResult(
-                        success=False,
-                        error=skip_reason,
-                    )
-                
-                # Largest video is within size limits - proceed with it
+            if selected_files:
                 logger.info(
-                    f"Selected largest video: {largest_video_path} "
-                    f"({largest_video_size / (1024**3):.2f} GB) within size limits"
+                    "Selected %d of %d video file(s) within size limits: %s",
+                    len(selected_files),
+                    len(all_video_files),
+                    ", ".join(path for _, path, _ in selected_files),
+                )
+            elif skipped_files:
+                # No eligible video — fail, but name every skip so the
+                # operator sees it was per-video, not one largest pick.
+                detail = "; ".join(
+                    f"'{path}' ({size} bytes) {_reason}" for _, path, size, _reason in skipped_files
+                )
+                logger.info(
+                    "No video files within size limits: %s "
+                    "(effective max=%d bytes, Filecoin "
+                    "MAX_UPLOAD_SIZE=%d bytes, configured "
+                    "max_video_size=%d bytes)",
+                    detail,
+                    effective_max_video_size,
+                    max_upload_size(),
+                    max_video_size,
+                )
+                skip_reason = (
+                    f"No eligible video files in torrent: {detail}. "
+                    f"Found {len(all_video_files)} video file(s)."
+                )
+                    
+                # Create a skipped record in the database for TUI visibility
+                await self._create_skipped_record(
+                    infohash=infohash,
+                    source_id=source.source_id,
+                    title=source.metadata.get("title"),
+                    magnet_uri=source.uri,
+                    skip_reason=skip_reason,
+                    total_size=sum(size for _, _, size in all_video_files),
+                )
+
+                # Clean up the torrent handle
+                async with self._session_lock:
+                    try:
+                        await self._run_in_executor(
+                            self._session.remove_torrent,
+                            handle,
+                            timeout=10.0
+                        )
+                        if infohash in self._active_downloads:
+                            del self._active_downloads[infohash]
+                    except Exception:
+                        pass
+
+                return ArchiveResult(
+                    success=False,
+                    error=skip_reason,
                 )
             
-            if largest_video_index == -1:
+            if not selected_files:
                 # No video file found — fail rather than downloading non-video archives
                 # TODO: Support extracting video from archives (e.g., .rar, .zip) if
                 #       the torrent contains a single archive wrapping the video file.
@@ -1023,12 +1064,20 @@ class BitTorrentPlugin(ArchiverPlugin):
                           f"Archive extraction (rar, zip) is not yet supported."
                 )
             
-            # Set file priorities (in executor)
-            logger.info(f"Selecting file: {files.file_path(largest_video_index)} ({largest_video_size} bytes)")
-            
+            # Set file priorities (in executor): B10 — every eligible
+            # video downloads, not only the largest.
+            selected_indexes = [i for i, _, _ in selected_files]
+            selected_total_size = sum(size for _, _, size in selected_files)
+            logger.info(
+                "Selecting %d file(s): %s (%d bytes total)",
+                len(selected_files),
+                ", ".join(path for _, path, _ in selected_files),
+                selected_total_size,
+            )
+
             def _set_priorities():
                 for i in range(files.num_files()):
-                    if i == largest_video_index:
+                    if i in selected_indexes:
                         handle.file_priority(i, 4)  # Normal priority
                     else:
                         handle.file_priority(i, 0)  # Don't download
@@ -1038,16 +1087,21 @@ class BitTorrentPlugin(ArchiverPlugin):
                 timeout=self.DEFAULT_LIBTORRENT_TIMEOUT
             )
             
-            # Create download record in database
+            # Create download record in database.  The single
+            # ``selected_file_index`` column keeps the first index for
+            # back-compat; the full list rides in metadata (B10).
             if self._bt_config.enable_background_downloads:
                 await self._create_download_record(
                     infohash=infohash,
                     source_id=source.source_id,
                     title=source.metadata.get("title"),
                     magnet_uri=source.uri,
-                    total_size=largest_video_size,
-                    selected_file_index=largest_video_index,
-                    metadata=source.metadata,
+                    total_size=selected_total_size,
+                    selected_file_index=selected_indexes[0],
+                    metadata={
+                        **dict(source.metadata or {}),
+                        "selected_file_indexes": list(selected_indexes),
+                    },
                 )
             
             # B4: the download is now being enqueued/started, which is the
@@ -1056,13 +1110,14 @@ class BitTorrentPlugin(ArchiverPlugin):
             await self._mark_seen(infohash)
 
             # Wait for download to complete with timeout and stall detection
-            logger.info("Downloading selected file...")
+            logger.info("Downloading selected file(s)...")
             result = await self._download_with_tracking(
                 handle=handle,
                 infohash=infohash,
                 torrent_info=torrent_info,
                 files=files,
-                selected_file_index=largest_video_index,
+                selected_file_index=selected_indexes[0],
+                selected_file_indexes=selected_indexes,
                 source=source,
             )
             
@@ -1115,8 +1170,9 @@ class BitTorrentPlugin(ArchiverPlugin):
         infohash: str,
         torrent_info: lt.torrent_info,
         files: lt.file_storage,
-        selected_file_index: int,
-        source: MediaSource,
+        selected_file_index: int = 0,
+        source: Optional[MediaSource] = None,
+        selected_file_indexes: Optional[List[int]] = None,
     ) -> ArchiveResult:
         """Download a file with timeout, stall detection, and database tracking.
         
@@ -1135,6 +1191,14 @@ class BitTorrentPlugin(ArchiverPlugin):
         Returns:
             ArchiveResult with download result
         """
+        if source is None:
+            raise ValueError("_download_with_tracking requires a source")
+        # B10: multi-file torrents pass every selected index; single-file
+        # callers keep the legacy ``selected_file_index`` shape.
+        download_indexes = (
+            list(selected_file_indexes) if selected_file_indexes
+            else [selected_file_index]
+        )
         start_time = asyncio.get_event_loop().time()
         last_progress_time = start_time
         last_progress = 0.0
@@ -1259,41 +1323,74 @@ class BitTorrentPlugin(ArchiverPlugin):
             await asyncio.sleep(5)
         
         logger.info("Download complete. Stopping torrent...")
-        
-        # Get the output path for the downloaded file (B5: ABSOLUTE).
-        # Note: files.file_path() already includes the torrent name as prefix.
-        # ``.resolve()`` guarantees the stored path never depends on the
-        # process CWD, so pipeline steps can open it with no path joining.
-        output_path = str(
-            (self._download_dir / files.file_path(selected_file_index)).resolve()
-        )
-        
-        # Verify the file exists (in executor)
-        async def _file_exists():
-            def _exists():
-                return os.path.exists(output_path)
+
+        # Get the output paths for the downloaded files (B5: ABSOLUTE,
+        # B10: one per selected video).  Note: files.file_path()
+        # already includes the torrent name as prefix.  ``.resolve()``
+        # guarantees the stored paths never depend on the process CWD,
+        # so pipeline steps can open them with no path joining.
+        output_paths = [
+            str((self._download_dir / files.file_path(i)).resolve())
+            for i in download_indexes
+        ]
+        output_path = output_paths[0] if output_paths else ""
+
+        # Verify every selected file exists (in executor)
+        async def _file_exists(path: str) -> bool:
+            def _exists() -> bool:
+                return os.path.exists(path)
             return await self._run_in_executor(_exists, timeout=self.DEFAULT_FILE_IO_TIMEOUT)
-        
-        if not await _file_exists():
+
+        present_paths: List[str] = []
+        missing_paths: List[str] = []
+        for candidate in output_paths:
+            if await _file_exists(candidate):
+                present_paths.append(candidate)
+            else:
+                missing_paths.append(candidate)
+
+        if not present_paths:
             await self._update_download_status(
-                infohash, "failed", f"File not found: {output_path}"
+                infohash, "failed", f"File not found: {missing_paths[0] if missing_paths else output_path}"
             )
             return ArchiveResult(
                 success=False,
-                error=f"Download completed but file not found: {output_path}"
+                error=f"Download completed but file not found: {missing_paths[0] if missing_paths else output_path}"
             )
-        
-        # Get file size (in executor)
-        async def _get_file_size():
-            def _size():
-                return os.path.getsize(output_path)
+
+        if missing_paths:
+            # Partial completion still archives what arrived; the
+            # scheduler only enqueues files that actually exist.
+            logger.warning(
+                "Download finished with %d of %d selected file(s) on disk; "
+                "missing: %s",
+                len(present_paths), len(output_paths), ", ".join(missing_paths),
+            )
+            output_paths = present_paths
+            output_path = present_paths[0]
+
+        # Get file sizes (in executor)
+        async def _get_file_size(path: str) -> int:
+            def _size() -> int:
+                return os.path.getsize(path)
             return await self._run_in_executor(_size, timeout=self.DEFAULT_FILE_IO_TIMEOUT)
-        
-        file_size = await _get_file_size()
-        
+
+        file_size = 0
+        for candidate in output_paths:
+            file_size += await _get_file_size(candidate)
+
+        output_titles = self._torrent_titles(source, output_paths)
+
         # Update database as completed
         if self._bt_config.enable_background_downloads:
-            await self._complete_download(infohash, output_path, file_size)
+            await self._complete_download(
+                infohash,
+                output_path,
+                file_size,
+                output_paths=output_paths,
+                output_titles=output_titles,
+                selected_file_indexes=download_indexes,
+            )
         
         # Remove the torrent handle to stop seeding (in executor)
         async with self._session_lock:
@@ -1310,20 +1407,22 @@ class BitTorrentPlugin(ArchiverPlugin):
         
         logger.info("Torrent stopped. Not seeding.")
         
-        # Mark as archived
+        # Mark as archived (B10: every selected file, not only the first).
         self._archived_torrents[infohash] = {
             "infohash": infohash,
             "title": source.metadata.get("title", ""),
             "output_path": output_path,
+            "output_paths": list(output_paths),
+            "output_titles": dict(output_titles),
             "file_size": file_size,
             "archived_at": asyncio.get_event_loop().time(),
         }
-        
+
         return ArchiveResult(
             success=True,
             output_path=output_path,
             file_size=file_size,
-            metadata=source.metadata,
+            metadata=self._result_metadata(source, output_paths, output_titles),
         )
     
     async def _create_download_record(
@@ -1500,18 +1599,32 @@ class BitTorrentPlugin(ArchiverPlugin):
         infohash: str,
         output_path: str,
         file_size: int,
+        output_paths: Optional[List[str]] = None,
+        output_titles: Optional[Dict[str, str]] = None,
+        selected_file_indexes: Optional[List[int]] = None,
     ) -> None:
         """Mark a download as completed in the database.
-        
+
         Args:
             infohash: Torrent infohash
-            output_path: Path to the downloaded file
-            file_size: File size in bytes
+            output_path: Path to the downloaded file (first file)
+            file_size: Total size in bytes (all files)
+            output_paths: All downloaded file paths (B10)
+            output_titles: Per-file titles keyed by path (B10)
+            selected_file_indexes: All selected torrent indexes (B10)
         """
         try:
             def _complete():
                 with self._db_session_factory() as session:
                     repos = RepositoryFactory(session)
+                    existing = repos.torrents.get_by_infohash(infohash)
+                    metadata = dict(existing.download_metadata) if existing and existing.download_metadata else {}
+                    if output_paths is not None:
+                        metadata["output_paths"] = list(output_paths)
+                    if output_titles:
+                        metadata["output_titles"] = dict(output_titles)
+                    if selected_file_indexes is not None:
+                        metadata["selected_file_indexes"] = list(selected_file_indexes)
                     repos.torrents.update(
                         infohash=infohash,
                         status="completed",
@@ -1519,6 +1632,7 @@ class BitTorrentPlugin(ArchiverPlugin):
                         output_path=output_path,
                         downloaded_size=file_size,
                         completed_at=datetime.now(timezone.utc),
+                        metadata=metadata,
                     )
             
             await self._run_db_operation(_complete)
@@ -1543,13 +1657,32 @@ class BitTorrentPlugin(ArchiverPlugin):
                     download = repos.torrents.get_by_infohash(infohash)
                     if download:
                         # Return as dict to avoid detached session issues
+                        meta = dict(download.download_metadata) if download.download_metadata else {}
+                        indexes = meta.get("selected_file_indexes")
+                        if not isinstance(indexes, list) or not indexes:
+                            indexes = (
+                                [download.selected_file_index]
+                                if download.selected_file_index is not None else []
+                            )
+                        paths = meta.get("output_paths")
+                        if not isinstance(paths, list) or not paths:
+                            paths = (
+                                [download.output_path]
+                                if download.output_path else []
+                            )
+                        titles = meta.get("output_titles")
+                        if not isinstance(titles, dict):
+                            titles = {}
                         return {
                             "infohash": download.infohash,
                             "status": download.status,
                             "output_path": download.output_path,
+                            "output_paths": list(paths),
+                            "output_titles": dict(titles),
                             "downloaded_size": download.downloaded_size,
                             "resume_data": download.resume_data,
                             "selected_file_index": download.selected_file_index,
+                            "selected_file_indexes": list(indexes),
                         }
                     return None
             
@@ -1573,17 +1706,25 @@ class BitTorrentPlugin(ArchiverPlugin):
                     repos = RepositoryFactory(session)
                     downloads = repos.torrents.get_active()  # Gets downloading + paused
                     # Return as list of dicts to avoid detached session issues
-                    return [
-                        {
+                    pending_rows = []
+                    for d in downloads:
+                        meta = d.download_metadata if isinstance(d.download_metadata, dict) else {}
+                        indexes = meta.get("selected_file_indexes")
+                        if not isinstance(indexes, list) or not indexes:
+                            indexes = (
+                                [d.selected_file_index]
+                                if d.selected_file_index is not None else []
+                            )
+                        pending_rows.append({
                             "infohash": d.infohash,
                             "magnet_uri": d.magnet_uri,
                             "output_path": d.output_path,
                             "resume_data": d.resume_data,
                             "progress": d.progress,
                             "selected_file_index": d.selected_file_index,
-                        }
-                        for d in downloads
-                    ]
+                            "selected_file_indexes": list(indexes),
+                        })
+                    return pending_rows
             
             pending = await self._run_db_operation(_get_pending)
             
@@ -1752,17 +1893,22 @@ class BitTorrentPlugin(ArchiverPlugin):
             )
             files = torrent_info.files()
             
-            # Re-apply file selection (in executor)
-            selected_file_index = existing.get("selected_file_index")
-            if selected_file_index is not None:
-                
+            # Re-apply file selection (in executor).  B10: resume
+            # downloads every originally-selected video, falling back
+            # to the legacy single index for old rows.
+            resume_indexes = existing.get("selected_file_indexes")
+            if not isinstance(resume_indexes, list) or not resume_indexes:
+                single = existing.get("selected_file_index")
+                resume_indexes = [single] if single is not None else []
+            if resume_indexes:
+
                 def _set_priorities():
                     for i in range(files.num_files()):
-                        if i == selected_file_index:
+                        if i in resume_indexes:
                             handle.file_priority(i, 4)
                         else:
                             handle.file_priority(i, 0)
-                
+
                 await self._run_in_executor(
                     _set_priorities,
                     timeout=self.DEFAULT_LIBTORRENT_TIMEOUT
@@ -1774,7 +1920,8 @@ class BitTorrentPlugin(ArchiverPlugin):
                 infohash=infohash,
                 torrent_info=torrent_info,
                 files=files,
-                selected_file_index=selected_file_index or 0,
+                selected_file_index=resume_indexes[0] if resume_indexes else 0,
+                selected_file_indexes=resume_indexes or None,
                 source=source,
             )
             

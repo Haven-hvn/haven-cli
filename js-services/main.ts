@@ -190,6 +190,20 @@ const methods: MethodRegistry = {
     return await synapseWrapper.getStatus(params as Record<string, unknown>);
   },
 
+  'synapse.listDataSets': async (params: unknown) => {
+    if (!synapseWrapper?.isConnected) {
+      throw new Error('Synapse not connected');
+    }
+    return await synapseWrapper.listDataSets(params as Record<string, unknown>);
+  },
+
+  'synapse.terminateDataSet': async (params: unknown) => {
+    if (!synapseWrapper?.isConnected) {
+      throw new Error('Synapse not connected');
+    }
+    return await synapseWrapper.terminateDataSet(params as Record<string, unknown>);
+  },
+
   'synapse.getCid': async (params: unknown) => {
     if (!synapseWrapper?.isConnected) {
       throw new Error('Synapse not connected');

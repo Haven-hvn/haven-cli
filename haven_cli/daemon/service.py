@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from haven_cli.config import HavenConfig
+from haven_cli.daemon.provider_health import (
+    HealthDeps,
+    health_interval_from_config,
+    provider_health_loop,
+    provider_ids_from_config,
+)
 from haven_cli.pipeline.manager import PipelineManager, create_default_pipeline, create_batched_pipeline
 from haven_cli.pipeline.batch_accumulator import BatchAccumulator
 from haven_cli.pipeline.flush_queue import FlushQueue
@@ -98,6 +104,12 @@ class HavenDaemon:
         # TUI's per-call readers).
         self._speed_history_service: Optional[SpeedHistoryService] = None
         self._speed_history_session: Optional[Any] = None
+        # Background provider/dataset health loop (plan item 9, 2nd
+        # half): probes the newest seeded piece via synapse.getStatus
+        # once per interval and logs "Provider health: …". Never
+        # blocks startup; failures are statuses, not exceptions.
+        self._provider_health_task: Optional[asyncio.Task] = None
+        self._provider_health_stop = asyncio.Event()
         self._running = False
         self._shutdown_event = asyncio.Event()
     
@@ -260,6 +272,27 @@ class HavenDaemon:
         if self._accumulator is not None and self._flush_queue is not None:
             self._flush_loop_task = asyncio.create_task(self._flush_loop())
             logger.info("Batch flush loop started")
+
+        # Background provider/dataset health (item 9, 2nd half). The
+        # loop probes the newest seeded piece and logs one
+        # "Provider health: …" line per interval; it never raises.
+        self._provider_health_stop.clear()
+        interval = health_interval_from_config(self._config)
+        if interval > 0:
+            self._provider_health_task = asyncio.create_task(
+                provider_health_loop(
+                    HealthDeps(provider_ids=provider_ids_from_config(self._config)),
+                    interval_seconds=interval,
+                    stop_event=self._provider_health_stop,
+                )
+            )
+            logger.info(
+                "Provider health loop started (interval=%ss, providers=%s)",
+                interval,
+                list(provider_ids_from_config(self._config)),
+            )
+        else:
+            logger.info("Provider health loop disabled (provider_health_interval=0)")
         
         self._running = True
         logger.info("Haven daemon started successfully")
@@ -302,9 +335,21 @@ class HavenDaemon:
         of their initialization.
         """
         logger.info("Stopping Haven daemon...")
-        
+
         self._running = False
-        
+
+        # Stop background provider health loop first so it makes no
+        # further bridge calls during shutdown.
+        self._provider_health_stop.set()
+        if self._provider_health_task is not None and not self._provider_health_task.done():
+            self._provider_health_task.cancel()
+            try:
+                await self._provider_health_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("Provider health loop stopped")
+        self._provider_health_task = None
+
         # Cancel flush loop
         if self._flush_loop_task is not None and not self._flush_loop_task.done():
             self._flush_loop_task.cancel()

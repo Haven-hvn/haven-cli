@@ -150,3 +150,16 @@ Deno.test('resolveReuseDataSetId picks oldest live set on pinned provider', () =
   assertEquals(resolveReuseDataSetId(sets, [7n]), undefined);
   assertEquals(resolveReuseDataSetId([], []), undefined);
 });
+
+Deno.test('resolveReuseDataSetId prefers the recorded epoch set (item 12)', () => {
+  const sets = [
+    { dataSetId: 52242n, providerId: 9n, isLive: true },
+    { dataSetId: 52244n, providerId: 9n, isLive: true },
+  ];
+  // Epoch 686 recorded 52244: reusing it beats the oldest-first rule.
+  assertEquals(resolveReuseDataSetId(sets, [9n], 52244n), 52244n);
+  // A dead or unknown preferred set falls back to oldest-live.
+  assertEquals(resolveReuseDataSetId(sets, [9n], 52300n), 52242n);
+  // Fresh (first upload of a new epoch) always creates a new set.
+  assertEquals(resolveReuseDataSetId(sets, [9n], 52244n, true), undefined);
+});

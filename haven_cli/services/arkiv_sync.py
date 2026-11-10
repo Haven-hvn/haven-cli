@@ -1092,19 +1092,25 @@ class ArkivSyncClient:
     def sync_context(
         self,
         context: PipelineContext,
+        create_only: bool = False,
     ) -> dict[str, Any] | None:
         """
         Sync a pipeline context to Arkiv.
 
         Creates a new entity or updates an existing one based on locator hash.
-        
+        With ``create_only=True`` the dedup lookup is skipped and a fresh
+        entity is always created (used by ``haven repin``: the repinner
+        must own the new entity; an upsert would patch the original
+        owner's entity or fail when they are not the owner).
+
         Args:
             context: Pipeline context with video metadata
-            
+            create_only: Force creation instead of update-if-exists
+
         Returns:
             Dictionary with entity_key and transaction_hash if successful,
             None if sync is disabled
-            
+
         Raises:
             InsufficientGasError: If the wallet has insufficient gas funds
             Exception: For other sync errors
@@ -1123,8 +1129,8 @@ class ArkivSyncClient:
         # Get sha256_ct for duplicate detection
         sha256_ct = attributes.get("sha256_ct", "")
 
-        # Check for existing entity
-        existing = self.find_existing_entity(sha256_ct)
+        # Check for existing entity (skipped for create-only repins).
+        existing = None if create_only else self.find_existing_entity(sha256_ct)
         
         try:
             if _chain_uses_tiramisu_dialect(self.config.rpc_url):

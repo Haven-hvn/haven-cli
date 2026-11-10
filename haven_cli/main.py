@@ -9,7 +9,8 @@ import typer
 from rich.console import Console
 
 from haven_cli import __app_name__, __version__
-from haven_cli.cli import config, download, entity, epoch, jobs, plugins, prowlarr, run, tui, upload
+from haven_cli.cli import config, dataset, download, entity, epoch, jobs, plugins, prowlarr, run, tui, upload
+from haven_cli.cli.repin import repin_command
 from haven_cli.cli.exit_codes import ExitCode
 
 # Create the main Typer app
@@ -34,6 +35,9 @@ app.add_typer(plugins.app, name="plugins")
 app.add_typer(prowlarr.app, name="prowlarr")
 app.add_typer(config.app, name="config")
 app.add_typer(tui.app, name="tui")
+app.add_typer(dataset.app, name="dataset")
+# `haven repin <target>` (plan item 11) — a single command, not a group.
+app.command(name="repin")(repin_command)
 # Sprint 4 v3 diagnostic — only haven-cli code path that calls
 # the canister's ``getCurrentEpoch`` query (see haven_cli/cli/epoch.py).
 app.add_typer(epoch.app, name="epoch")

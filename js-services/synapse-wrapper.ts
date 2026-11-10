@@ -243,6 +243,8 @@ export interface SynapseWrapper {
     onProgress?: ProgressCallback
   ): Promise<SynapseUploadResult>;
   getStatus(params: Record<string, unknown>): Promise<SynapseStatusResult>;
+  listDataSets(params: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+  terminateDataSet(params: Record<string, unknown>): Promise<Record<string, unknown>>;
   getCid(params: Record<string, unknown>): Promise<{ cid: string }>;
   download(
     params: Record<string, unknown>,
@@ -378,14 +380,31 @@ export interface ExistingDataSetInfo {
  * With pinned providers, only a set on one of them qualifies; without a
  * pin, the oldest live set wins (all Haven sets share the same metadata,
  * so the SDK would reuse one anyway). Returns undefined when none exists.
+ *
+ * Dataset-per-epoch (plan item 12): ``preferredDataSetId`` (the data set
+ * recorded for this video's AOL epoch) wins over the oldest-first rule
+ * when it is live and provider-compatible.  Pass ``fresh`` for the
+ * first upload of a new epoch to force a new data set.
  */
 export function resolveReuseDataSetId(
   dataSets: readonly ExistingDataSetInfo[],
-  pinnedProviderIds: readonly bigint[]
+  pinnedProviderIds: readonly bigint[],
+  preferredDataSetId?: bigint,
+  fresh: boolean = false
 ): bigint | undefined {
-  const live = dataSets
+  if (fresh) {
+    return undefined;
+  }
+  const eligible = dataSets
     .filter((ds) => ds.isLive)
-    .filter((ds) => pinnedProviderIds.length === 0 || pinnedProviderIds.includes(ds.providerId))
+    .filter((ds) => pinnedProviderIds.length === 0 || pinnedProviderIds.includes(ds.providerId));
+  if (preferredDataSetId != null) {
+    const preferred = eligible.find((ds) => ds.dataSetId === preferredDataSetId);
+    if (preferred) {
+      return preferred.dataSetId;
+    }
+  }
+  const live = [...eligible]
     .sort((a, b) => (a.dataSetId < b.dataSetId ? -1 : a.dataSetId > b.dataSetId ? 1 : 0));
   return live.length > 0 ? live[0].dataSetId : undefined;
 }
@@ -835,13 +854,24 @@ class SynapseWrapperImpl implements SynapseWrapper {
         const existing = await (synapse.storage as unknown as {
           findDataSets?: () => Promise<Array<Record<string, unknown>>>;
         }).findDataSets?.() ?? [];
+        // Dataset-per-epoch (plan item 12): Python passes the epoch's
+        // recorded set as metadata.dataSetId and "1" as
+        // metadata.freshDataSet for the first upload of a new epoch.
+        const uploadMetadata = (uploadParams.metadata ?? {}) as Record<string, unknown>;
+        const preferredRaw = String(uploadMetadata.dataSetId ?? '').trim();
+        const preferredDataSetId = /^\d+$/.test(preferredRaw) ? BigInt(preferredRaw) : undefined;
+        const freshDataSet = uploadMetadata.freshDataSet === '1' ||
+          uploadMetadata.freshDataSet === true ||
+          uploadMetadata.freshDataSet === 1;
         reuseDataSetId = resolveReuseDataSetId(
           existing.map((ds) => ({
             dataSetId: BigInt(ds.dataSetId as bigint | string),
             providerId: BigInt(ds.providerId as bigint | string),
             isLive: ds.isLive === true,
           })),
-          pinnedProviders
+          pinnedProviders,
+          preferredDataSetId,
+          freshDataSet
         );
       } catch (error) {
         console.error('[synapse-wrapper] data set reuse lookup failed, creating new:', String(error));
@@ -1204,6 +1234,58 @@ class SynapseWrapperImpl implements SynapseWrapper {
       `This may be due to network congestion or RPC issues. ` +
       `Consider increasing timeout or checking Filecoin network status.`
     );
+  }
+
+  /**
+   * List this wallet's Filecoin data sets (``haven dataset list``).
+   * Returns JSON-safe rows: BigInt fields are stringified so they
+   * survive the JSON-RPC bridge unchanged.
+   */
+  async listDataSets(_params: Record<string, unknown>): Promise<Record<string, unknown>[]> {
+    if (!this._isConnected) {
+      throw new Error('Synapse not connected');
+    }
+    const synapse = await this._ensureSynapseInitialized();
+    const rows = await (synapse.storage as unknown as {
+      findDataSets?: () => Promise<Array<Record<string, unknown>>>;
+    }).findDataSets?.() ?? [];
+    return rows.map((row) => {
+      const out: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(row)) {
+        out[key] = typeof value === 'bigint' ? value.toString() : value;
+      }
+      return out;
+    });
+  }
+
+  /**
+   * Terminate one data set's storage service
+   * (``haven dataset terminate``).  Explicit operator action only —
+   * this ends the seed for anything still hosted solely there.
+   */
+  async terminateDataSet(
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    if (!this._isConnected) {
+      throw new Error('Synapse not connected');
+    }
+    const rawId = String(params.dataSetId ?? '').trim();
+    if (!/^\d+$/.test(rawId)) {
+      throw new Error(`terminateDataSet requires a numeric dataSetId, got: ${rawId}`);
+    }
+    const synapse = await this._ensureSynapseInitialized();
+    const result = await (synapse.storage as unknown as {
+      terminateService?: (opts: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    }).terminateService?.({ dataSetId: BigInt(rawId) });
+    if (result == null) {
+      throw new Error('Synapse storage.terminateService is unavailable in this SDK version');
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(result)) {
+      out[key] = typeof value === 'bigint' ? value.toString() : value;
+    }
+    out.dataSetId = rawId;
+    return out;
   }
 
   async getStatus(params: Record<string, unknown>): Promise<SynapseStatusResult> {

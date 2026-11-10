@@ -197,6 +197,21 @@ class PipelineConfig:
     # to a known-good provider when the operator chooses to.
     synapse_copies: int = 1
     synapse_provider_ids: List[int] = field(default_factory=list)
+    # Background provider/dataset health (partial plan item 9, second
+    # half): the daemon probes the newest seeded piece through
+    # ``synapse.getStatus`` once per interval and logs one line
+    # ("Provider health: dataset=… status=live|degraded|…").
+    # 0 disables the loop; the per-upload getStatus verdict still runs.
+    provider_health_interval: int = 3600
+    # Dataset-per-epoch lifecycle (plan item 12): group uploads into
+    # one dataset per AOL epoch (30 days).  When enabled, each
+    # encrypted video's gate_epoch picks its dataset via
+    # ``dataset_epochs.json`` in data_dir; the first upload of a new
+    # epoch gets a fresh dataset, and an epoch's dataset is only ever
+    # terminated by the explicit ``haven dataset terminate`` operator
+    # action (gated on the sole-copy accounting check) — never
+    # automatically.  Arkiv BTL stays rolling and independent.
+    dataset_per_epoch_enabled: bool = False
     
     # Blockchain Sync (Arkiv)
     # Note: Arkiv RPC is derived from blockchain.arkiv_network_mode (or network_mode)
@@ -566,6 +581,11 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
         config.pipeline.synapse_provider_ids = [
             int(part) for part in env_val.split(",") if part.strip().lstrip("-").isdigit()
         ]
+    if env_val := os.environ.get(f"{prefix}PROVIDER_HEALTH_INTERVAL"):
+        with suppress(ValueError):
+            config.pipeline.provider_health_interval = int(env_val)
+    if env_val := os.environ.get(f"{prefix}DATASET_PER_EPOCH_ENABLED"):
+        config.pipeline.dataset_per_epoch_enabled = env_val.lower() in ("true", "1", "yes")
     # Note: Filecoin RPC endpoint is configured via blockchain.filecoin_rpc_override
     # or HAVEN_FILECOIN_RPC_OVERRIDE environment variable
     
@@ -773,6 +793,7 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f"synapse_copies = {config.pipeline.synapse_copies}",
         "synapse_provider_ids = "
         + _format_toml_inline_array(list(config.pipeline.synapse_provider_ids)),
+        f"provider_health_interval = {config.pipeline.provider_health_interval}",
         f"sync_enabled = {str(config.pipeline.sync_enabled).lower()}",
         f"cleanup_enabled = {str(config.pipeline.cleanup_enabled).lower()}",
         f"max_concurrent_videos = {config.pipeline.max_concurrent_videos}",
@@ -1304,6 +1325,7 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
             "upload_enabled": config.pipeline.upload_enabled,
             "synapse_copies": config.pipeline.synapse_copies,
             "synapse_provider_ids": config.pipeline.synapse_provider_ids,
+            "provider_health_interval": config.pipeline.provider_health_interval,
             "sync_enabled": config.pipeline.sync_enabled,
             "cleanup_enabled": config.pipeline.cleanup_enabled,
             "speed_history_enabled": config.pipeline.speed_history_enabled,

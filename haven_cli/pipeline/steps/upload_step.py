@@ -573,6 +573,21 @@ class UploadStep(ConditionalStep):
                 on_progress,
             )
 
+            # Item 12: record which dataset this epoch used, so the next
+            # upload in this epoch reuses it and a future epoch rolls over.
+            try:
+                epoch_used = filecoin_config.get("epoch_dataset_epoch")
+                if epoch_used is not None:
+                    from haven_cli.services.datasets import record_epoch_dataset
+
+                    record_epoch_dataset(
+                        self._config.get("data_dir"),
+                        epoch_used,
+                        upload_result.get("filecoin_data_set_id"),
+                    )
+            except Exception as exc:  # bookkeeping must not fail the upload
+                logger.warning("Could not record epoch dataset mapping: %s", exc)
+
             # Item 9: persist the provider-health verdict per video so the
             # result is observable (step data + log) rather than assumed.
             foc_retrievable = upload_result.get("foc_retrievable")
@@ -715,9 +730,46 @@ class UploadStep(ConditionalStep):
         rpc_url = self._config.get("filecoin_rpc_url")
         if not rpc_url:
             rpc_url = get_network_config(filecoin_mode).filecoin_rpc_url
-        
+
+        # Item 12: dataset-per-epoch grouping.  When enabled, the
+        # video's own gate_epoch picks its dataset: a known epoch
+        # reuses its recorded dataset, the first upload of a new
+        # epoch gets a fresh one, and the choice is recorded after
+        # the upload completes (see ``_do_upload``).
+        epoch_dataset_id: Optional[str] = None
+        epoch_fresh_dataset = False
+        epoch_dataset_epoch: Optional[int] = None
+        pipeline_cfg = self._config.get("pipeline")
+        per_epoch = (
+            getattr(pipeline_cfg, "dataset_per_epoch_enabled", False)
+            if pipeline_cfg is not None
+            else False
+        )
+        if per_epoch and context.encryption_metadata:
+            try:
+                from haven_cli.services.datasets import choose_epoch_dataset, epoch_from_gate
+
+                epoch = epoch_from_gate(context.encryption_metadata.gate)
+                if epoch is not None:
+                    choice = choose_epoch_dataset(self._config.get("data_dir"), epoch)
+                    epoch_dataset_epoch = choice.epoch
+                    epoch_fresh_dataset = choice.fresh
+                    if not choice.fresh and choice.dataset_id is not None:
+                        epoch_dataset_id = choice.dataset_id
+                    logger.info(
+                        "Dataset-per-epoch: epoch=%s dataset=%s fresh=%s",
+                        choice.epoch,
+                        epoch_dataset_id,
+                        epoch_fresh_dataset,
+                    )
+            except Exception as exc:  # never block the upload on grouping
+                logger.warning("Dataset-per-epoch selection failed (%s); using default reuse", exc)
+
         return {
-            "data_set_id": context.options.get("dataset_id") or self._config.get("data_set_id", 1),
+            "data_set_id": context.options.get("dataset_id") or epoch_dataset_id or self._config.get("data_set_id", 1),
+            "epoch_dataset_id": epoch_dataset_id,
+            "epoch_fresh_dataset": epoch_fresh_dataset,
+            "epoch_dataset_epoch": epoch_dataset_epoch,
             "wait_for_deal": self._config.get("wait_for_deal", False),
             "rpc_url": rpc_url,
             "network_mode": filecoin_mode,
@@ -847,6 +899,9 @@ class UploadStep(ConditionalStep):
                     "metadata": {
                         "encrypted": encryption_metadata is not None,
                         "dataSetId": config.get("data_set_id"),
+                        # Item 12: freshDataSet forces a new dataset for
+                        # the first upload of a new AOL epoch.
+                        "freshDataSet": "1" if config.get("epoch_fresh_dataset") else "0",
                     },
                     "onProgress": True,  # Enable progress notifications
                 },
