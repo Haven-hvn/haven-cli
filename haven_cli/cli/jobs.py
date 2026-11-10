@@ -15,56 +15,178 @@ app = typer.Typer(help="Manage scheduled jobs for plugin polling.")
 console = Console()
 
 
+# Statuses that describe a scheduled (RecurringJob) row.
+_SCHEDULE_STATUSES = {"active", "paused", "all"}
+# Statuses that describe an upload_jobs row (plan item 8 / B6). Surfacing
+# these is required so a stale 'uploading' row (swept to 'failed' at boot)
+# is visible via `haven jobs list --status failed` instead of being hidden.
+_UPLOAD_STATUSES = {"pending", "uploading", "completed", "failed"}
+
+
 @app.command("list")
 def list_jobs(
     status: Optional[str] = typer.Option(
         None,
         "--status",
         "-s",
-        help="Filter by status (active, paused, all).",
+        help=(
+            "Filter by status. Scheduled-job states: active, paused, all. "
+            "Upload-job states: pending, uploading, completed, failed."
+        ),
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON (full IDs; scripted path).",
     ),
 ) -> None:
-    """List all scheduled jobs.
-    
-    Example:
+    """List scheduled jobs, or Filecoin upload jobs by status.
+
+    Examples:
         haven jobs list
         haven jobs list --status active
+        haven jobs list --status failed        # shows failed upload jobs
+        haven jobs list --status failed --json
     """
+    # B6: reject unknown statuses loudly instead of silently showing
+    # everything (the old code fell through with no filtering).
+    if status is not None:
+        normalized = status.lower()
+        if normalized not in _SCHEDULE_STATUSES and normalized not in _UPLOAD_STATUSES:
+            console.print(
+                f"[red]Unknown status '{status}'. Expected one of: "
+                f"{', '.join(sorted(_SCHEDULE_STATUSES | _UPLOAD_STATUSES))}[/red]"
+            )
+            raise typer.Exit(code=1)
+        status = normalized
+
+    if status in _UPLOAD_STATUSES:
+        _list_upload_jobs(status, json_output=json_output)
+        return
+
     from haven_cli.scheduler.job_scheduler import get_scheduler
-    
+
     scheduler = get_scheduler()
     jobs = scheduler.jobs
-    
-    if status:
-        if status == "active":
-            jobs = [j for j in jobs if j.enabled]
-        elif status == "paused":
-            jobs = [j for j in jobs if not j.enabled]
-    
+
+    if status == "active":
+        jobs = [j for j in jobs if j.enabled]
+    elif status == "paused":
+        jobs = [j for j in jobs if not j.enabled]
+    # "all" / None -> no filtering
+
+    rows = []
+    for job in jobs:
+        state = "active" if job.enabled else "paused"
+        rows.append({
+            "job_id": str(job.job_id),  # B14: full ID, no truncation
+            "plugin": job.plugin_name,
+            "schedule": job.schedule,
+            "on_success": job.on_success.value,
+            "status": state,
+            "last_run": job.last_run.isoformat() if job.last_run else None,
+            "next_run": job.next_run.isoformat() if job.next_run else None,
+        })
+
+    if json_output:
+        console.print(json.dumps(rows, indent=2))
+        return
+
     table = Table(title="Scheduled Jobs")
-    table.add_column("ID", style="cyan")
+    # B14: no_wrap so Rich shows the full job ID instead of "cf118882…".
+    table.add_column("ID", style="cyan", no_wrap=True)
     table.add_column("Plugin", style="magenta")
     table.add_column("Schedule", style="green")
     table.add_column("On Success", style="yellow")
     table.add_column("Status", style="bold")
     table.add_column("Last Run")
     table.add_column("Next Run")
-    
-    for job in jobs:
-        status_str = "[green]active[/green]" if job.enabled else "[yellow]paused[/yellow]"
-        last_run = job.last_run.strftime("%Y-%m-%d %H:%M") if job.last_run else "Never"
-        next_run = job.next_run.strftime("%Y-%m-%d %H:%M") if job.next_run else "N/A"
-        
+
+    for row in rows:
+        status_str = (
+            "[green]active[/green]" if row["status"] == "active"
+            else "[yellow]paused[/yellow]"
+        )
+        last_run = row["last_run"][:16].replace("T", " ") if row["last_run"] else "Never"
+        next_run = row["next_run"][:16].replace("T", " ") if row["next_run"] else "N/A"
         table.add_row(
-            str(job.job_id)[:8],
-            job.plugin_name,
-            job.schedule,
-            job.on_success.value,
+            row["job_id"],
+            row["plugin"],
+            row["schedule"],
+            row["on_success"],
             status_str,
             last_run,
             next_run,
         )
-    
+
+    console.print(table)
+
+
+def _list_upload_jobs(status: str, json_output: bool = False) -> None:
+    """Print ``upload_jobs`` rows for a given status (B6).
+
+    This is what makes swept/orphaned upload rows visible:
+    ``haven jobs list --status failed`` shows the rows the B6 startup
+    sweep marked failed after a killed/cancelled upload.
+    """
+    from haven_cli.database.connection import get_db_session
+    from haven_cli.database.models import UploadJob
+
+    rows = []
+    try:
+        with get_db_session() as session:
+            jobs = (
+                session.query(UploadJob)
+                .filter(UploadJob.status == status)
+                .order_by(UploadJob.created_at.desc())
+                .all()
+            )
+            for job in jobs:
+                rows.append({
+                    "id": job.id,
+                    "video_id": job.video_id,
+                    "status": job.status,
+                    "stage": job.stage,
+                    "progress_percent": job.progress_percent,
+                    "remote_cid": job.remote_cid,
+                    "error_message": job.error_message,
+                    "created_at": (
+                        job.created_at.isoformat() if job.created_at else None
+                    ),
+                })
+    except Exception as e:  # pragma: no cover - DB optional in CLI
+        console.print(f"[red]Could not query upload jobs: {e}[/red]")
+        raise typer.Exit(code=1)
+
+    if json_output:
+        console.print(json.dumps(rows, indent=2))
+        return
+
+    table = Table(title=f"Upload Jobs (status={status})")
+    table.add_column("ID", style="cyan")
+    table.add_column("Video ID", style="magenta")
+    table.add_column("Status", style="bold")
+    table.add_column("Stage")
+    table.add_column("Progress")
+    table.add_column("CID")
+    table.add_column("Error")
+
+    for row in rows:
+        progress = (
+            f"{row['progress_percent']:.0f}%"
+            if row["progress_percent"] is not None else ""
+        )
+        err = (row["error_message"] or "")[:40]
+        table.add_row(
+            str(row["id"]),
+            str(row["video_id"]),
+            row["status"],
+            row["stage"] or "",
+            progress,
+            row["remote_cid"] or "",
+            err,
+        )
+
     console.print(table)
 
 
@@ -470,6 +592,11 @@ def job_history(
         "-l",
         help="Number of history entries to show.",
     ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON (full IDs; scripted path).",
+    ),
 ) -> None:
     """Show job execution history.
     
@@ -490,30 +617,47 @@ def job_history(
             target_job_id = matching[0].job_id
     
     history = scheduler.get_history(job_id=target_job_id, limit=limit, from_database=True)
-    
-    table = Table(title=f"Job History{f' for {job_id}' if job_id else ''}")
-    table.add_column("Job ID", style="cyan")
-    table.add_column("Started", style="green")
-    table.add_column("Duration")
-    table.add_column("Status", style="bold")
-    table.add_column("Sources Found")
-    table.add_column("Archived")
-    
+
+    rows = []
     for record in history:
         duration = ""
         if record.completed_at:
             delta = record.completed_at - record.started_at
             duration = f"{delta.total_seconds():.1f}s"
-        
-        status = "[green]success[/green]" if record.success else "[red]failed[/red]"
-        
-        table.add_row(
-            str(record.job_id)[:8],
-            record.started_at.strftime("%Y-%m-%d %H:%M:%S"),
-            duration,
-            status,
-            str(record.sources_found),
-            str(record.sources_archived),
+        rows.append({
+            # B14: full job ID, no truncation.
+            "job_id": str(record.job_id),
+            "started": record.started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "duration": duration,
+            "status": "success" if record.success else "failed",
+            "sources_found": record.sources_found,
+            "sources_archived": record.sources_archived,
+        })
+
+    if json_output:
+        console.print(json.dumps(rows, indent=2))
+        return
+
+    table = Table(title=f"Job History{f' for {job_id}' if job_id else ''}")
+    table.add_column("Job ID", style="cyan", no_wrap=True)
+    table.add_column("Started", style="green")
+    table.add_column("Duration")
+    table.add_column("Status", style="bold")
+    table.add_column("Sources Found")
+    table.add_column("Archived")
+
+    for row in rows:
+        status = (
+            "[green]success[/green]" if row["status"] == "success"
+            else "[red]failed[/red]"
         )
-    
+        table.add_row(
+            row["job_id"],
+            row["started"],
+            row["duration"],
+            status,
+            str(row["sources_found"]),
+            str(row["sources_archived"]),
+        )
+
     console.print(table)

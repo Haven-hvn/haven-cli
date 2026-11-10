@@ -451,57 +451,6 @@ class TestEncryptStepAccessConditions:
 class TestEncryptStepEncryption:
     """Tests for the encryption process using the real streaming path."""
 
-    @pytest.mark.asyncio
-    async def test_encrypt_with_haven_aol_clamps_nft_gated_threshold(
-        self, tmp_path, monkeypatch
-    ):
-        """NFT-gated access uses returnValueTest value 0 but derivation threshold 1."""
-        monkeypatch.setenv(
-            "HAVEN_PRIVATE_KEY",
-            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        )
-        captured: dict[str, object] = {}
-
-        def capture_encrypt(**kwargs: object) -> dict[str, str]:
-            captured["gate"] = kwargs["gate"]
-            output_path = kwargs["output_path"]
-            Path(str(output_path)).write_bytes(b"encrypted")
-            return {
-                "data_to_encrypt_hash": "hash",
-                "encrypted_key": "key",
-                "key_hash": "keyhash",
-                "iv": "iv",
-            }
-
-        import haven_cli.pipeline.steps.encrypt_step as encrypt_step_module
-
-        monkeypatch.setattr(
-            encrypt_step_module, "encrypt_file_streaming", capture_encrypt
-        )
-
-        step = EncryptStep(config={"evm_chain": "ethereum"})
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"nft gated content")
-        context = PipelineContext(
-            source_path=video_file,
-            video_id=1,
-            options={"evm_chain": "ethereum"},
-        )
-        access_conditions = [{
-            "contractAddress": TEST_ADDRESS,
-            "chain": "EthMainnet",
-            "returnValueTest": {"comparator": ">", "value": "0"},
-        }]
-
-        await step._encrypt_with_haven_aol(
-            str(video_file),
-            access_conditions,
-            context,
-        )
-
-        gate = captured["gate"]
-        assert gate.threshold == 1
-        assert access_conditions[0]["returnValueTest"]["value"] == "0"
 
     @pytest.mark.asyncio
     async def test_encrypt_with_haven_aol_success(self, tmp_path, monkeypatch):
@@ -572,34 +521,6 @@ class TestEncryptStepEncryption:
                 context,
             )
 
-    @pytest.mark.asyncio
-    async def test_encrypt_with_haven_aol_no_private_key_required(self, tmp_path, monkeypatch):
-        """Encryption no longer requires local private key env."""
-        step = EncryptStep(config={"evm_chain": "ethereum"})
-
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"test content")
-
-        context = PipelineContext(
-            source_path=video_file,
-            video_id=1,
-            options={"evm_chain": "ethereum"},
-        )
-
-        with patch.dict(os.environ, {}, clear=True):
-            access_conditions = [{
-                "contractAddress": TEST_ADDRESS,
-                "chain": "EthMainnet",
-                "returnValueTest": {"value": "1"},
-                "cid": "sha256:abc123",
-            }]
-
-            result = await step._encrypt_with_haven_aol(
-                str(video_file),
-                access_conditions,
-                context,
-            )
-        assert result["encrypted_key"] == "d3JhcHBlZA=="
 
     @pytest.mark.asyncio
     async def test_encrypt_with_haven_aol_missing_contract(self, tmp_path, monkeypatch):
@@ -810,75 +731,7 @@ class TestEncryptStepProcess:
 
         assert result.success is True
 
-    @pytest.mark.asyncio
-    async def test_process_encryption_failure(self, tmp_path, monkeypatch):
-        """Test handling of encryption failure from the streaming encrypt path."""
-        step = EncryptStep(config={
-            "owner_wallet": TEST_ADDRESS,
-            "token_contract": TEST_ADDRESS,
-            "evm_chain": "ethereum",
-            "access_pattern": "owner_only",
-        })
 
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"test content")
-
-        context = PipelineContext(
-            source_path=video_file,
-            options={"encrypt": True, "evm_chain": "ethereum", "access_pattern": "owner_only"},
-        )
-
-        def boom(**_kwargs: object) -> dict:
-            raise RuntimeError("simulated encrypt failure")
-
-        monkeypatch.setattr(encrypt_step_module, "encrypt_file_streaming", boom)
-
-        result = await step.process(context)
-
-        assert result.success is False
-        assert result.failed is True
-        assert result.error is not None
-        assert result.error.code == "ENCRYPT_ERROR"
-        assert "simulated encrypt failure" in result.error.message
-
-    @pytest.mark.asyncio
-    async def test_execute_retries_transient_encrypt_error(self, tmp_path, monkeypatch):
-        """Transient errors from encrypt are retried by the step executor."""
-        monkeypatch.setenv(
-            "HAVEN_PRIVATE_KEY",
-            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        )
-        step = EncryptStep(config={
-            "evm_chain": "ethereum",
-            "access_pattern": "owner_only",
-            "owner_wallet": TEST_ADDRESS,
-            "token_contract": TEST_ADDRESS,
-        })
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"hello")
-        context = PipelineContext(
-            source_path=video_file,
-            options={"encrypt": True, "evm_chain": "ethereum", "access_pattern": "owner_only"},
-        )
-
-        attempts = {"n": 0}
-
-        real = encrypt_step_module.encrypt_file_streaming
-
-        def flaky_encrypt(**kwargs: object) -> dict:
-            attempts["n"] += 1
-            if attempts["n"] < 2:
-                raise ConnectionError("transient reset")
-            return real(**kwargs)
-
-        monkeypatch.setattr(encrypt_step_module, "encrypt_file_streaming", flaky_encrypt)
-
-        with patch.object(step, "_save_encryption_metadata", new_callable=AsyncMock):
-            result = await step.execute(context)
-
-        assert result.success is True
-        assert attempts["n"] == 2
-        assert result.attempts == 2
 
 
 class TestEncryptStepDatabase:

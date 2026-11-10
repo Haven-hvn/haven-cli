@@ -26,6 +26,13 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback(invoke_without_command=True)
+def _default_to_show(ctx: typer.Context) -> None:
+    """B13: `haven epoch` with no subcommand behaves like `haven epoch show`."""
+    if ctx.invoked_subcommand is None:
+        show(no_canister=False)
+
+
 @app.command(name="show")
 def show(
     *,

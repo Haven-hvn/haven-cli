@@ -180,6 +180,8 @@ declare const Deno: {
   };
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
+  // B9: used when a caller requests a specific CAR output path.
+  copyFile(src: string, dest: string): Promise<void>;
   stat(path: string): Promise<{ size: number; isFile: boolean }>;
   stdin: {
     readable: ReadableStream<Uint8Array>;
@@ -925,7 +927,9 @@ class SynapseWrapperImpl implements SynapseWrapper {
       }
 
       const copies = uploadResult.copies ?? [];
-      const primaryCopy = copies[0] as Record<string, unknown> | undefined;
+      // CopyResult has no index signature; go through `unknown` so deno
+      // check accepts the Record cast (B9).
+      const primaryCopy = copies[0] as unknown as Record<string, unknown> | undefined;
       const dataSetId = String(primaryCopy?.dataSetId ?? '');
       const serviceProvider = String(
         primaryCopy?.serviceProvider ?? primaryCopy?.providerId ?? ''
@@ -953,7 +957,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
         complete: uploadResult.complete,
         copyCount: copies.length,
         copies: copies.map((copy) => {
-          const row = copy as Record<string, unknown>;
+          const row = copy as unknown as Record<string, unknown>;
           return {
             providerId: row.providerId != null ? String(row.providerId) : undefined,
             dataSetId: row.dataSetId != null ? String(row.dataSetId) : undefined,

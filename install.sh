@@ -61,7 +61,7 @@ check_python() {
 
 check_pip() {
     print_info "Checking pip installation..."
-    
+
     if command -v pip3 &> /dev/null; then
         PIP_CMD="pip3"
     elif command -v pip &> /dev/null; then
@@ -70,8 +70,64 @@ check_pip() {
         print_error "pip is not installed. Please install pip."
         exit 1
     fi
-    
+
     print_success "Found pip"
+}
+
+# B16: PyPI wheels for the native `vetkd_py` extension stop at Python 3.13.
+# On Python 3.14+ there is no prebuilt wheel, so a plain `pip install` fails.
+# When installing from a local checkout, build vetkd_py from source with
+# maturin instead. This is a no-op on <=3.13 (the wheel is used normally).
+check_vetkd_py() {
+    local needs_source_build=0
+    if [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -ge 14 ]; then
+        needs_source_build=1
+    elif [ "$PYTHON_MAJOR" -gt 3 ]; then
+        needs_source_build=1
+    fi
+
+    if [ "$needs_source_build" -ne 1 ]; then
+        print_info "Python $PYTHON_VERSION: prebuilt vetkd_py wheel is available (no source build needed)"
+        return 0
+    fi
+
+    print_warning "Python $PYTHON_VERSION detected: vetkd_py has no PyPI wheel for 3.14+ (B16)."
+
+    # Only a local checkout actually contains the Rust source to build.
+    if [ ! -d "vetkd_py" ] || [ ! -f "vetkd_py/pyproject.toml" ]; then
+        print_warning "No local vetkd_py/ source found; cannot build from source."
+        print_warning "Install a Python 3.13 environment, or clone the repo and re-run this installer."
+        return 0
+    fi
+
+    if ! command -v maturin &> /dev/null; then
+        print_info "Installing maturin (needed to build the vetkd_py native extension)..."
+        $PIP_CMD install maturin --break-system-packages || {
+            print_error "Failed to install maturin; cannot build vetkd_py for Python $PYTHON_VERSION"
+            return 1
+        }
+    fi
+
+    if ! command -v cargo &> /dev/null; then
+        print_error "Rust toolchain (cargo) not found; required to build vetkd_py for Python 3.14+"
+        return 1
+    fi
+
+    print_info "Building and installing vetkd_py from source with maturin..."
+    ( cd vetkd_py && maturin build --release --interpreter "$PYTHON_CMD" ) || {
+        print_error "maturin build failed for vetkd_py"
+        return 1
+    }
+    # Install the produced wheel into the active environment.
+    local wheel
+    wheel=$(ls -t vetkd_py/target/wheels/*.whl 2>/dev/null | head -n1)
+    if [ -n "$wheel" ]; then
+        $PIP_CMD install --force-reinstall "$wheel" --break-system-packages
+        print_success "vetkd_py built and installed from source ($wheel)"
+    else
+        print_error "maturin produced no wheel; vetkd_py install incomplete"
+        return 1
+    fi
 }
 
 install_package() {
@@ -139,6 +195,7 @@ main() {
     
     check_python
     check_pip
+    check_vetkd_py
     install_package
     check_installation
     print_usage

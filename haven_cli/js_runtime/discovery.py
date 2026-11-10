@@ -1,8 +1,17 @@
 """
 JS Runtime Discovery.
 
-Auto-detects available JavaScript runtimes (Deno, Node.js) and
-provides appropriate command-line arguments for each.
+Haven's JS services (``js-services/main.ts`` and everything it imports) are
+Deno programs: they use ``npm:`` specifiers (``npm:@filoz/synapse-sdk``,
+``npm:ethers``, ...) and Deno globals (``Deno.stdin``, ``Deno.exit``,
+``Deno.hostname``). Neither Node.js (even with tsx/ts-node) nor Bun can run
+them — Node rejects the ``npm:`` scheme with
+``ERR_UNSUPPORTED_ESM_URL_SCHEME``.
+
+The four crashed daemon launches on 2026-11-10 were caused by this module
+falling back to Node + tsx/ts-node when Deno was not selected. To make that
+failure mode impossible, discovery now resolves **only** Deno and fails
+loudly if it is unavailable. See docs/PRIORITIZED_PLAN.md item 1 (B7).
 """
 
 from __future__ import annotations
@@ -19,8 +28,13 @@ logger = logging.getLogger(__name__)
 
 
 class RuntimeType(Enum):
-    """Supported JavaScript runtime types."""
-    
+    """Supported JavaScript runtime types.
+
+    Only ``DENO`` is supported for the shipped JS services. ``NODE`` / ``BUN``
+    are retained as enum members so external code that references them keeps
+    working, but they are never discovered or launched.
+    """
+
     DENO = auto()
     NODE = auto()
     BUN = auto()
@@ -29,12 +43,12 @@ class RuntimeType(Enum):
 @dataclass
 class RuntimeInfo:
     """Information about a discovered runtime."""
-    
+
     type: RuntimeType
     executable: str
     version: Optional[str] = None
     path: Optional[Path] = None
-    
+
     @property
     def display_name(self) -> str:
         """Get a display name for the runtime."""
@@ -42,11 +56,10 @@ class RuntimeInfo:
         return f"{self.type.name.title()}{version_str}"
 
 
-# Runtime detection order (preferred first)
+# Runtime detection order (preferred first). Only the shipped Deno runtime
+# is supported: main.ts uses npm: specifiers + Deno globals (B7).
 RUNTIME_PREFERENCE = [
     RuntimeType.DENO,
-    RuntimeType.BUN,
-    RuntimeType.NODE,
 ]
 
 # Executable names for each runtime
@@ -68,57 +81,62 @@ async def discover_runtime(
     preferred: Optional[RuntimeType] = None
 ) -> str:
     """
-    Discover an available JavaScript runtime.
-    
+    Discover the shipped JavaScript runtime (Deno only).
+
     Args:
-        preferred: Preferred runtime type (if available)
-    
+        preferred: Ignored unless it is ``DENO``; retained for API
+            compatibility. Node/Bun are never returned.
+
     Returns:
-        Path to the runtime executable
-    
+        Path to the Deno executable.
+
     Raises:
-        RuntimeError: If no suitable runtime is found
+        RuntimeError: If Deno is not found on PATH.
     """
-    # Build search order
+    # Search order is Deno-only. A non-DENO preference cannot be honoured
+    # because the JS services cannot run under any other runtime.
     search_order = list(RUNTIME_PREFERENCE)
-    if preferred and preferred in search_order:
-        search_order.remove(preferred)
-        search_order.insert(0, preferred)
-    
-    # Search for runtimes
+    if preferred == RuntimeType.DENO and RuntimeType.DENO in search_order:
+        search_order.remove(RuntimeType.DENO)
+        search_order.insert(0, RuntimeType.DENO)
+
     for runtime_type in search_order:
         info = await _detect_runtime(runtime_type)
         if info:
             logger.info(f"Discovered runtime: {info.display_name}")
             return info.executable
-    
+
     raise RuntimeError(
-        "No JavaScript runtime found. Please install Deno, Node.js, or Bun.\n"
-        "Recommended: Install Deno from https://deno.land"
+        "Deno is required to run the Haven JS services. No Deno executable "
+        "was found on PATH.\n"
+        "The JS services use 'npm:' specifiers and Deno globals; Node.js "
+        "and Bun cannot run them (tsx/ts-node produce "
+        "ERR_UNSUPPORTED_ESM_URL_SCHEME).\n"
+        "Install Deno from https://deno.land and ensure 'deno' is on PATH."
     )
 
 
 async def discover_all_runtimes() -> list[RuntimeInfo]:
     """
     Discover all available JavaScript runtimes.
-    
-    Returns:
-        List of discovered runtime information
+
+    Only the Deno runtime is considered supported; the returned list
+    therefore contains at most one entry.
     """
     runtimes = []
-    
-    for runtime_type in RuntimeType:
+
+    for runtime_type in RUNTIME_PREFERENCE:
         info = await _detect_runtime(runtime_type)
         if info:
             runtimes.append(info)
-    
+
     return runtimes
 
 
 async def _detect_runtime(runtime_type: RuntimeType) -> Optional[RuntimeInfo]:
     """Detect a specific runtime type."""
     executables = RUNTIME_EXECUTABLES.get(runtime_type, [])
-    
+
     for executable in executables:
         path = shutil.which(executable)
         if path:
@@ -129,7 +147,7 @@ async def _detect_runtime(runtime_type: RuntimeType) -> Optional[RuntimeInfo]:
                 version=version,
                 path=Path(path)
             )
-    
+
     return None
 
 
@@ -144,9 +162,9 @@ async def _get_version(executable: str, runtime_type: RuntimeType) -> Optional[s
             stderr=asyncio.subprocess.PIPE
         )
         stdout, _ = await asyncio.wait_for(process.communicate(), timeout=5.0)
-        
+
         output = stdout.decode().strip()
-        
+
         # Parse version from output
         if runtime_type == RuntimeType.DENO:
             # Output: "deno 1.x.x"
@@ -159,9 +177,9 @@ async def _get_version(executable: str, runtime_type: RuntimeType) -> Optional[s
         elif runtime_type == RuntimeType.BUN:
             # Output: "1.x.x"
             return output.split()[0]
-        
+
         return output.split()[0] if output else None
-        
+
     except Exception as e:
         logger.debug(f"Failed to get version for {executable}: {e}")
         return None
@@ -174,25 +192,33 @@ def get_runtime_args(
 ) -> list[str]:
     """
     Get command-line arguments for running the JS services.
-    
+
+    The shipped services are Deno-only. ``get_runtime_args`` refuses to build
+    a command for a non-Deno executable instead of silently producing a
+    Node/tsx command that would fail at startup with
+    ``ERR_UNSUPPORTED_ESM_URL_SCHEME`` (B7).
+
     Args:
-        executable: Path to the runtime executable
-        entry_point: Path to the entry point script
-        debug: Enable debug mode
-    
+        executable: Path to the runtime executable (must be Deno).
+        entry_point: Path to the Deno entry point (``main.ts``).
+        debug: Enable debug mode (``--inspect``).
+
     Returns:
-        List of command-line arguments
+        List of command-line arguments.
+
+    Raises:
+        RuntimeError: If ``executable`` is not a Deno binary.
     """
-    # Detect runtime type from executable name
     exe_name = Path(executable).name.lower()
-    
-    if "deno" in exe_name:
-        return _get_deno_args(executable, entry_point, debug)
-    elif "bun" in exe_name:
-        return _get_bun_args(executable, entry_point, debug)
-    else:
-        # Assume Node.js
-        return _get_node_args(executable, entry_point, debug)
+
+    if "deno" not in exe_name:
+        raise RuntimeError(
+            f"Unsupported JS runtime {executable!r}. Haven JS services "
+            "require Deno (npm: specifiers + Deno globals). Node.js/Bun "
+            "and tsx/ts-node are not supported (B7)."
+        )
+
+    return _get_deno_args(executable, entry_point, debug)
 
 
 def _get_deno_args(
@@ -211,65 +237,12 @@ def _get_deno_args(
         "--allow-env",
         "--allow-sys",  # Required for Deno.hostname() in browser-shim.ts
     ]
-    
+
     if debug:
         args.append("--inspect")
-    
+
     args.append(str(entry_point))
-    
-    return args
 
-
-def _get_node_args(
-    executable: str,
-    entry_point: Path,
-    debug: bool = False
-) -> list[str]:
-    """Get Node.js command-line arguments."""
-    args = [executable]
-    
-    # Node needs ts-node or similar for TypeScript
-    # For now, assume the entry point is compiled JS or use tsx
-    if entry_point.suffix == ".ts":
-        # Try to use tsx for TypeScript execution
-        tsx_path = shutil.which("tsx")
-        if tsx_path:
-            args = [tsx_path]
-        else:
-            # Fall back to ts-node
-            ts_node_path = shutil.which("ts-node")
-            if ts_node_path:
-                args = [ts_node_path]
-            else:
-                logger.warning(
-                    "TypeScript entry point requires tsx or ts-node. "
-                    "Install with: npm install -g tsx"
-                )
-    
-    if debug:
-        args.append("--inspect")
-    
-    # Enable ES modules
-    args.extend(["--experimental-specifier-resolution=node"])
-    
-    args.append(str(entry_point))
-    
-    return args
-
-
-def _get_bun_args(
-    executable: str,
-    entry_point: Path,
-    debug: bool = False
-) -> list[str]:
-    """Get Bun command-line arguments."""
-    args = [executable, "run"]
-    
-    if debug:
-        args.append("--inspect")
-    
-    args.append(str(entry_point))
-    
     return args
 
 
@@ -278,22 +251,22 @@ def _get_bun_args(
 def discover_runtime_sync(preferred: Optional[RuntimeType] = None) -> str:
     """
     Synchronous wrapper for discover_runtime.
-    
+
     Args:
-        preferred: Preferred runtime type
-    
+        preferred: Preferred runtime type (Deno only; see discover_runtime)
+
     Returns:
-        Path to the runtime executable
+        Path to the Deno executable
     """
     return asyncio.run(discover_runtime(preferred))
 
 
 def check_runtime_available() -> bool:
     """
-    Check if any JavaScript runtime is available.
-    
+    Check if the supported JavaScript runtime (Deno) is available.
+
     Returns:
-        True if a runtime is available
+        True if Deno is available
     """
     try:
         discover_runtime_sync()

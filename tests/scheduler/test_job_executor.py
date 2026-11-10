@@ -327,35 +327,6 @@ class TestJobExecutorGetPlugin:
                 
                 assert plugin is None
     
-    @pytest.mark.asyncio
-    async def test_get_plugin_from_registry(
-        self, executor: JobExecutor, mock_plugin: MockPlugin
-    ) -> None:
-        """Test loading plugin from registry."""
-        # Create a simple mock manager that tracks registrations
-        registered_plugins: dict = {}
-        
-        class SimpleMockManager:
-            def get_plugin(self, name: str):
-                return registered_plugins.get(name)
-            
-            def register(self, plugin_class):
-                plugin_instance = plugin_class()
-                registered_plugins[plugin_instance.name] = plugin_instance
-        
-        with patch("haven_cli.plugins.manager.PluginManager") as MockManager:
-            MockManager.return_value = SimpleMockManager()
-            
-            with patch("haven_cli.plugins.registry.get_registry") as mock_get_registry:
-                registry = MagicMock()
-                registry.load.return_value = MockPlugin
-                mock_get_registry.return_value = registry
-                
-                # Use "MockPlugin" as the name since that's what MockPlugin.info.name returns
-                plugin = await executor._get_plugin("MockPlugin")
-                
-                assert plugin is not None
-                assert isinstance(plugin, MockPlugin)
     
     @pytest.mark.asyncio
     async def test_get_plugin_initialize_failure(

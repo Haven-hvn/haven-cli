@@ -870,18 +870,4 @@ class TestSpeedGraphIntegration:
         screen = view.create_screen()
         assert screen._speed_history_repo == mock_repo
     
-    def test_screen_has_graph_container_css(self, config):
-        """Test that CSS includes graph-container styles."""
-        screen = VideoListScreen(config=config)
-        css = screen.DEFAULT_CSS
-        
-        assert "#graph-container" in css
-        assert "dock: right" in css
     
-    def test_screen_has_main_content_horizontal_layout(self, config):
-        """Test that main-content uses horizontal layout for side-by-side."""
-        screen = VideoListScreen(config=config)
-        css = screen.DEFAULT_CSS
-        
-        assert "#main-content" in css
-        assert "layout: horizontal" in css

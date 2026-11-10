@@ -175,7 +175,12 @@ class BitTorrentPlugin(ArchiverPlugin):
         self._sources: List[MagnetSource] = []
         self._seen_infohashes: set[str] = set()
         self._archived_torrents: Dict[str, Dict[str, Any]] = {}
-        self._download_dir = Path(self._bt_config.download_dir)
+        # B5: resolve the download dir to an absolute path once, so every
+        # stored ``torrent_downloads.output_path`` (and libtorrent save_path)
+        # is absolute. A repo-relative path like
+        # ``downloads/bittorrent/<name>/<file>.mp4`` breaks pipeline steps
+        # that resolve it from a different working directory.
+        self._download_dir = Path(self._bt_config.download_dir).resolve()
         self._session: Optional[lt.session] = None
         self._active_downloads: Dict[str, lt.torrent_handle] = {}
         self._db_session_factory = get_db_session
@@ -327,7 +332,12 @@ class BitTorrentPlugin(ArchiverPlugin):
             exist_ok=True,
             timeout=self.DEFAULT_FILE_IO_TIMEOUT
         )
-        
+
+        # B5: validate stored output_paths at startup — any relative or
+        # missing path is logged as an ERROR instead of being silently
+        # missed by later pipeline steps.
+        await self._validate_download_paths()
+
         # Initialize libtorrent session (in executor)
         def _create_session():
             settings = {
@@ -378,7 +388,114 @@ class BitTorrentPlugin(ArchiverPlugin):
         
         self._initialized = True
         logger.info("BitTorrentPlugin initialized successfully")
-    
+
+    async def _validate_download_paths(self) -> None:
+        """Log an ERROR for any stored output_path that is relative/missing (B5).
+
+        Called once from :meth:`initialize`. Historical rows written before
+        the B5 fix can contain repo-relative paths like
+        ``downloads/bittorrent/<name>/<file>.mp4``. Later pipeline steps
+        resolve those from a different CWD and silently miss the file, so we
+        surface them loudly here rather than hiding the failure.
+        """
+        try:
+            def _collect():
+                with self._db_session_factory() as session:
+                    from haven_cli.database.models import TorrentDownload
+                    return [
+                        (d.id, d.infohash, d.status, d.output_path)
+                        for d in session.query(TorrentDownload).all()
+                        if d.output_path
+                    ]
+
+            rows = await self._run_db_operation(_collect)
+        except Exception as e:
+            logger.warning(f"Could not validate stored download paths: {e}")
+            return
+
+        problems = 0
+        for row_id, infohash, status, output_path in rows:
+            p = Path(output_path)
+            if not p.is_absolute():
+                logger.error(
+                    "B5: torrent_downloads id=%s infohash=%s status=%s has a "
+                    "RELATIVE output_path=%r; pipeline steps will not be able "
+                    "to resolve it. Re-download or fix the row.",
+                    row_id, infohash, status, output_path,
+                )
+                problems += 1
+            elif not p.exists():
+                logger.error(
+                    "B5: torrent_downloads id=%s infohash=%s status=%s has an "
+                    "absolute but MISSING output_path=%r; the file is not on "
+                    "disk.",
+                    row_id, infohash, status, output_path,
+                )
+                problems += 1
+
+        if problems:
+            logger.error(
+                "B5: %d stored torrent download path(s) are relative or "
+                "missing (see errors above).",
+                problems,
+            )
+        else:
+            logger.debug("B5: all stored torrent download paths are absolute and present")
+
+    async def _persist_seen(self) -> None:
+        """Atomically write ``.bittorrent_seen.json`` (B4).
+
+        Uses a temp file + ``os.replace`` so a crash mid-write cannot leave a
+        truncated seen file. Shared by :meth:`_mark_seen` (persist as soon as
+        a download is enqueued) and :meth:`shutdown`.
+        """
+        seen_file = self._download_dir / ".bittorrent_seen.json"
+
+        def _save_seen() -> None:
+            tmp_file = seen_file.with_name(seen_file.name + ".tmp")
+            with open(tmp_file, "w") as f:
+                json.dump({
+                    "seen": sorted(self._seen_infohashes),
+                    "archived": self._archived_torrents,
+                }, f, indent=2)
+            os.replace(tmp_file, seen_file)
+
+        try:
+            await self._run_in_executor(
+                _save_seen,
+                timeout=self.DEFAULT_FILE_IO_TIMEOUT,
+            )
+        except Exception as e:
+            logger.warning(f"Could not save seen infohashes: {e}")
+
+    async def _mark_seen(self, infohash: str) -> None:
+        """Mark an infohash as seen and persist immediately (B4).
+
+        Called ONLY when a download is actually enqueued/started, never from
+        :meth:`discover_sources`. Persisting here (rather than only at
+        shutdown) means a ``kill -9`` mid-cycle does not lose the mark. A
+        discovery-only probe that never enqueues a download never reaches
+        this method, so it can never burn a torrent.
+        """
+        self._seen_infohashes.add(infohash)
+        await self._persist_seen()
+        logger.debug(f"Marked infohash {infohash} as seen (download enqueued)")
+
+    async def _unmark_seen(self, infohash: str) -> None:
+        """Remove an infohash from the seen set after a failed download (B4).
+
+        A transient download failure must not permanently wedge a torrent:
+        the next scheduled discovery must re-offer it so it can be retried
+        without ``--force`` (docs/PRIORITIZED_PLAN.md success criteria).
+        """
+        if infohash in self._seen_infohashes:
+            self._seen_infohashes.discard(infohash)
+            await self._persist_seen()
+            logger.info(
+                f"Un-marked infohash {infohash} after failed download; "
+                "it will be re-discovered on the next cycle"
+            )
+
     async def shutdown(self) -> None:
         """Shutdown the plugin and save state."""
         # Signal shutdown in progress to unblock any waiting operations
@@ -435,22 +552,10 @@ class BitTorrentPlugin(ArchiverPlugin):
         
         self._sources.clear()
         
-        # Save seen infohashes to persistent storage
-        seen_file = self._download_dir / ".bittorrent_seen.json"
-        try:
-            def _save_seen():
-                with open(seen_file, "w") as f:
-                    json.dump({
-                        "seen": list(self._seen_infohashes),
-                        "archived": self._archived_torrents,
-                    }, f, indent=2)
-            
-            await self._run_in_executor(
-                _save_seen,
-                timeout=self.DEFAULT_FILE_IO_TIMEOUT
-            )
-        except Exception as e:
-            logger.warning(f"Could not save seen infohashes: {e}")
+        # Save seen infohashes to persistent storage. B4: _mark_seen already
+        # persists on every enqueue; this final write also captures the
+        # _archived_torrents dict updated at download completion.
+        await self._persist_seen()
         
         # Shutdown thread pool executor
         if self._executor:
@@ -570,17 +675,20 @@ class BitTorrentPlugin(ArchiverPlugin):
                     magnets = await source.search("")
                 
                 logger.info(f"Found {len(magnets)} magnet links from {source.name}")
-                
-                # Filter out already seen infohashes
+
+                # B4: discovery is side-effect-free. Filter out infohashes
+                # that were *already* marked seen (i.e. genuinely downloaded
+                # in a previous cycle) but NEVER add to _seen_infohashes here
+                # and NEVER persist the seen file here. A discovery-only
+                # process (probe, health check) must not consume a torrent:
+                # the daemon must still see and download it afterwards.
+                # The mark-seen write happens only when a download is
+                # actually enqueued (see _mark_seen / archive()).
                 new_magnets = [
                     m for m in magnets
                     if m.infohash not in self._seen_infohashes
                 ]
-                
-                # Mark as seen
-                for magnet in new_magnets:
-                    self._seen_infohashes.add(magnet.infohash)
-                
+
                 # Convert to MediaSource objects
                 for magnet in new_magnets:
                     sources.append(MediaSource(
@@ -752,7 +860,27 @@ class BitTorrentPlugin(ArchiverPlugin):
             video_extensions = self._bt_config.video_extensions
             min_video_size = self._bt_config.min_video_size
             max_video_size = self._bt_config.max_video_size
-            
+
+            # Plan item 6: the real binding limit is MAX_UPLOAD_SIZE (~1 GiB)
+            # on the projected encrypted+CAR size in synapse-wrapper.ts, not
+            # the static 50 GB max_video_size. Derive the largest plaintext
+            # video that still fits and cap BEFORE download bandwidth is spent.
+            from haven_cli.pipeline.upload_limits import (
+                max_plaintext_size,
+                max_upload_size,
+            )
+            upload_cap_plain = max_plaintext_size(encryption_enabled=True)
+            effective_max_video_size = min(max_video_size, upload_cap_plain)
+            if upload_cap_plain < max_video_size:
+                logger.info(
+                    "Applying Filecoin upload size gate: max plaintext video "
+                    "%d bytes (MAX_UPLOAD_SIZE=%d), below configured "
+                    "max_video_size=%d.",
+                    upload_cap_plain,
+                    max_upload_size(),
+                    max_video_size,
+                )
+
             largest_video_index = -1
             largest_video_size = 0
             all_video_files = []  # Track all video files found
@@ -774,14 +902,20 @@ class BitTorrentPlugin(ArchiverPlugin):
             if largest_video_index != -1:
                 largest_video_path = files.file_path(largest_video_index)
                 
-                if largest_video_size > max_video_size:
+                if largest_video_size > effective_max_video_size:
                     # Largest video exceeds max size - fail, don't fall back to smaller files
                     logger.info(
                         f"Largest video {largest_video_path}: {largest_video_size / (1024**3):.2f} GB "
-                        f"exceeds max limit of {max_video_size / (1024**3):.2f} GB"
+                        f"exceeds effective max limit of {effective_max_video_size / (1024**3):.2f} GB "
+                        f"(Filecoin MAX_UPLOAD_SIZE={max_upload_size()} bytes, "
+                        f"configured max_video_size={max_video_size} bytes)"
                     )
-                    
-                    max_size_str = f"{max_video_size / (1024**3):.1f} GB" if max_video_size >= 1024**3 else f"{max_video_size / (1024**2):.0f} MB"
+
+                    max_size_str = (
+                        f"{effective_max_video_size / (1024**3):.1f} GB"
+                        if effective_max_video_size >= 1024**3
+                        else f"{effective_max_video_size / (1024**2):.0f} MB"
+                    )
                     skip_reason = (
                         f"Largest video file '{largest_video_path}' ({largest_video_size / (1024**3):.2f} GB) "
                         f"exceeds max size limit of {max_size_str}. "
@@ -916,6 +1050,11 @@ class BitTorrentPlugin(ArchiverPlugin):
                     metadata=source.metadata,
                 )
             
+            # B4: the download is now being enqueued/started, which is the
+            # moment this torrent is genuinely consumed. Only here do we
+            # mark the infohash seen (and persist it) — never in discovery.
+            await self._mark_seen(infohash)
+
             # Wait for download to complete with timeout and stall detection
             logger.info("Downloading selected file...")
             result = await self._download_with_tracking(
@@ -931,7 +1070,15 @@ class BitTorrentPlugin(ArchiverPlugin):
             
         except Exception as e:
             logger.error(f"Error during download: {e}")
-            
+
+            # B4: the download did not complete, so release the seen mark.
+            # Otherwise the next discovery would filter this torrent out and
+            # a transient failure would wedge it forever.
+            try:
+                await self._unmark_seen(infohash)
+            except Exception as unmark_err:
+                logger.warning(f"Could not un-mark seen infohash {infohash}: {unmark_err}")
+
             # Update database status on error
             if self._bt_config.enable_background_downloads:
                 try:
@@ -1113,11 +1260,12 @@ class BitTorrentPlugin(ArchiverPlugin):
         
         logger.info("Download complete. Stopping torrent...")
         
-        # Get the output path for the downloaded file
-        # Note: files.file_path() already includes the torrent name as prefix
-        output_path = os.path.join(
-            str(self._download_dir),
-            files.file_path(selected_file_index)
+        # Get the output path for the downloaded file (B5: ABSOLUTE).
+        # Note: files.file_path() already includes the torrent name as prefix.
+        # ``.resolve()`` guarantees the stored path never depends on the
+        # process CWD, so pipeline steps can open it with no path joining.
+        output_path = str(
+            (self._download_dir / files.file_path(selected_file_index)).resolve()
         )
         
         # Verify the file exists (in executor)

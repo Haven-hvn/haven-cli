@@ -94,6 +94,53 @@ FINALIZING_PERCENT = 95            # Post-network finalization at 95%
 COMPLETION_PERCENT = 100           # Complete at 100%
 
 
+class _RetrievabilityNotConfirmed(RuntimeError):
+    """Raised when a Filecoin piece never becomes retrievable (item 9)."""
+
+
+def sweep_stale_upload_jobs(daemon_started_at: datetime) -> int:
+    """Mark orphaned ``uploading`` rows as ``failed`` at daemon boot (B6).
+
+    A ``kill -9`` / cancelled run can leave an ``upload_jobs`` row stuck at
+    ``status='uploading'`` forever (nothing else touches it until a new
+    attempt for the *same* video). Rows created before this daemon's start
+    cannot belong to a live upload, so they are swept to a terminal
+    ``failed`` state with an explanatory message.
+
+    Returns the number of rows swept. Never raises (defensive startup hook).
+    """
+    from haven_cli.database.models import UploadJob
+
+    swept = 0
+    try:
+        with get_db_session() as session:
+            stale = (
+                session.query(UploadJob)
+                .filter(UploadJob.status == "uploading")
+                .filter(UploadJob.created_at < daemon_started_at)
+                .all()
+            )
+            for job in stale:
+                job.status = "failed"
+                job.error_message = (
+                    "Abandoned at daemon startup: orphaned 'uploading' row "
+                    "from a previous (killed/cancelled) run"
+                )
+                job.completed_at = datetime.now(timezone.utc)
+                swept += 1
+            # get_db_session commits on successful exit.
+        if swept:
+            logger.info(
+                "B6 startup sweep: marked %d orphaned 'uploading' job(s) "
+                "as failed (older than daemon start %s).",
+                swept,
+                daemon_started_at.isoformat(),
+            )
+    except Exception as e:  # pragma: no cover - defensive startup hook
+        logger.warning("B6 startup sweep failed (non-fatal): %s", e)
+    return swept
+
+
 class UploadStep(ConditionalStep):
     """Pipeline step for Filecoin upload.
     
@@ -525,7 +572,18 @@ class UploadStep(ConditionalStep):
                 context.encryption_metadata,
                 on_progress,
             )
-            
+
+            # Item 9: persist the provider-health verdict per video so the
+            # result is observable (step data + log) rather than assumed.
+            foc_retrievable = upload_result.get("foc_retrievable")
+            context.set_step_data("upload", "foc_retrievable", foc_retrievable)
+            if foc_retrievable is False:
+                logger.error(
+                    "Storage provider health: upload of %s completed without "
+                    "confirmed retrievability (foc_retrievable=False)",
+                    video_path,
+                )
+
             # Upload VLM AI.json file if available
             vlm_json_cid = None
             if context.analysis_result and context.analysis_result.ai_json_path:
@@ -838,6 +896,11 @@ class UploadStep(ConditionalStep):
             # Verification failure is not fatal - the upload succeeded
             logger.warning(f"FOC retrievability verification failed (non-fatal): {e}")
 
+        # Item 9: persist the provider-health verdict per upload. True means
+        # getStatus reached active/confirmed (or wait_for_deal is off, in
+        # which case the operator opted out of verification).
+        retrievability_confirmed = not config.get("wait_for_deal", False)
+
         if config.get("wait_for_deal", False):
             logger.info("Waiting for FOC retrievability confirmation...")
             try:
@@ -868,13 +931,37 @@ class UploadStep(ConditionalStep):
                     )
 
                 if not _is_retrievable(status):
-                    logger.warning(
-                        "FOC retrieval not confirmed after %s attempts", attempts
+                    # Item 9: a seed that is not retrievable is NOT a seed.
+                    # Logging a warning and returning success would persist a
+                    # CID for content the provider cannot serve, and the next
+                    # run would skip it (Tier-1 dedup) — silently losing the
+                    # seed. Fail loudly instead: the outer handler marks the
+                    # UploadJob failed and no CID is written, so item 3's
+                    # retry-without---force path can pick it up next cycle.
+                    msg = (
+                        f"FOC piece retrievability NOT confirmed after "
+                        f"{attempts} attempts (status={status.get('status')}, "
+                        f"retrievable={status.get('retrievable')}); "
+                        f"refusing to mark upload completed — dead storage "
+                        f"provider or not-yet-active piece"
                     )
+                    logger.error("Storage provider health: %s", msg)
+                    raise _RetrievabilityNotConfirmed(msg)
                 else:
                     logger.info("FOC piece retrievability confirmed")
+                    retrievability_confirmed = True
+            except _RetrievabilityNotConfirmed:
+                raise  # propagate the explicit dead-provider failure
             except Exception as e:
-                logger.warning(f"Could not confirm FOC retrieval status: {e}")
+                # RPC/transport errors while polling are also treated as a
+                # failure to prove the seed lives (fail closed, retryable).
+                logger.error(
+                    "Could not confirm FOC retrieval status: %s; "
+                    "failing upload so it is retried next cycle.", e,
+                )
+                raise RuntimeError(
+                    f"Could not confirm FOC retrieval status: {e}"
+                ) from e
 
         # BUG HISTORY: ``STAGE_COMPLETE`` (100%) used to be emitted here, but at
         # this point the caller in ``_do_upload`` still needs to:
@@ -900,6 +987,8 @@ class UploadStep(ConditionalStep):
             "filecoin_uploaded_at": uploaded_at.isoformat(),
             "filecoin_service_provider": foc.service_provider or None,
             "foc_copy_count": foc.copy_count,
+            # Item 9: provider-health verdict, persisted per video below.
+            "foc_retrievable": retrievability_confirmed,
         }
     
     async def _upload_vlm_json(

@@ -124,7 +124,8 @@ def main(
     version: bool = typer.Option(
         False,
         "--version",
-        "-v",
+        # B15: `-v` is now the verbose alias (matches `haven run daemon -v`),
+        # so version keeps only its long form. Use `haven --version`.
         help="Show version and exit.",
         callback=version_callback,
         is_eager=True,
@@ -132,8 +133,12 @@ def main(
     verbose: bool = typer.Option(
         False,
         "--verbose",
+        "-v",
         "-V",
-        help="Enable verbose output (INFO level logging).",
+        help=(
+            "Enable verbose output (INFO level logging). "
+            "`-v` (new) and `-V` (legacy) are both aliases."
+        ),
     ),
     debug: bool = typer.Option(
         False,

@@ -312,7 +312,19 @@ class JSBridgeManager:
         """
         config = self._config or self._create_default_config()
         bridge = JSRuntimeBridge(config)
-        
+
+        # B7: recover a killed/unexpectedly-exited bridge immediately instead
+        # of waiting for the 120s health-check tick. The callback is a
+        # coroutine scheduled as a task by the bridge's stdout read loop.
+        async def _on_death() -> None:
+            logger.warning("JS bridge death detected; initiating automatic recovery")
+            try:
+                await self._restart_bridge()
+            except Exception as e:
+                logger.error(f"Automatic bridge recovery failed: {e}")
+
+        bridge.set_on_unexpected_exit(_on_death)
+
         try:
             await bridge.start()
             logger.info("JS Runtime Bridge started successfully")

@@ -349,6 +349,25 @@ class VideoRepository:
             .first()
         )
 
+    def get_all_by_original_hash(self, original_hash: str) -> list[Video]:
+        """Return *all* catalog rows matching ``original_hash``, newest first.
+
+        B2: a failed encrypt/upload leaves a row with ``original_hash`` set
+        but no completed upload. ``get_by_original_hash`` returns only the
+        newest row, which can be such a failed attempt and would wedge the
+        video forever if used as the Tier-1 dedup match. IngestStep instead
+        iterates every match and picks the one that *proves* a completed
+        upload (completed UploadJob + non-null CID/piece CID).
+        """
+        if not original_hash:
+            return []
+        return (
+            self.session.query(Video)
+            .filter(Video.original_hash == original_hash)
+            .order_by(Video.created_at.desc())
+            .all()
+        )
+
     def get_by_plugin_source(
         self,
         plugin_name: str,

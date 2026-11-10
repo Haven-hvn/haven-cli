@@ -27,6 +27,23 @@ from haven_cli.services.speed_history import SpeedHistoryService
 logger = logging.getLogger(__name__)
 
 
+class _FlushHandler(logging.Handler):
+    """No-op handler whose only job is to flush all root handlers (B7).
+
+    Defined at module level (rather than inside ``_force_unbuffered_logging``)
+    so the idempotency guard can reliably recognise an already-installed
+    instance with ``isinstance``.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        for handler in logging.getLogger().handlers:
+            try:
+                handler.flush()
+            except Exception:
+                # Never let a flush failure break logging.
+                pass
+
+
 class HavenDaemon:
     """Main daemon service for Haven CLI.
     
@@ -96,7 +113,17 @@ class HavenDaemon:
             RuntimeError: If a component fails to start
         """
         logger.info("Starting Haven daemon...")
-        
+
+        # B6: record boot time and sweep orphaned 'uploading' rows from any
+        # previous (killed/cancelled) daemon run so they reach a terminal
+        # 'failed' state instead of hiding forever.
+        from datetime import datetime, timezone
+        from haven_cli.pipeline.steps.upload_step import sweep_stale_upload_jobs
+        try:
+            sweep_stale_upload_jobs(datetime.now(timezone.utc))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Could not run B6 startup sweep: %s", e)
+
         # Initialize JS bridge with debug mode if configured
         from haven_cli.js_runtime.manager import JSBridgeManager
         from haven_cli.config import get_config
@@ -484,5 +511,48 @@ def daemonize(log_file: Optional[Path] = None) -> None:
         with open('/dev/null', 'a+') as devnull:
             os.dup2(devnull.fileno(), sys.stdout.fileno())
             os.dup2(devnull.fileno(), sys.stderr.fileno())
-    
+
+    # B7: the daemon's stdout/stderr now point at a file (or /dev/null), so
+    # Python switches to block buffering. Without this, daemon.log stays
+    # silent after the first few records and a dead JS bridge is invisible.
+    # Force line-buffered streams and flush every logging record so the log
+    # is "audible" (see docs/PRIORITIZED_PLAN.md item 1).
+    _force_unbuffered_logging()
+
     logger.info(f"Daemon process started (PID: {os.getpid()})")
+
+
+def _force_unbuffered_logging() -> None:
+    """Make daemon logging line-buffered and flush-per-record (B7).
+
+    After ``daemonize()`` dup2's stdout/stderr onto a regular file, CPython
+    uses block buffering for those streams. A ``StreamHandler`` bound to
+    ``sys.stderr`` (the CLI default) then buffers records until the 8 KiB
+    buffer fills — which can be *never* for a quiet-but-alive daemon. That
+    is the "daemon.log goes silent after startup" symptom.
+
+    Two independent fixes:
+      1. Re-wrap the text streams with ``line_buffering=True`` (and
+         ``write_through=True`` where available) so each newline flushes.
+      2. Install a ``_FlushHandler`` on the root logger that flushes every
+         attached handler after each ``emit``. This also covers a
+         ``FileHandler`` added by ``run``'s ``_setup_logging``.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(line_buffering=True, write_through=True)
+        except (AttributeError, ValueError, OSError):
+            # Non-text streams (or already-closed) — best effort only.
+            pass
+
+    root = logging.getLogger()
+    # Avoid stacking duplicate flush handlers if called more than once. The
+    # handler is level NOTSET so it sees every record the root logger already
+    # lets through; it does not change the configured log level.
+    if not any(isinstance(h, _FlushHandler) for h in root.handlers):
+        flush_handler = _FlushHandler()
+        flush_handler.setLevel(logging.NOTSET)
+        root.addHandler(flush_handler)

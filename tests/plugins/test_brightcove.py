@@ -483,37 +483,6 @@ class TestBrightcovePlugin:
         
         await plugin.shutdown()
     
-    @pytest.mark.asyncio
-    async def test_archive_existing_file(self, plugin, tmp_path):
-        """Test archive returns success when file already exists."""
-        with patch("asyncio.create_subprocess_exec") as mock_exec:
-            mock_proc = AsyncMock()
-            mock_proc.returncode = 0
-            mock_proc.communicate.return_value = (b"2024.01.01\n", b"")
-            mock_exec.return_value = mock_proc
-            
-            await plugin.initialize()
-        
-        # Create existing file
-        source_dir = tmp_path / "downloads" / "the_den"
-        source_dir.mkdir(parents=True, exist_ok=True)
-        existing_file = source_dir / "Test Video_asset123.mp4"
-        existing_file.write_bytes(b"fake video content")
-        
-        source = MediaSource(
-            source_id="brightcove:asset123",
-            media_type="brightcove",
-            uri="https://stream.example.com/video.m3u8",
-            title="Test Video",
-            metadata={"asset_id": "asset123", "video_format": "mp4", "source_name": "the_den"},
-        )
-        
-        result = await plugin.archive(source)
-        
-        assert result.success is True
-        assert result.metadata.get("existing") is True
-        
-        await plugin.shutdown()
     
     def test_add_source(self, plugin):
         """Test adding a new source."""

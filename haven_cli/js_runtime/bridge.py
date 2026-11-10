@@ -102,6 +102,21 @@ class JSRuntimeBridge:
         self._lock = asyncio.Lock()
         self._ready_event = asyncio.Event()
         self._error_message: Optional[str] = None
+        # B7: coroutine callback invoked when the subprocess dies without a
+        # graceful stop(). The JSBridgeManager wires this to _restart_bridge()
+        # so a killed bridge is recovered immediately (<30s) rather than on
+        # the 120s health-check interval.
+        self._on_unexpected_exit: Optional[Callable[[], Any]] = None
+
+    def set_on_unexpected_exit(self, callback: Optional[Callable[[], Any]]) -> None:
+        """Register a coroutine callback for unexpected process death (B7).
+
+        The callback is scheduled as a task by the read loop when stdout
+        reaches EOF while the bridge is still in a live state. It must be a
+        no-argument coroutine function (or any callable returning an
+        awaitable).
+        """
+        self._on_unexpected_exit = callback
     
     @property
     def state(self) -> RuntimeState:
@@ -440,6 +455,13 @@ class JSRuntimeBridge:
             while True:
                 line = await self._process.stdout.readline()
                 if not line:
+                    # EOF: the JS subprocess exited (or was killed). If this
+                    # happened while we were READY/STARTING and nobody called
+                    # stop(), it is an unexpected death (B7). Mark the bridge
+                    # dead, fail any pending calls, log with a timestamp, and
+                    # notify the manager so it can restart immediately.
+                    if self._state in (RuntimeState.READY, RuntimeState.STARTING):
+                        await self._handle_unexpected_exit()
                     break
                 
                 try:
@@ -470,7 +492,39 @@ class JSRuntimeBridge:
             logger.error(f"Read loop error: {e}")
             self._state = RuntimeState.ERROR
             self._error_message = str(e)
-    
+
+    async def _handle_unexpected_exit(self) -> None:
+        """Mark the bridge dead and notify the manager for a fast restart (B7).
+
+        Called by the stdout read loop when the subprocess reaches EOF while
+        the bridge is still considered live. Without this, ``is_ready`` stays
+        True after ``kill -9`` on the bridge PID and the next RPC hangs until
+        its request timeout; the daemon appears alive but does no work.
+        """
+        self._state = RuntimeState.ERROR
+        self._error_message = "JS runtime process exited unexpectedly"
+        self._ready_event.clear()
+        logger.error(
+            "JS runtime process died unexpectedly (EOF on stdout); "
+            "marking bridge ERROR and requesting restart"
+        )
+
+        # Fail any in-flight requests so callers don't wait for a timeout.
+        for fut in list(self._pending_futures.values()):
+            if not fut.done():
+                fut.set_exception(
+                    RuntimeError("JS runtime process exited unexpectedly")
+                )
+        self._pending_futures.clear()
+
+        callback = self._on_unexpected_exit
+        if callback is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(callback())
+            except Exception as e:  # pragma: no cover - defensive
+                logger.error(f"Could not schedule bridge restart callback: {e}")
+
     async def _read_stderr_loop(self) -> None:
         """Read and log stderr from the subprocess.
         

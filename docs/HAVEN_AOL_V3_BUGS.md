@@ -191,3 +191,44 @@ The `GateKeyCache` IS correctly implemented for decryption:
 - Thread-safe via `threading.Lock`
 
 This cache works correctly — it just has no encrypt-side counterpart.
+
+---
+
+## Accepted deviation — proposal §6.3 (persistent epoch-key cache on disk)
+
+**Status:** accepted operator trade-off (B11). Recorded 2026-11-10.
+
+**Files:** `haven_cli/crypto/epoch_key_cache.py` (`EpochAesKeyCache`),
+`haven_cli/crypto/gate_key_cache.py`.
+
+The Haven-AOL v3 proposal §6.3 bans keeping derived AES/epoch keys on disk
+(keys should be memory-only, re-derived from VetKD on every process start).
+The shipped implementation deliberately deviates: the process singleton
+persists epoch AES keys to a `0600` JSON file under `$HAVEN_CACHE_DIR`
+(default `~/.local/share/haven/epoch_aes_keys.json`), written atomically
+(temp file + `os.replace` + `chmod 0o600`). `gate_key_cache.py` remains
+process-lifetime only.
+
+**Rationale (why the deviation is accepted):**
+- The seeder is an unattended 6-hour-cycle daemon. Restarting it (crash,
+  deploy, reboot) must not force a fresh VetKD derivation for every epoch's
+  content before the next cycle can encrypt; a cold cache would stall the
+  first seed after every restart and re-introduce a silent-loss path.
+- Deriving a fresh key is always possible (the cache is an optimization, not
+  the only source of truth); a missing/corrupt file degrades to an empty
+  cache and re-derivation, never to a hard failure.
+- The on-disk material is protected by POSIX `0600` and lives in the
+  operator's private data dir, on the same host that already holds
+  `HAVEN_PRIVATE_KEY` and the ICP identity PEM.
+
+**Residual risk an external validator will flag:** anyone with read access
+to the host user's data dir can read epoch keys for content encrypted in
+those epochs, without re-satisfying the on-chain gate. This is a conscious
+confidentiality/availability trade-off, not an oversight. Mitigations if the
+threat model changes: set `HAVEN_CACHE_DIR` to an encrypted volume, disable
+persistence (bare `EpochAesKeyCache(persist_path=None)` → memory-only, which
+is what tests/tooling use), or rotate epochs (30-day cadence) to bound the
+exposure window.
+
+This note exists so the deviation is explicit and reviewable rather than
+silently contradicting §6.3.

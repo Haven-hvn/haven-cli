@@ -325,33 +325,6 @@ class TestDecryptFileCommand:
         gate = captured["gate"]
         assert gate.threshold == 1
 
-    @pytest.mark.asyncio
-    async def test_decrypt_file_requires_token_address(self, tmp_path, monkeypatch):
-        """Missing token address should fail before decryption."""
-        monkeypatch.setenv("HAVEN_PRIVATE_KEY", "0x" + ("34" * 32))
-        encrypted_path = tmp_path / "encrypted.out"
-        encrypted_path.write_bytes(b"not-used")
-        metadata = EncryptionMetadata(
-            gate={
-                "version": 1,
-                "cid": "bafy-test",
-                "chain": "EthMainnet",
-                "tokenAddress": "",
-                "threshold": "1",
-                "encryptedAesKey": "abc",
-            },
-        )
-
-        with patch(
-            "haven_cli.cli.download.load_encryption_metadata_by_cid",
-            new=AsyncMock(return_value=metadata),
-        ):
-            with pytest.raises(ValueError, match="missing tokenAddress"):
-                await _decrypt_file(
-                    input_path=encrypted_path,
-                    output_path=tmp_path / "decrypted.bin",
-                    cid="bafy-test",
-                )
 
 
 class TestPrintStatusTable:

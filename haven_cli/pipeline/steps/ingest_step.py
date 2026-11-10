@@ -112,6 +112,44 @@ class IngestStep(PipelineStep):
             # Extract basic file metadata
             file_size = video_path.stat().st_size
 
+            # -----------------------------------------------------------
+            # Size gate (plan item 6 / replaces B12). The Synapse SDK hard
+            # cap is MAX_UPLOAD_SIZE (~1 GiB) on the *projected encrypted +
+            # CAR* size, enforced in js-services/synapse-wrapper.ts. Refuse
+            # oversize files HERE, at ingest, before spending download
+            # bandwidth / encrypt time / a 2–15 min upload that would fail.
+            # One source of truth: upload_limits derives the exact same
+            # numbers from the wrapper's constants.
+            # -----------------------------------------------------------
+            from haven_cli.pipeline.upload_limits import (
+                max_plaintext_size,
+                max_upload_size,
+                projected_size,
+            )
+
+            encryption_enabled = bool(
+                context.options.get("encrypt", True)
+            )
+            max_plain = max_plaintext_size(encryption_enabled)
+            if file_size > max_plain:
+                reason = (
+                    f"File is too large for Filecoin upload: "
+                    f"{file_size} bytes (plaintext) > {max_plain} bytes "
+                    f"max (MAX_UPLOAD_SIZE={max_upload_size()} bytes; "
+                    f"projected encrypted+CAR size would be "
+                    f"{projected_size(file_size, encryption_enabled)} bytes). "
+                    f"Refusing at ingest before download/encrypt/upload."
+                )
+                logger.error("Ingest size gate: %s — %s", reason, video_path)
+                return StepResult.fail(
+                    self.name,
+                    StepError.permanent(
+                        code="FILE_TOO_LARGE",
+                        message=reason,
+                        path=str(video_path),
+                    ),
+                )
+
             if generic_kind is not None:
                 # Generic files have no frames or streams: skip ffprobe and
                 # pHash; byte-exact sha256 dedup below still applies.
@@ -489,25 +527,75 @@ class IngestStep(PipelineStep):
         through to the normal upload path the first time they're
         re-archived.
 
+        B2: only a row that *proves* a completed upload is a valid dedup
+        match. A failed/cancelled encrypt or upload still writes a
+        ``Video`` row with ``original_hash`` set (see ``_save_to_database``)
+        but no CID and/or no completed ``upload_jobs`` row. Returning that
+        row would set ``skip_upload`` and permanently wedge the video on the
+        next scheduled run (which has no ``--force``). We therefore require
+        BOTH a non-null Filecoin CID/piece CID AND an ``upload_jobs`` row
+        with ``status='completed'``. Rows that fail either check are ignored
+        so the normal path retries them.
+
         On any DB failure we return ``None`` so dedup degrades gracefully
         to the normal upload path rather than blocking ingestion.
 
-        See ``docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md``.
+        See ``docs/BATCH_SYNC_TIER1_PREUPLOAD_DEDUP.md`` and
+        ``docs/PRIORITIZED_PLAN.md`` item 3 (B2).
         """
         try:
             from haven_cli.database.connection import get_db_session
+            from haven_cli.database.models import UploadJob
             from haven_cli.database.repositories import VideoRepository
 
             with get_db_session() as session:
                 repo = VideoRepository(session)
-                match = repo.get_by_original_hash(original_hash)
-                if match is None:
-                    return None
-                # Detach from the session so callers can read attributes
-                # after the session closes. ``expunge`` is enough — we
-                # don't write back through this object.
-                session.expunge(match)
-                return match
+                # A failed attempt may be the newest row while an older row
+                # holds the real completed upload. Iterate all matches.
+                matches = repo.get_all_by_original_hash(original_hash)
+                for match in matches:
+                    # Proof 1: a Filecoin CID/piece CID was actually stored.
+                    if not (match.cid or match.piece_cid):
+                        logger.debug(
+                            "Tier 1 dedup: ignoring video_id=%s for "
+                            "original_hash=%s… — no Filecoin CID/piece CID "
+                            "(failed or cancelled upload).",
+                            match.id,
+                            original_hash[:12],
+                        )
+                        continue
+                    # Proof 2: an upload job reached terminal 'completed'.
+                    completed_job = (
+                        session.query(UploadJob)
+                        .filter(
+                            UploadJob.video_id == match.id,
+                            UploadJob.status == "completed",
+                        )
+                        .first()
+                    )
+                    if completed_job is None:
+                        logger.debug(
+                            "Tier 1 dedup: ignoring video_id=%s for "
+                            "original_hash=%s… — no completed upload_jobs "
+                            "row (failed/cancelled upload).",
+                            match.id,
+                            original_hash[:12],
+                        )
+                        continue
+                    # Detach from the session so callers can read attributes
+                    # after the session closes. ``expunge`` is enough — we
+                    # don't write back through this object.
+                    session.expunge(match)
+                    return match
+                # No match proved a completed upload -> fall through so the
+                # next run retries encrypt/upload instead of wedging.
+                logger.info(
+                    "Tier 1 dedup: no completed upload found for "
+                    "original_hash=%s…; falling through to normal path "
+                    "(retryable).",
+                    original_hash[:12] if original_hash else "<empty>",
+                )
+                return None
         except Exception as e:
             logger.warning(
                 "Tier 1 dedup lookup failed for original_hash=%s…: %s — "

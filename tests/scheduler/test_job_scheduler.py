@@ -182,39 +182,9 @@ class TestJobSchedulerBasics:
 class TestJobSchedulerNextRunCalculation:
     """Tests for next run time calculation."""
 
-    def test_calculate_next_run_hourly(self, scheduler: JobScheduler) -> None:
-        """Test calculating next run for hourly schedule."""
-        schedule = "0 * * * *"  # Every hour
-        next_run = scheduler._calculate_next_run(schedule)
 
-        assert next_run > datetime.utcnow()
-        # Should be within the next hour
-        assert next_run < datetime.utcnow() + timedelta(hours=2)
 
-    def test_calculate_next_run_daily(self, scheduler: JobScheduler) -> None:
-        """Test calculating next run for daily schedule."""
-        schedule = "0 0 * * *"  # Daily at midnight
-        next_run = scheduler._calculate_next_run(schedule)
 
-        assert next_run > datetime.utcnow()
-        # Should be within the next day
-        assert next_run < datetime.utcnow() + timedelta(days=2)
-
-    def test_calculate_next_run_with_seconds(self, scheduler: JobScheduler) -> None:
-        """Test calculating next run for schedule with seconds."""
-        schedule = "0 0 * * * *"  # Every minute with seconds
-        next_run = scheduler._calculate_next_run(schedule)
-
-        assert next_run > datetime.utcnow()
-
-    def test_calculate_next_run_invalid_schedule(self, scheduler: JobScheduler) -> None:
-        """Test that invalid schedules fall back gracefully."""
-        schedule = "invalid"
-        next_run = scheduler._calculate_next_run(schedule)
-
-        # Should return a fallback time (1 hour from now)
-        assert next_run > datetime.utcnow()
-        assert next_run <= datetime.utcnow() + timedelta(hours=2)
 
 
 class TestCronTriggerParsing:

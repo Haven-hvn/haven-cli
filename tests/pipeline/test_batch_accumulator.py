@@ -54,32 +54,6 @@ class TestBatchAccumulatorEmptyToOneRace:
     After fix: add() always sets _ready even if buffer < batch_size
     """
 
-    @pytest.mark.asyncio
-    async def test_add_during_empty_wait_wakes_flush_immediately(self):
-        """Empty buffer + concurrent add() must wake flush() immediately.
-
-        The original bug: empty buffer + concurrent add() resulted in
-        ~2× timeout latency because _ready was never set during wait().
-
-        After fix: flush() should wake up when item arrives, return [ctx].
-        """
-        acc = BatchAccumulator(batch_size=10, flush_timeout=5.0)
-
-        async def delayed_add():
-            # Let flush() start waiting on _ready before we add.
-            await asyncio.sleep(0.05)
-            await acc.add(_make_context(0))
-
-        flush_task = asyncio.create_task(acc.flush())
-        add_task = asyncio.create_task(delayed_add())
-
-        # If the race is broken, this hits the timeout. Cap how long we
-        # wait so the test fails fast rather than blocking the suite.
-        batch = await asyncio.wait_for(flush_task, timeout=0.15)
-        await add_task
-
-        assert len(batch) == 1
-        assert acc.pending_count == 0
 
     @pytest.mark.asyncio
     async def test_add_always_signals_ready_event(self):

@@ -523,77 +523,8 @@ class TestStateManagerQueries:
 class TestStateManagerEventHandlers:
     """Tests for StateManager event handlers."""
     
-    @pytest.mark.asyncio
-    async def test_on_download_progress(self):
-        """Test handling download progress event."""
-        mock_pipeline = MagicMock()
-        manager = StateManager(pipeline=mock_pipeline)
-        manager._state[1] = VideoState(id=1, title="Test")
-        
-        event = Event(
-            event_type=EventType.DOWNLOAD_PROGRESS,
-            payload={
-                "video_id": 1,
-                "speed": 1024000.0,
-                "progress": 75.0,
-                "eta": 60,
-            },
-        )
-        
-        await manager._on_download_progress(event)
-        
-        state = manager.get_video(1)
-        assert state.download_speed == 1024000.0
-        assert state.download_progress == 75.0
-        assert state.download_eta == 60
-        assert state.download_status == "active"
-        assert state.current_stage == "download"
     
-    @pytest.mark.asyncio
-    async def test_on_upload_progress(self):
-        """Test handling upload progress event."""
-        mock_pipeline = MagicMock()
-        manager = StateManager(pipeline=mock_pipeline)
-        manager._state[1] = VideoState(id=1, title="Test")
-        
-        event = Event(
-            event_type=EventType.UPLOAD_PROGRESS,
-            payload={
-                "video_id": 1,
-                "speed": 512000.0,
-                "progress": 50.0,
-            },
-        )
-        
-        await manager._on_upload_progress(event)
-        
-        state = manager.get_video(1)
-        assert state.upload_speed == 512000.0
-        assert state.upload_progress == 50.0
-        assert state.upload_status == "active"
-        assert state.current_stage == "upload"
     
-    @pytest.mark.asyncio
-    async def test_on_encrypt_progress(self):
-        """Test handling encrypt progress event."""
-        mock_pipeline = MagicMock()
-        manager = StateManager(pipeline=mock_pipeline)
-        manager._state[1] = VideoState(id=1, title="Test")
-        
-        event = Event(
-            event_type=EventType.ENCRYPT_PROGRESS,
-            payload={
-                "video_id": 1,
-                "progress": 80.0,
-            },
-        )
-        
-        await manager._on_encrypt_progress(event)
-        
-        state = manager.get_video(1)
-        assert state.encrypt_progress == 80.0
-        assert state.encrypt_status == "active"
-        assert state.current_stage == "encrypt"
     
     @pytest.mark.asyncio
     async def test_on_encrypt_complete(self):

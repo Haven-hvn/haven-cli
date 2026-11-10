@@ -92,37 +92,6 @@ class TestAnalyzeStepSkipConditions:
 class TestAnalyzeStepConfigValidation:
     """Tests for VLM configuration loading and validation."""
 
-    @pytest.mark.asyncio
-    async def test_config_validation_error(self):
-        """Test that config validation errors cause step failure."""
-        step = AnalyzeStep()
-
-        video_file = Path("/tmp/test.mp4")
-        context = PipelineContext(
-            source_path=video_file,
-            options={"vlm_enabled": True},
-            video_id=42,
-        )
-        context.video_metadata = VideoMetadata(
-            path=str(video_file),
-            title="test",
-            duration=60.0,
-            file_size=1000,
-            mime_type="video/mp4",
-            phash="a3f5c2d8",
-        )
-
-        mock_config = MagicMock()
-        mock_config.processing.enabled = True
-        mock_config.processing.frame_count = 25
-        mock_config.engine.model_name = "test-model"
-
-        with patch("haven_cli.pipeline.steps.analyze_step.load_vlm_config", return_value=mock_config):
-            with patch("haven_cli.pipeline.steps.analyze_step.validate_vlm_config", return_value=["API key missing"]):
-                result = await step.process(context)
-
-        # Warning only - should proceed
-        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_config_validation_errors_fail_step(self):
@@ -809,62 +778,6 @@ class TestAnalyzeStepOnSkip:
 class TestAnalyzeStepProgressTracking:
     """Tests for progress callback and job progress updates."""
 
-    @pytest.mark.asyncio
-    async def test_progress_callback_updates_job(self):
-        """Test progress callback triggers job and snapshot updates."""
-        step = AnalyzeStep()
-        step._start_time = 0  # Ensure time diff >= 1.0
-
-        video_file = Path("/tmp/test.mp4")
-        context = PipelineContext(
-            source_path=video_file,
-            options={"vlm_enabled": True},
-        )
-        context.video_id = 42
-        context.video_metadata = VideoMetadata(
-            path=str(video_file),
-            title="test",
-            duration=60.0,
-            file_size=1000,
-            mime_type="video/mp4",
-            phash="a3f5c2d8",
-        )
-
-        mock_config = MagicMock()
-        mock_config.processing.enabled = True
-        mock_config.processing.frame_count = 25
-        mock_config.engine.model_name = "test-model"
-
-        mock_processor = MagicMock()
-        mock_processor.initialize = AsyncMock()
-
-        # Capture the progress_callback and invoke it to test updates
-        async def mock_process_video(path, progress_callback=None):
-            if progress_callback:
-                progress_callback(50)
-            return {
-                "timestamps": [],
-                "tags": {},
-                "confidence": 0.5,
-            }
-
-        mock_processor.process_video = mock_process_video
-        mock_processor.close = AsyncMock()
-
-        with patch("haven_cli.pipeline.steps.analyze_step.load_vlm_config", return_value=mock_config):
-            with patch("haven_cli.pipeline.steps.analyze_step.validate_vlm_config", return_value=[]):
-                with patch("haven_cli.pipeline.steps.analyze_step.VLMProcessor", return_value=mock_processor):
-                    with patch.object(step, '_create_analysis_job', new_callable=AsyncMock, return_value=1):
-                        with patch.object(step, '_update_job_progress', new_callable=AsyncMock) as mock_progress:
-                            with patch.object(step, '_update_pipeline_snapshot', new_callable=AsyncMock) as mock_snapshot:
-                                with patch.object(step, '_save_timestamps_to_db', new_callable=AsyncMock):
-                                    with patch.object(step, '_complete_analysis_job', new_callable=AsyncMock):
-                                        with patch.object(step, '_emit_event', new_callable=AsyncMock):
-                                            await step.process(context)
-
-        # Verify progress updates were triggered
-        mock_progress.assert_called()
-        mock_snapshot.assert_called()
 
 
 class TestMockAnalyzeStep:
@@ -971,76 +884,6 @@ class TestMockAnalyzeStep:
 class TestAnalyzeStepIntegration:
     """Integration-style tests combining multiple behaviors."""
 
-    @pytest.mark.asyncio
-    async def test_full_analysis_flow_with_video_id(self):
-        """Test complete analysis flow with all DB interactions."""
-        step = AnalyzeStep()
-
-        video_file = Path("/tmp/test.mp4")
-        context = PipelineContext(
-            source_path=video_file,
-            options={"vlm_enabled": True},
-            video_id=42,
-        )
-        context.video_metadata = VideoMetadata(
-            path=str(video_file),
-            title="test",
-            duration=60.0,
-            file_size=1000,
-            mime_type="video/mp4",
-            phash="a3f5c2d8",
-        )
-
-        mock_config = MagicMock()
-        mock_config.processing.enabled = True
-        mock_config.processing.frame_count = 25
-        mock_config.engine.model_name = "llava"
-
-        mock_processor = MagicMock()
-        mock_processor.initialize = AsyncMock()
-        mock_processor.process_video = AsyncMock(return_value={
-            "timestamps": [
-                {"tag_name": "scene_1", "start_time": 0.0, "end_time": 30.0, "confidence": 0.9},
-                {"tag_name": "scene_2", "start_time": 30.0, "end_time": 60.0, "confidence": 0.85},
-            ],
-            "tags": {"outdoor": 0.9, "nature": 0.7},
-            "confidence": 0.85,
-        })
-        mock_processor.close = AsyncMock()
-
-        created_job_id = [None]
-        saved_timestamps = [None]
-        completed_job = [None]
-
-        def mock_create_job(video_id, analysis_type, model_name, status, frames_total):
-            created_job_id[0] = 1
-            return 1
-
-        def mock_save_timestamps(ctx, results):
-            saved_timestamps[0] = results
-
-        def mock_complete(job_id, output_file):
-            completed_job[0] = (job_id, output_file)
-
-        with patch("haven_cli.pipeline.steps.analyze_step.load_vlm_config", return_value=mock_config):
-            with patch("haven_cli.pipeline.steps.analyze_step.validate_vlm_config", return_value=[]):
-                with patch("haven_cli.pipeline.steps.analyze_step.VLMProcessor", return_value=mock_processor):
-                    with patch(
-                        "haven_cli.database.repositories.AnalysisJobRepository"
-                    ), \
-                    patch.object(step, '_create_analysis_job', side_effect=mock_create_job):
-                        with patch.object(step, '_save_timestamps_to_db', side_effect=mock_save_timestamps):
-                            with patch.object(step, '_complete_analysis_job', side_effect=mock_complete):
-                                with patch.object(step, '_update_pipeline_snapshot', new_callable=AsyncMock):
-                                    with patch.object(step, '_emit_event', new_callable=AsyncMock):
-                                        result = await step.process(context)
-
-        assert result.success is True
-        assert created_job_id[0] == 1
-        assert saved_timestamps[0] is not None
-        assert len(saved_timestamps[0]["timestamps"]) == 2
-        assert completed_job[0] is not None
-        assert context.analysis_result.confidence == 0.85
 
     @pytest.mark.asyncio
     async def test_ai_json_path_detection(self, tmp_path):

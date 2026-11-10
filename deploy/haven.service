@@ -1,0 +1,35 @@
+[Unit]
+Description=Haven CLI seeder daemon
+Documentation=https://github.com/haven-cli/haven-cli
+# The daemon is the initial seed for the popularity-driven repin model.
+# It must come back automatically after any crash (kill -9 of the daemon
+# PID or of the JS bridge PID). See docs/PRIORITIZED_PLAN.md item 1 (B7).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path to the checkout that contains .venv/ and js-services/.
+WorkingDirectory=/root/workspace/haven-cli
+# libtorrent shared libraries shipped in-tree (Python 3.14 build).
+Environment=LD_LIBRARY_PATH=/root/workspace/haven-cli/wheels/libs/usr/lib
+# Optional per-user secrets (HAVEN_PRIVATE_KEY, etc.). Systemd tolerates a
+# missing EnvironmentFile when prefixed with '-'.
+EnvironmentFile=-%h/.config/haven/haven.env
+# PYTHONUNBUFFERED is belt-and-braces: the daemon service also forces
+# line-buffered / flush-per-record logging internally (B7).
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/workspace/haven-cli/.venv/bin/haven run daemon --daemon -v
+Restart=always
+RestartSec=10
+# Give a clean shutdown a chance before SIGKILL (the daemon handles SIGTERM
+# by stopping the scheduler + JS bridge).
+TimeoutStopSec=60
+KillMode=mixed
+# Surface daemon stdout/stderr (including bridge death) in the journal.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=haven
+
+[Install]
+WantedBy=default.target

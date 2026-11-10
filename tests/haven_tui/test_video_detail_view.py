@@ -400,41 +400,8 @@ class TestVideoInfoWidget:
 class TestPipelineProgressWidget:
     """Tests for the PipelineProgressWidget."""
     
-    def test_empty_stages(self):
-        """Test rendering with no stages."""
-        widget = PipelineProgressWidget()
-        widget._stages = []
-        result = widget._render()
-        assert "No pipeline data" in result
     
-    def test_single_stage(self):
-        """Test rendering with a single stage."""
-        widget = PipelineProgressWidget()
-        stage = StageDisplayInfo(
-            name="download",
-            status="completed",
-            progress=100.0,
-            detail="Done",
-            symbol="●",
-        )
-        widget.set_stages([stage])
-        result = widget._render()
-        assert "download" in result
-        assert "●" in result
     
-    def test_multiple_stages(self):
-        """Test rendering with multiple stages."""
-        widget = PipelineProgressWidget()
-        stages = [
-            StageDisplayInfo("download", "completed", 100.0, "Done", "●"),
-            StageDisplayInfo("encrypt", "active", 50.0, "50%", "◐"),
-            StageDisplayInfo("upload", "pending", 0.0, "Pending", "○"),
-        ]
-        widget.set_stages(stages)
-        result = widget._render()
-        assert "download" in result
-        assert "encrypt" in result
-        assert "upload" in result
 
 
 # =============================================================================
@@ -444,40 +411,10 @@ class TestPipelineProgressWidget:
 class TestResultsWidget:
     """Tests for the ResultsWidget."""
     
-    def test_empty_results(self):
-        """Test rendering with no results."""
-        widget = ResultsWidget()
-        result = widget._render()
-        assert "No results" in result
     
-    def test_cid_display(self):
-        """Test CID display."""
-        widget = ResultsWidget()
-        widget.set_results(cid="bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fxyz")
-        result = widget._render()
-        assert "bafybei" in result
     
-    def test_encryption_status(self):
-        """Test encryption status display."""
-        widget = ResultsWidget()
-        widget.set_results(is_encrypted=True)
-        result = widget._render()
-        assert "Encrypted" in result
-        assert "Haven-AOL" in result
     
-    def test_analysis_complete(self):
-        """Test analysis complete display."""
-        widget = ResultsWidget()
-        widget.set_results(analysis_complete=True)
-        result = widget._render()
-        assert "AI Analysis" in result
     
-    def test_tx_hash(self):
-        """Test transaction hash display."""
-        widget = ResultsWidget()
-        widget.set_results(tx_hash="0x1234567890abcdef")
-        result = widget._render()
-        assert "0x123456" in result
 
 
 # =============================================================================

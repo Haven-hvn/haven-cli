@@ -62,9 +62,12 @@ def get_entity(
     from haven_cli.services.arkiv_sync import build_arkiv_config
     
     config = load_config(config_file)
+    # B3: ``BlockchainConfig`` has no ``private_key`` / ``arkiv_rpc_url``
+    # attributes — reading them raised AttributeError. Auth comes solely
+    # from HAVEN_PRIVATE_KEY (build_arkiv_config falls back to it) and the
+    # RPC URL is derived from network mode / env / the optional override.
     arkiv_config = build_arkiv_config(
-        private_key=config.blockchain.private_key if config else None,
-        rpc_url=config.blockchain.arkiv_rpc_url if config else None,
+        rpc_url=config.blockchain.arkiv_rpc_override if config else None,
         enabled=True,  # Force enable for query
     )
     
@@ -180,9 +183,9 @@ def query_entities(
     from haven_cli.services.arkiv_sync import build_arkiv_config
     
     config = load_config(config_file)
+    # B3: see get_entity above — no private_key/arkiv_rpc_url attributes.
     arkiv_config = build_arkiv_config(
-        private_key=config.blockchain.private_key if config else None,
-        rpc_url=config.blockchain.arkiv_rpc_url if config else None,
+        rpc_url=config.blockchain.arkiv_rpc_override if config else None,
         enabled=True,
     )
     

@@ -482,6 +482,13 @@ class EncryptStep(ConditionalStep):
                 exc_info=True,
             )
 
+            # B2: a partial/failed encrypt must not leave state that makes
+            # the next run skip. The encryptor writes to
+            # f"{video_path}.encrypted" with no resume; a truncated file left
+            # behind would be reused/misread on the retry. Remove it here so
+            # the next scheduled run starts clean (and can re-encrypt).
+            self._cleanup_partial_encrypted_file(video_path)
+
             # Mark job as failed
             error_msg = str(e)
             if self._job_id and context.video_id:
@@ -491,6 +498,25 @@ class EncryptStep(ConditionalStep):
                 )
 
             return StepResult.fail(self.name, step_error_from_encrypt_exception(e))
+
+    @staticmethod
+    def _cleanup_partial_encrypted_file(video_path) -> None:
+        """Best-effort removal of a partial ``<video>.encrypted`` file (B2)."""
+        import os
+        candidate = f"{video_path}.encrypted"
+        try:
+            if os.path.exists(candidate):
+                os.remove(candidate)
+                logger.info(
+                    "Removed partial encrypted file after failed encrypt: %s",
+                    candidate,
+                )
+        except OSError as cleanup_err:  # pragma: no cover - defensive
+            logger.warning(
+                "Could not remove partial encrypted file %s: %s",
+                candidate,
+                cleanup_err,
+            )
 
     def _reset_progress_tracking(self) -> None:
         """Reset per-run progress throttling and speed measurement state."""
@@ -1153,6 +1179,18 @@ class EncryptStep(ConditionalStep):
 
             with get_db_session() as session:
                 repo = EncryptionJobRepository(session)
+
+                # B2/B6: abandon any prior 'encrypting' rows left by a killed
+                # or failed run so the TUI/observability sees terminal states
+                # and the new attempt cleanly supersedes them (mirrors
+                # UploadStep._create_upload_job).
+                for stale in repo.get_by_video_id(video_id):
+                    if stale.status == "encrypting":
+                        stale.status = "failed"
+                        stale.error_message = (
+                            "Abandoned: superseded by a new encrypt attempt"
+                        )
+
                 job = repo.create(
                     video_id=video_id,
                     status="encrypting",

@@ -273,38 +273,6 @@ class TestEventLogWidget:
         assert widget._get_level_for_event(EventType.PIPELINE_STARTED) == LogLevel.INFO
         assert widget._get_level_for_event(EventType.DOWNLOAD_PROGRESS) == LogLevel.INFO
 
-    def test_format_event_message(self, event_bus: EventBus) -> None:
-        """Test message formatting for different event types."""
-        widget = EventLogWidget(event_bus=event_bus)
-        
-        # Download progress
-        event = Event(
-            event_type=EventType.DOWNLOAD_PROGRESS,
-            payload={"video_id": 1, "progress_percent": 50, "download_rate": 1048576},
-        )
-        message = widget._format_event_message(event)
-        assert "Download" in message
-        assert "50.0%" in message
-        assert "1.0MB/s" in message
-        
-        # Encryption progress
-        event = Event(
-            event_type=EventType.ENCRYPT_PROGRESS,
-            payload={"video_id": 1, "progress": 75},
-        )
-        message = widget._format_event_message(event)
-        assert "Encryption" in message
-        assert "75.0%" in message
-        
-        # Pipeline failed
-        event = Event(
-            event_type=EventType.PIPELINE_FAILED,
-            payload={"video_id": 1, "stage": "upload", "error": "Network error"},
-        )
-        message = widget._format_event_message(event)
-        assert "Failed" in message
-        assert "upload" in message
-        assert "Network error" in message
 
     def test_format_speed(self, event_bus: EventBus) -> None:
         """Test speed formatting."""

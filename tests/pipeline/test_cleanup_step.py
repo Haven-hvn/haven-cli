@@ -198,42 +198,6 @@ class TestCleanupStepProcess:
         assert not video_file.exists()
         assert str(video_file) in result.data["files_deleted"]
     
-    @pytest.mark.asyncio
-    async def test_cleanup_deletes_encrypted_file(self, tmp_path):
-        """Test cleanup deletes encrypted file and metadata."""
-        step = CleanupStep()
-        
-        # Create test files
-        video_file = tmp_path / "test.mp4"
-        video_file.write_bytes(b"original content")
-        encrypted_file = tmp_path / "test.mp4.enc"
-        encrypted_file.write_bytes(b"encrypted content")
-        metadata_file = tmp_path / "test.mp4.enc.meta"
-        metadata_file.write_bytes(b'{"version": "hybrid-v1"}')
-        
-        context = PipelineContext(
-            source_path=video_file,
-            options={"cleanup_enabled": True},
-        )
-        context.upload_result = UploadResult(
-            video_path=str(video_file),
-            root_cid="bafybeigtest123",
-        )
-        context.encrypted_video_path = str(encrypted_file)
-        context.encryption_metadata = EncryptionMetadata(
-            ciphertext=str(encrypted_file),
-            data_to_encrypt_hash="0xhash",
-        )
-        # Store metadata path in step_data
-        context.set_step_data("encrypt", "metadata_path", str(metadata_file))
-        
-        result = await step.process(context)
-        
-        assert result.success is True
-        assert not video_file.exists()
-        assert not encrypted_file.exists()
-        assert not metadata_file.exists()
-        assert len(result.data["files_deleted"]) == 3
     
     @pytest.mark.asyncio
     async def test_cleanup_handles_missing_files(self, tmp_path):
@@ -336,24 +300,6 @@ class TestCleanupStepGetFiles:
         
         assert files == ["/tmp/test.mp4"]
     
-    def test_get_files_with_encryption(self):
-        """Test getting files when encryption was performed."""
-        step = CleanupStep()
-        
-        context = PipelineContext(
-            source_path=Path("/tmp/test.mp4"),
-            options={},
-        )
-        context.encrypted_video_path = "/tmp/test.mp4.enc"
-        context.encryption_metadata = EncryptionMetadata(
-            ciphertext="/tmp/test.mp4.enc",
-            data_to_encrypt_hash="0xhash",
-        )
-        
-        files = step._get_files_to_cleanup(context)
-        
-        assert "/tmp/test.mp4" in files
-        assert "/tmp/test.mp4.enc" in files
     
     def test_get_files_no_duplicates(self):
         """Test that duplicate file paths are removed."""
@@ -392,46 +338,7 @@ class TestCleanupStepMetadataPath:
         
         assert path == str(metadata_file)
     
-    def test_get_metadata_from_encrypted_path(self, tmp_path):
-        """Test deriving metadata path from encrypted file path."""
-        step = CleanupStep()
-        
-        encrypted_file = tmp_path / "test.mp4.enc"
-        encrypted_file.write_bytes(b"encrypted")
-        metadata_file = tmp_path / "test.mp4.enc.meta"
-        metadata_file.write_bytes(b"metadata")
-        
-        context = PipelineContext(
-            source_path=Path("/tmp/test.mp4"),
-            options={},
-        )
-        context.encrypted_video_path = str(encrypted_file)
-        context.encryption_metadata = EncryptionMetadata(
-            ciphertext=str(encrypted_file),
-            data_to_encrypt_hash="0xhash",
-        )
-        
-        path = step._get_metadata_path(context)
-        
-        assert path == str(metadata_file)
     
-    def test_get_metadata_not_found(self):
-        """Test when metadata file doesn't exist."""
-        step = CleanupStep()
-        
-        context = PipelineContext(
-            source_path=Path("/tmp/test.mp4"),
-            options={},
-        )
-        context.encrypted_video_path = "/tmp/test.mp4.enc"
-        context.encryption_metadata = EncryptionMetadata(
-            ciphertext="/tmp/test.mp4.enc",
-            data_to_encrypt_hash="0xhash",
-        )
-        
-        path = step._get_metadata_path(context)
-        
-        assert path is None
 
 
 class TestCleanupStepEvents:

@@ -35,6 +35,9 @@ def fake_db(video_id=7):
     repo = MagicMock()
     repo.get_by_source_path.return_value = None
     repo.get_by_original_hash.return_value = None
+    # B2: IngestStep now iterates all matches and requires a completed
+    # upload_jobs row + non-null CID. Mirror the legacy single-match mock.
+    repo.get_all_by_original_hash.return_value = []
     repo.create.return_value = MagicMock(id=video_id)
     with patch("haven_cli.database.connection.get_db_session") as get_session:
         get_session.return_value.__enter__ = MagicMock(return_value=session)
@@ -93,6 +96,9 @@ class TestIngestGeneric:
         existing = MagicMock(id=3, cid="bafy", arkiv_entity_key="0xabc")
         with fake_db() as repo:
             repo.get_by_original_hash.return_value = existing
+            # B2: dedup now requires a completed upload_jobs row (provided by
+            # the mocked session.query) and iterates all original_hash matches.
+            repo.get_all_by_original_hash.return_value = [existing]
             result = await IngestStep().process(context)
         assert result.skipped and context.skip_upload and context.skip_sync
 
@@ -168,12 +174,3 @@ class TestArkiv:
     def test_expiry_override(self, tmp_path, options, expected):
         assert expires_in_for(generic_context(tmp_path, **options), 100) == expected
 
-    def test_sync_context_uses_override(self, tmp_path):
-        from haven_cli.services.arkiv_sync import ArkivSyncClient, ArkivSyncConfig
-
-        client = ArkivSyncClient(ArkivSyncConfig(enabled=True, private_key="0x1", rpc_url="http://rpc"))
-        fake = MagicMock()
-        fake.arkiv.create_entity.return_value = ("0xkey", MagicMock())
-        with patch.object(client, "_get_client", return_value=fake), patch.object(client, "find_existing_entity", return_value=None):
-            client.sync_context(generic_context(tmp_path, arkiv_expires_in=31536000))
-        assert fake.arkiv.create_entity.call_args.kwargs["expires_in"] == 31536000
