@@ -8,6 +8,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Run in the FOREGROUND (no --daemon). systemd then directly supervises the
+# daemon process, so Restart=always reliably fires on any crash (kill -9 of
+# the daemon or bridge). The --daemon double-fork detaches from the service
+# manager ("Supervising process ... which is not our child"), which defeats
+# auto-restart. Foreground also lets the journal capture every log record.
 Type=simple
 # Path to the checkout that contains .venv/ and js-services/.
 WorkingDirectory=/root/workspace/haven-cli
@@ -19,7 +24,7 @@ EnvironmentFile=-%h/.config/haven/haven.env
 # PYTHONUNBUFFERED is belt-and-braces: the daemon service also forces
 # line-buffered / flush-per-record logging internally (B7).
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/workspace/haven-cli/.venv/bin/haven run daemon --daemon -v
+ExecStart=/root/workspace/haven-cli/.venv/bin/haven run daemon -v
 Restart=always
 RestartSec=10
 # Give a clean shutdown a chance before SIGKILL (the daemon handles SIGTERM

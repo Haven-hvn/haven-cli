@@ -38,6 +38,14 @@ def _setup_logging(verbose: bool, log_file: Optional[Path] = None) -> None:
         level=level,
         format=format_str,
         handlers=handlers,
+        # B7: the top-level app callback (main.py) configures the root logger
+        # with force=True at WARNING by default (the top-level -v/-V flags are
+        # not passed when running `haven run daemon -v`). Without force here,
+        # this basicConfig is a no-op and every INFO/DEBUG daemon log line —
+        # including JS bridge death/restart, the B6 startup sweep, and
+        # "Haven daemon started successfully" — is silently dropped. Force
+        # the subcommand's -v level so daemon logs are audible.
+        force=True,
     )
 
 
