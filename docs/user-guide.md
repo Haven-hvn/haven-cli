@@ -16,7 +16,7 @@
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - FFmpeg (for video processing)
 - Deno (for JS runtime)
 - yt-dlp (for YouTube plugin)

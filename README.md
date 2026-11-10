@@ -100,7 +100,7 @@ For detailed format documentation, see [Arkiv Data Format](docs/ARKIV_FORMAT.md)
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - FFmpeg (for video processing)
 - Deno 1.40+ (for JS runtime)
 - yt-dlp (for YouTube plugin)

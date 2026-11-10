@@ -18,7 +18,7 @@ Yes. Haven TUI works on:
 - Linux
 - macOS
 - Windows (with Windows Terminal or WSL)
-- Any platform that supports Python 3.11+ and a compatible terminal
+- Any platform that supports Python 3.12+ and a compatible terminal
 
 ### What's the difference between TUI and CLI?
 
@@ -50,7 +50,7 @@ pip install textual plotille
 
 ### What are the system requirements?
 
-- Python 3.11 or higher
+- Python 3.12 or higher
 - Terminal with Unicode support (for progress bars)
 - Minimum 80x24 terminal size (100x30 recommended)
 - Haven CLI installed and configured
@@ -306,7 +306,7 @@ Try:
 1. `haven-tui --no-graphs` - Disable graphs
 2. `haven-tui --compact` - Use compact mode
 3. `haven-tui --database /path/to/db` - Specify database
-4. Check Python version: `python --version` (need 3.11+)
+4. Check Python version: `python --version` (need 3.12+)
 
 ### Garbled characters / display issues
 

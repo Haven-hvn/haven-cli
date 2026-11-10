@@ -12,7 +12,7 @@
 # With volume for config:
 #   docker run -it --rm -v ~/.config/haven:/root/.config/haven haven-cli haven-tui
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Prevent Python from writing pyc files and buffering stdout
 ENV PYTHONDONTWRITEBYTECODE=1

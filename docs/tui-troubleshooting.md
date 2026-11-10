@@ -39,10 +39,10 @@ Error: No module named 'textual'
    # Should show version and installation path
    ```
 
-2. **Check Python version** (requires 3.11+):
+2. **Check Python version** (requires 3.12+):
    ```bash
    python --version
-   # Python 3.11.x or higher required
+   # Python 3.12.x or higher required
    ```
 
 3. **Install TUI dependencies**:
@@ -690,7 +690,7 @@ A: Try these steps:
 1. Run with `--no-graphs` flag
 2. Run with `--compact` flag
 3. Specify database explicitly: `--database /path/to/haven.db`
-4. Check Python version (must be 3.11+)
+4. Check Python version (must be 3.12+)
 5. Reinstall: `pip install --force-reinstall "haven-cli[tui]"`
 
 ---

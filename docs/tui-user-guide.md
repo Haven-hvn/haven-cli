@@ -47,7 +47,7 @@ Haven TUI provides a real-time, terminal-based interface for monitoring video ar
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - Haven CLI installed (`pip install haven-cli`)
 - Terminal with Unicode support (for progress bars and graphs)
 
@@ -636,7 +636,7 @@ Options:
 
 **Solutions**:
 1. Verify Haven CLI is installed: `pip show haven-cli`
-2. Check Python version: `python --version` (needs 3.11+)
+2. Check Python version: `python --version` (needs 3.12+)
 3. Try running with Python: `python -m haven_tui`
 
 #### No Videos Displayed
