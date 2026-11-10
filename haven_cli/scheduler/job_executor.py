@@ -167,9 +167,27 @@ class JobExecutor:
             
             # Archive sources
             if job.on_success != OnSuccessAction.LOG_ONLY:
+                async def _handle_result(src: MediaSource, res: ArchiveResult) -> int:
+                    """Enqueue a single successful archive immediately.
+
+                    Returns 1 when archived, 0 otherwise. Kept as a helper so
+                    both the sequential and concurrent archive branches share
+                    the same success/mark/enqueue semantics.
+                    """
+                    if res.success:
+                        self._mark_source_known(job.plugin_name, src.source_id)
+                        await self._enqueue_result(res, job, src)
+                        return 1
+                    logger.warning(
+                        f"Failed to archive {src.source_id}: {res.error}"
+                    )
+                    return 0
+
                 if getattr(plugin, "supports_concurrent_archive", False) is True:
                     # Opt-in: archive several sources at once (bounded by
                     # max_concurrent_archives); results handled in order.
+                    # Batching/attestation behaviour is retained here — the
+                    # accumulator still buffers completed contexts downstream.
                     async def _bounded(src: MediaSource) -> ArchiveResult:
                         async with self._archive_semaphore:
                             return await self._archive_source(plugin, src)
@@ -178,20 +196,18 @@ class JobExecutor:
                         *(_bounded(src) for src in sources_to_archive)
                     )
                     pairs = list(zip(sources_to_archive, results))
-                else:
-                    pairs = []
-                    for source in sources_to_archive:
-                        pairs.append((source, await self._archive_source(plugin, source)))
 
-                for source, result in pairs:
-                    if result.success:
-                        sources_archived += 1
-                        self._mark_source_known(job.plugin_name, source.source_id)
-                        await self._enqueue_result(result, job, source)
-                    else:
-                        logger.warning(
-                            f"Failed to archive {source.source_id}: {result.error}"
-                        )
+                    for source, result in pairs:
+                        sources_archived += await _handle_result(source, result)
+                else:
+                    # Sequential: hand each successful archive straight to the
+                    # pipeline as soon as it completes, so one slow/stalled
+                    # download does not hold already-completed files back.
+                    # Downstream batching (BatchAccumulator) still applies if
+                    # enabled; this only removes the front-of-pipeline wait.
+                    for source in sources_to_archive:
+                        result = await self._archive_source(plugin, source)
+                        sources_archived += await _handle_result(source, result)
             
             # Build execution result
             execution_result = JobExecutionResult(
