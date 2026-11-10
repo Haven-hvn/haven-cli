@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional, List
@@ -175,10 +176,11 @@ class PipelineConfig:
     token_standard: Optional[str] = None
     owner_wallet: Optional[str] = None
     nft_contract: Optional[str] = None
-    # Encryption version: 1 = CID-bound gate metadata (v1, default),
-    # 3 = corpus-scoped gate metadata (v3, per-epoch AES key reuse via
-    # EpochAesKeyCache — see haven_cli/crypto/epoch_key_cache.py).
-    encryption_version: int = 1
+    # Encryption version: 3 = corpus-scoped gate metadata (v3, default,
+    # per-epoch AES key reuse via EpochAesKeyCache — see
+    # haven_cli/crypto/epoch_key_cache.py),
+    # 1 = CID-bound gate metadata (v1, legacy).
+    encryption_version: int = 3
 
     
     # Upload (Filecoin via Synapse)
@@ -188,6 +190,13 @@ class PipelineConfig:
     upload_enabled: bool = True
     # Filecoin Onchain Cloud CDN (Filecoin Beam). Legacy withCDN=false uploads are not supported.
     filecoin_with_cdn: bool = True
+    # Synapse upload shape. Storage is temporary (Arkiv BTL ~4 weeks, repin
+    # to keep), so the durable default is a single copy: multi-copy pays a
+    # second fixed dataset lockup per provider for redundancy that repin
+    # already provides. Empty provider list = SDK smart-select; pin only
+    # to a known-good provider when the operator chooses to.
+    synapse_copies: int = 1
+    synapse_provider_ids: List[int] = field(default_factory=list)
     
     # Blockchain Sync (Arkiv)
     # Note: Arkiv RPC is derived from blockchain.arkiv_network_mode (or network_mode)
@@ -356,6 +365,12 @@ def load_config(
 
     os.environ["HAVEN_FILECOIN_WITH_CDN"] = (
         "true" if config.pipeline.filecoin_with_cdn else "false"
+    )
+    # Bridge reads these from the environment; config.toml is the durable
+    # source so the upload shape survives without host-local haven.env vars.
+    os.environ["HAVEN_SYNAPSE_COPIES"] = str(config.pipeline.synapse_copies)
+    os.environ["HAVEN_SYNAPSE_PROVIDER_IDS"] = ",".join(
+        str(pid) for pid in config.pipeline.synapse_provider_ids
     )
 
     return config
@@ -544,6 +559,13 @@ def _load_from_env(config: HavenConfig, prefix: str) -> HavenConfig:
         config.pipeline.upload_enabled = env_val.lower() in ("true", "1", "yes")
     if env_val := os.environ.get(f"{prefix}FILECOIN_WITH_CDN"):
         config.pipeline.filecoin_with_cdn = env_val.lower() not in ("false", "0", "no")
+    if env_val := os.environ.get(f"{prefix}SYNAPSE_COPIES"):
+        with suppress(ValueError):
+            config.pipeline.synapse_copies = int(env_val)
+    if env_val := os.environ.get(f"{prefix}SYNAPSE_PROVIDER_IDS"):
+        config.pipeline.synapse_provider_ids = [
+            int(part) for part in env_val.split(",") if part.strip().lstrip("-").isdigit()
+        ]
     # Note: Filecoin RPC endpoint is configured via blockchain.filecoin_rpc_override
     # or HAVEN_FILECOIN_RPC_OVERRIDE environment variable
     
@@ -748,6 +770,9 @@ def save_config(config: HavenConfig, path: Optional[Path] = None) -> None:
         f'owner_wallet = "{config.pipeline.owner_wallet or ""}"',
         f'nft_contract = "{config.pipeline.nft_contract or ""}"',
         f"upload_enabled = {str(config.pipeline.upload_enabled).lower()}",
+        f"synapse_copies = {config.pipeline.synapse_copies}",
+        "synapse_provider_ids = "
+        + _format_toml_inline_array(list(config.pipeline.synapse_provider_ids)),
         f"sync_enabled = {str(config.pipeline.sync_enabled).lower()}",
         f"cleanup_enabled = {str(config.pipeline.cleanup_enabled).lower()}",
         f"max_concurrent_videos = {config.pipeline.max_concurrent_videos}",
@@ -1277,6 +1302,8 @@ def _config_to_dict(config: HavenConfig, mask_secrets: bool = True) -> dict[str,
             "owner_wallet": config.pipeline.owner_wallet,
             "nft_contract": config.pipeline.nft_contract,
             "upload_enabled": config.pipeline.upload_enabled,
+            "synapse_copies": config.pipeline.synapse_copies,
+            "synapse_provider_ids": config.pipeline.synapse_provider_ids,
             "sync_enabled": config.pipeline.sync_enabled,
             "cleanup_enabled": config.pipeline.cleanup_enabled,
             "speed_history_enabled": config.pipeline.speed_history_enabled,

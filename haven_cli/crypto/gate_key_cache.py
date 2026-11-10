@@ -13,16 +13,14 @@ proposal (§6.3) and ``tasking/README.md`` cross-stack contracts table:
                  (See proposal §6.3 and the v1 ``DecryptionKeyResponse``
                  in ``haven_cli/services/haven_aol_icp.py`` for the
                  corresponding v1 shape.)
-  * Lifetime:    process lifetime only. No disk persistence, no TTL.
-                 Process restart naturally clears.
-
-Strict invariants enforced by code review:
-
-  * No ``open(...)``, ``pathlib.Path.write_bytes``, ``pickle``, ``shelve``,
-    ``sqlite3``, ``json.dump`` — anything that touches the filesystem is
-    explicitly out of scope (proposal §6.3). The Sprint 4 validator
-    ``tmp/sprint-4-validation/validate_haven_cli_v3.sh`` greps this file
-    for those tokens and rejects the build if any appear.
+  * Lifetime:    the process singleton persists to a 0600 JSON file in
+                 ``$HAVEN_CACHE_DIR`` (default
+                 ``~/.config/haven/vetkeys.json``) so the bundle survives
+                 restarts — one canister call per epoch, not per run.
+                 Bare instances (tests) pass ``persist_path=None`` and
+                 stay in-memory only. No TTL, no eviction. Encrypted
+                 derived keys are ciphertext; confidentiality of the
+                 cache file is defense-in-depth, not a boundary.
   * Cache lookup MUST use ``metadata.epoch`` — never ``current_epoch()``.
     This is the v3 mitigation against scenario (D) in
     ``docs/corpus-gate-proposal-v3.md`` §1.7: an old-epoch ciphertext must
@@ -39,9 +37,13 @@ mode may, and the cache must be safe against that.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import os
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,14 @@ logger = logging.getLogger(__name__)
 #: an ``int`` (the int form of the decimal-string ``metadata.threshold``).
 #: ``epoch`` is an ``int`` taken straight from ``metadata.epoch``.
 CacheKey = Tuple[str, str, int, int]
+
+
+def _default_persist_path() -> Path:
+    """Persistence file for the VetKey singleton (0600 JSON)."""
+    cache_dir = os.environ.get("HAVEN_CACHE_DIR") or str(
+        Path.home() / ".config" / "haven"
+    )
+    return Path(cache_dir) / "vetkeys.json"
 
 
 @dataclass(frozen=True)
@@ -88,9 +98,68 @@ class GateKeyCache:
     separate proposal — not a haven-cli code change.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persist_path: Path | None = None) -> None:
         self._entries: dict[CacheKey, CachedVetKey] = {}
         self._lock = threading.Lock()
+        self._persist_path = persist_path
+        if persist_path is not None:
+            self._load()
+
+    def _load(self) -> None:
+        """Load persisted entries. Corrupt/missing file → start empty."""
+        if self._persist_path is None:
+            return
+        try:
+            data = json.loads(self._persist_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logger.warning(
+                "GateKeyCache: cannot read %s: %s (starting empty)",
+                self._persist_path, exc,
+            )
+            return
+        try:
+            for entry in data.values():
+                key = GateKeyCache.make_key(
+                    chain=entry["chain"],
+                    token_address=entry["token"],
+                    threshold=entry["threshold"],
+                    epoch=entry["epoch"],
+                )
+                self._entries[key] = CachedVetKey(
+                    encrypted_key=base64.b64decode(entry["encrypted_b64"]),
+                    verification_key=base64.b64decode(entry["vk_b64"]),
+                )
+        except Exception as exc:
+            logger.warning(
+                "GateKeyCache: bad persisted data in %s: %s (starting empty)",
+                self._persist_path, exc,
+            )
+            self._entries.clear()
+
+    def _persist(self) -> None:
+        """Atomic 0600 rewrite of the persist file (call under lock)."""
+        if self._persist_path is None:
+            return
+        data = {
+            f"{k[0]}|{k[1]}|{k[2]}|{k[3]}": {
+                "chain": k[0], "token": k[1],
+                "threshold": k[2], "epoch": k[3],
+                "encrypted_b64": base64.b64encode(v.encrypted_key).decode("ascii"),
+                "vk_b64": base64.b64encode(v.verification_key).decode("ascii"),
+            }
+            for k, v in self._entries.items()
+        }
+        path = self._persist_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.chmod(0o600)
+            tmp.replace(path)
+        except Exception as exc:
+            logger.warning("GateKeyCache: persist failed: %s", exc)
 
     @staticmethod
     def make_key(
@@ -146,6 +215,7 @@ class GateKeyCache:
             )
         with self._lock:
             self._entries[key] = value
+            self._persist()
         logger.debug("GateKeyCache put chain=%s threshold=%s epoch=%s", key[0], key[2], key[3])
 
     def clear(self) -> None:
@@ -153,6 +223,7 @@ class GateKeyCache:
         with self._lock:
             count = len(self._entries)
             self._entries.clear()
+            self._persist()
         if count:
             logger.debug("GateKeyCache cleared (%d entries dropped)", count)
 
@@ -161,6 +232,7 @@ class GateKeyCache:
             return len(self._entries)
 
 
-#: Process-wide singleton. Decryptors reach for this by default; tests may
-#: pass their own :class:`GateKeyCache` instance to keep state isolated.
-gate_key_cache: GateKeyCache = GateKeyCache()
+#: Process-wide singleton (persisted). Decryptors reach for this by
+#: default; tests may pass their own :class:`GateKeyCache` instance
+#: to keep state isolated.
+gate_key_cache: GateKeyCache = GateKeyCache(persist_path=_default_persist_path())

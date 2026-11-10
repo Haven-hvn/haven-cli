@@ -253,6 +253,28 @@ class TestBug6EpochAesKeyCache:
         local = EpochAesKeyCache()
         assert local is not global_cache
 
+    def test_persistence_round_trip_survives_restart(self, tmp_path):
+        path = tmp_path / "epoch_aes_keys.json"
+        key = EpochAesKeyCache.make_key(
+            chain="EthMainnet",
+            token_address="0x" + "ab" * 20,
+            threshold=1,
+            epoch=1,
+        )
+        c1 = EpochAesKeyCache(persist_path=path)
+        c1.put(key, EpochAesKey(raw_key=b"\x01" * 32, encrypted_aes_key_b64="AA=="))
+        c2 = EpochAesKeyCache(persist_path=path)
+        hit = c2.get(key)
+        assert hit is not None
+        assert hit.raw_key == b"\x01" * 32
+        assert hit.encrypted_aes_key_b64 == "AA=="
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
+
+    def test_corrupt_persist_file_starts_empty(self, tmp_path):
+        path = tmp_path / "epoch_aes_keys.json"
+        path.write_text("garbage", encoding="utf-8")
+        assert len(EpochAesKeyCache(persist_path=path)) == 0
+
 
 class TestBug8EncryptInjection:
     """``encrypt_bytes_v3`` and ``encrypt_file_streaming_v3`` accept a raw

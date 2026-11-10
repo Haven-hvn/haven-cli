@@ -625,3 +625,42 @@ class TestConfigToDict:
         
         assert isinstance(data["config_dir"], str)
         assert isinstance(data["data_dir"], str)
+
+
+class TestEncryptionVersionDefault:
+    """Haven-AOL v3 is the default encryption version; v1 is legacy."""
+
+    def test_default_config_uses_v3(self):
+        config = HavenConfig()
+        assert config.pipeline.encryption_version == 3
+
+    def test_explicit_v1_still_accepted(self):
+        config = HavenConfig()
+        config.pipeline.encryption_version = 1
+        assert config.pipeline.encryption_version == 1
+
+
+class TestSynapseUploadShape:
+    """Single-copy default + provider pin live in config, not haven.env."""
+
+    def test_defaults_single_copy_no_pin(self):
+        config = HavenConfig()
+        assert config.pipeline.synapse_copies == 1
+        assert config.pipeline.synapse_provider_ids == []
+
+    def test_env_overrides_and_exports(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HAVEN_SYNAPSE_COPIES", "2")
+        monkeypatch.setenv("HAVEN_SYNAPSE_PROVIDER_IDS", "9, 4")
+        config = load_config(config_path=tmp_path / "config.toml")
+        assert config.pipeline.synapse_copies == 2
+        assert config.pipeline.synapse_provider_ids == [9, 4]
+        assert os.environ["HAVEN_SYNAPSE_COPIES"] == "2"
+        assert os.environ["HAVEN_SYNAPSE_PROVIDER_IDS"] == "9,4"
+
+    def test_load_config_exports_defaults(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HAVEN_SYNAPSE_COPIES", raising=False)
+        monkeypatch.delenv("HAVEN_SYNAPSE_PROVIDER_IDS", raising=False)
+        # Isolated path: never read the operator's live config.toml.
+        load_config(config_path=tmp_path / "config.toml")
+        assert os.environ["HAVEN_SYNAPSE_COPIES"] == "1"
+        assert os.environ["HAVEN_SYNAPSE_PROVIDER_IDS"] == ""

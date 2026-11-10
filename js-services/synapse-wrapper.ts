@@ -32,6 +32,10 @@ import {
   checkUploadReadiness,
   type UploadExecutionResult,
 } from 'filecoin-pin/core/upload';
+import {
+  executeFilecoinPayFunding,
+  planFilecoinPayFunding,
+} from 'filecoin-pin/core/payments';
 import type { Synapse } from '@filoz/synapse-sdk';
 import {
   tryFrom,
@@ -309,6 +313,108 @@ const DEFAULT_DOWNLOAD_TIMEOUT_MS = 3_600_000;
 export function filecoinWithCdnEnabled(): boolean {
   const raw = (Deno.env.get('HAVEN_FILECOIN_WITH_CDN') ?? 'true').trim().toLowerCase();
   return raw !== 'false' && raw !== '0' && raw !== 'no';
+}
+
+/**
+ * Target storage runway (days) maintained in the Filecoin Pay account.
+ * Without a top-up, uploads fail readiness with
+ * "Deposit at least X USDFC" even when the wallet holds USDFC.
+ */
+export const DEFAULT_STORAGE_RUNWAY_DAYS = 30;
+
+/** Funding options for keeping the Filecoin Pay balance at runway for one upload. */
+export function buildStorageFundingOptions(
+  pieceSizeBytes: number,
+  withCDN: boolean,
+  newDataSetCount: number = 1
+): {
+  targetRunwayDays: number;
+  pieceSizeBytes: number;
+  withCDN: boolean;
+  ensureAllowances: boolean;
+  newDataSetCount: number;
+} {
+  return {
+    targetRunwayDays: DEFAULT_STORAGE_RUNWAY_DAYS,
+    pieceSizeBytes,
+    withCDN,
+    ensureAllowances: true,
+    // A new data set needs its one-time lockup funded, otherwise the commit
+    // fails with InsufficientLockupFunds. 0 when reusing an existing set.
+    newDataSetCount,
+  };
+}
+
+/**
+ * Single-copy is the durable default: storage is temporary (Arkiv BTL,
+ * repin to keep), so multi-copy redundancy just pays extra fixed dataset
+ * lockups. HAVEN_SYNAPSE_COPIES (sourced from config.toml) overrides.
+ */
+export function synapseCopies(): number {
+  const raw = (Deno.env.get('HAVEN_SYNAPSE_COPIES') ?? '').trim();
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+}
+
+/** Pinned provider IDs from HAVEN_SYNAPSE_PROVIDER_IDS; empty = smart-select. */
+export function synapseProviderIds(): bigint[] {
+  return (Deno.env.get('HAVEN_SYNAPSE_PROVIDER_IDS') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => /^\d+$/.test(s))
+    .map((s) => BigInt(s));
+}
+
+export interface ExistingDataSetInfo {
+  dataSetId: bigint;
+  providerId: bigint;
+  isLive: boolean;
+}
+
+/**
+ * Pick a live data set to reuse for the next upload, oldest first.
+ * With pinned providers, only a set on one of them qualifies; without a
+ * pin, the oldest live set wins (all Haven sets share the same metadata,
+ * so the SDK would reuse one anyway). Returns undefined when none exists.
+ */
+export function resolveReuseDataSetId(
+  dataSets: readonly ExistingDataSetInfo[],
+  pinnedProviderIds: readonly bigint[]
+): bigint | undefined {
+  const live = dataSets
+    .filter((ds) => ds.isLive)
+    .filter((ds) => pinnedProviderIds.length === 0 || pinnedProviderIds.includes(ds.providerId))
+    .sort((a, b) => (a.dataSetId < b.dataSetId ? -1 : a.dataSetId > b.dataSetId ? 1 : 0));
+  return live.length > 0 ? live[0].dataSetId : undefined;
+}
+
+/**
+ * Auto-fund the Filecoin Pay account to the target runway before an upload.
+ * No-op when the runway is already satisfied. Throws a clear error when the
+ * wallet cannot cover the deposit.
+ */
+export async function ensureStorageRunway(
+  synapse: Synapse,
+  pieceSizeBytes: number,
+  withCDN: boolean,
+  logger: Logger,
+  newDataSetCount: number = 1
+): Promise<void> {
+  const planned = await planFilecoinPayFunding({
+    synapse,
+    ...buildStorageFundingOptions(pieceSizeBytes, withCDN, newDataSetCount),
+  });
+  const execution = await executeFilecoinPayFunding(synapse, planned.plan);
+  if (execution.adjusted) {
+    logger.info(
+      `Filecoin Pay runway funded: delta=${execution.delta.toString()} USDFC wei, ` +
+        `tx=${execution.transactionHash ?? 'n/a'}, runway=${execution.newRunwayDays} days`
+    );
+  } else {
+    logger.info(
+      `Filecoin Pay runway sufficient: ${execution.newRunwayDays} days`
+    );
+  }
 }
 
 function pieceUrlResolvers(_synapse: Synapse): ResolvePieceUrlTypes.ResolverFnType[] {
@@ -718,6 +824,39 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 25,
       });
 
+      // Reuse an existing live data set when one qualifies, so uploads
+      // share one fixed lockup instead of paying it per video. Fail open:
+      // if the lookup errors, fall back to creating a new data set.
+      const pinnedProviders = synapseProviderIds();
+      let reuseDataSetId: bigint | undefined;
+      try {
+        const existing = await (synapse.storage as unknown as {
+          findDataSets?: () => Promise<Array<Record<string, unknown>>>;
+        }).findDataSets?.() ?? [];
+        reuseDataSetId = resolveReuseDataSetId(
+          existing.map((ds) => ({
+            dataSetId: BigInt(ds.dataSetId as bigint | string),
+            providerId: BigInt(ds.providerId as bigint | string),
+            isLive: ds.isLive === true,
+          })),
+          pinnedProviders
+        );
+      } catch (error) {
+        console.error('[synapse-wrapper] data set reuse lookup failed, creating new:', String(error));
+      }
+      console.error(
+        `[synapse-wrapper] data set reuse: ${reuseDataSetId != null ? String(reuseDataSetId) : 'new data set'}`
+      );
+
+      // Top up Filecoin Pay runway before readiness check (auto-deposit USDFC)
+      console.error('[synapse-wrapper] Ensuring storage runway...');
+      await this._withTimeout(
+        'ensureStorageRunway',
+        ensureStorageRunway(synapse, carFileSize, filecoinWithCdnEnabled(), this._logger, reuseDataSetId != null ? 0 : 1),
+        600000
+      );
+      console.error('[synapse-wrapper] Storage runway ensured.');
+
       // Check upload readiness (payment validation)
       console.error('[synapse-wrapper] Starting checkUploadReadiness...');
       console.error('[synapse-wrapper] RPC URL:', rpcUrl);
@@ -761,7 +900,10 @@ class SynapseWrapperImpl implements SynapseWrapper {
         carFileSize,
         rootCid,
         filePath,
-        onProgress
+        onProgress,
+        3,
+        18000000,
+        reuseDataSetId
       );
 
       // Clean up CAR file
@@ -889,7 +1031,8 @@ class SynapseWrapperImpl implements SynapseWrapper {
     filePath: string,
     onProgress?: ProgressCallback,
     maxRetries: number = 3,
-    timeoutMs: number = 18000000 // 30 minutes per attempt
+    timeoutMs: number = 18000000, // 30 minutes per attempt
+    reuseDataSetId?: bigint
   ): Promise<UploadExecutionResult> {
     let lastError: Error | null = null;
     
@@ -922,23 +1065,22 @@ class SynapseWrapperImpl implements SynapseWrapper {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
         });
         
-        // Execute upload with race against timeout
-        // Provider pinning (operator override): HAVEN_SYNAPSE_COPIES=1 plus
-        // HAVEN_SYNAPSE_PROVIDER_IDS=9 restricts the upload to a single known-good
-        // SP. Unset = SDK default selection (multi-copy). Needed because some
-        // calibration SPs accept commits but never advertise on IPNI, which fails
-        // filecoin-pin's post-upload verification for the whole batch.
-        const pinnedCopies = Number(Deno.env.get('HAVEN_SYNAPSE_COPIES') ?? '');
-        const pinnedProviders = (Deno.env.get('HAVEN_SYNAPSE_PROVIDER_IDS') ?? '')
-          .split(',')
-          .map((s) => s.trim())
-          .filter((s) => /^\d+$/.test(s))
-          .map((s) => BigInt(s));
+        // Upload shape comes from config.toml (HAVEN_SYNAPSE_* env, set by
+        // load_config): single copy by default, optional provider pin.
+        // Reusing a data set implies its provider, so dataSetIds replaces
+        // providerIds/copies for that upload (they are mutually exclusive
+        // in filecoin-pin). Some calibration SPs accept commits but never
+        // advertise on IPNI, which fails post-upload verification.
+        const pinnedProviders = synapseProviderIds();
         const uploadPromise = executeUpload(synapse, stream, rootCid, {
           logger: this._logger,
           contextId: filePath.split('/').pop() || 'upload',
-          ...(Number.isFinite(pinnedCopies) && pinnedCopies > 0 ? { copies: pinnedCopies } : {}),
-          ...(pinnedProviders.length > 0 ? { providerIds: pinnedProviders } : {}),
+          ...(reuseDataSetId != null
+            ? { dataSetIds: [reuseDataSetId] }
+            : {
+                copies: synapseCopies(),
+                ...(pinnedProviders.length > 0 ? { providerIds: pinnedProviders } : {}),
+              }),
           onProgress: (event: { type: string; data?: Record<string, unknown> }) => {
             // filecoin-pin 0.21+ UploadProgressEvents (legacy on* names kept for safety)
             //

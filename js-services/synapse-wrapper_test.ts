@@ -4,10 +4,15 @@
 import { assertEquals, assertRejects } from 'https://deno.land/std@0.200.0/testing/asserts.ts';
 import { CID } from 'multiformats/cid';
 import {
+  buildStorageFundingOptions,
   createSynapseWrapper,
+  DEFAULT_STORAGE_RUNWAY_DAYS,
   filecoinWithCdnEnabled,
   formatBytes,
   isValidCid,
+  resolveReuseDataSetId,
+  synapseCopies,
+  synapseProviderIds,
 } from './synapse-wrapper.ts';
 
 Deno.test('filecoinWithCdnEnabled defaults true unless env disables', () => {
@@ -94,4 +99,54 @@ Deno.test('SynapseWrapper throws when not connected', async () => {
     Error,
     'Synapse not connected'
   );
+});
+
+Deno.test('upload tops up Filecoin Pay runway before readiness check', () => {
+  // Regression: upload used to only check readiness and throw
+  // "Deposit at least X USDFC" when the Filecoin Pay balance was below the
+  // required amount, even with USDFC in the wallet. The wrapper must
+  // auto-fund storage runway first.
+  const opts = buildStorageFundingOptions(18505657, true);
+  assertEquals(opts.targetRunwayDays, DEFAULT_STORAGE_RUNWAY_DAYS);
+  assertEquals(opts.pieceSizeBytes, 18505657);
+  assertEquals(opts.withCDN, true);
+  assertEquals(opts.ensureAllowances, true);
+  assertEquals(opts.newDataSetCount, 1);
+  assertEquals(DEFAULT_STORAGE_RUNWAY_DAYS, 30);
+  // Reusing an existing data set needs no new-dataset lockup funding.
+  assertEquals(buildStorageFundingOptions(18505657, true, 0).newDataSetCount, 0);
+});
+
+Deno.test('synapseCopies defaults to 1, env overrides', () => {
+  const prevCopies = Deno.env.get('HAVEN_SYNAPSE_COPIES');
+  const prevProviders = Deno.env.get('HAVEN_SYNAPSE_PROVIDER_IDS');
+  try {
+    Deno.env.delete('HAVEN_SYNAPSE_COPIES');
+    assertEquals(synapseCopies(), 1);
+    Deno.env.set('HAVEN_SYNAPSE_COPIES', '2');
+    assertEquals(synapseCopies(), 2);
+    Deno.env.set('HAVEN_SYNAPSE_COPIES', 'garbage');
+    assertEquals(synapseCopies(), 1);
+    Deno.env.delete('HAVEN_SYNAPSE_PROVIDER_IDS');
+    assertEquals(synapseProviderIds(), []);
+    Deno.env.set('HAVEN_SYNAPSE_PROVIDER_IDS', '9, 4');
+    assertEquals(synapseProviderIds(), [9n, 4n]);
+  } finally {
+    for (const [key, prev] of [['HAVEN_SYNAPSE_COPIES', prevCopies], ['HAVEN_SYNAPSE_PROVIDER_IDS', prevProviders]] as const) {
+      if (prev === undefined) Deno.env.delete(key);
+      else Deno.env.set(key, prev);
+    }
+  }
+});
+
+Deno.test('resolveReuseDataSetId picks oldest live set on pinned provider', () => {
+  const sets = [
+    { dataSetId: 52243n, providerId: 2n, isLive: true },
+    { dataSetId: 52242n, providerId: 9n, isLive: true },
+    { dataSetId: 52241n, providerId: 9n, isLive: false },
+  ];
+  assertEquals(resolveReuseDataSetId(sets, [9n]), 52242n);
+  assertEquals(resolveReuseDataSetId(sets, []), 52242n);
+  assertEquals(resolveReuseDataSetId(sets, [7n]), undefined);
+  assertEquals(resolveReuseDataSetId([], []), undefined);
 });

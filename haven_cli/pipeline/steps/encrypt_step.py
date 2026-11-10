@@ -679,7 +679,7 @@ class EncryptStep(ConditionalStep):
             raise ValueError("encrypt_chunk_size must be > 0")
 
         encrypted_path = f"{video_path}.encrypted"
-        encryption_version = int(context.options.get("encryption_version", 1))
+        encryption_version = int(context.options.get("encryption_version", 3))
 
         if encryption_version == 3:
             try:

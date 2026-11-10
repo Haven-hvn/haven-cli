@@ -1,4 +1,4 @@
-"""Unit tests for the in-memory :class:`GateKeyCache` (Sprint 4 v3).
+"""Unit tests for the persisted :class:`GateKeyCache` (Sprint 4 v3).
 
 Pinned invariants:
   * Cache key tuple = ``(chain, token_address, threshold, epoch)`` with
@@ -9,7 +9,9 @@ Pinned invariants:
   * **Lookup keyed by metadata.epoch, never current_epoch()** — a future
     wall clock must not invalidate an old-epoch cache hit. This is the
     Sprint 4 brief's scenario-(D) regression test.
-  * No filesystem / pickle / sqlite imports in the cache module.
+  * The process singleton persists to a 0600 JSON file so bundles
+    survive restarts; bare instances stay in-memory only
+    (``persist_path=None``).
 """
 
 from __future__ import annotations
@@ -216,61 +218,41 @@ class TestThreadSafety:
             assert hit.encrypted_key[0] == (i & 0xFF)
 
 
-class TestNoFilesystem:
-    """The proposal §6.3 forbids on-disk persistence. We enforce that by
-    grepping the module source for forbidden tokens; if any of these
-    appear, the build must fail loudly. The Sprint 4 validator does the
-    same check at script level; this test is the in-test mirror."""
+class TestPersistence:
+    """The process singleton persists bundles to a 0600 JSON file so a
+    restart reuses the same canister bundle instead of fetching again.
+    Bare instances default to in-memory only."""
 
-    def test_module_source_has_no_filesystem_imports(self) -> None:
-        """Parse the module's AST and walk every Import / ImportFrom /
-        Attribute node, asserting no forbidden filesystem-touching symbol
-        appears in real code. Docstring prose is naturally excluded by
-        the AST — we never visit string literals here."""
-        import ast
-
-        module_path = Path(__file__).resolve().parents[2] / (
-            "haven_cli/crypto/gate_key_cache.py"
+    def test_round_trip_via_persist_file(self, tmp_path) -> None:
+        path = tmp_path / "vetkeys.json"
+        key = GateKeyCache.make_key(
+            chain="EthMainnet",
+            token_address="0x" + "ab" * 20,
+            threshold=1,
+            epoch=687,
         )
-        src = module_path.read_text(encoding="utf-8")
-        tree = ast.parse(src)
+        c1 = GateKeyCache(persist_path=path)
+        c1.put(key, _bundle(0xBB))
+        c2 = GateKeyCache(persist_path=path)
+        hit = c2.get(key)
+        assert hit is not None
+        assert hit.encrypted_key == _bundle(0xBB).encrypted_key
+        assert hit.verification_key == _bundle(0xBB).verification_key
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
 
-        forbidden_modules = {"pickle", "shelve", "sqlite3"}
-        forbidden_attrs = {
-            # On a Path instance, write_bytes writes to disk. We forbid
-            # ANY call to .write_bytes in this module.
-            "write_bytes",
-            "write_text",
-        }
+    def test_corrupt_file_starts_empty(self, tmp_path) -> None:
+        path = tmp_path / "vetkeys.json"
+        path.write_text("not json", encoding="utf-8")
+        assert len(GateKeyCache(persist_path=path)) == 0
 
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    root = alias.name.split(".")[0]
-                    assert root not in forbidden_modules, (
-                        f"GateKeyCache imports forbidden module {alias.name!r}; "
-                        "proposal §6.3 bans on-disk persistence."
-                    )
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    root = node.module.split(".")[0]
-                    assert root not in forbidden_modules, (
-                        f"GateKeyCache imports forbidden module {node.module!r}; "
-                        "proposal §6.3 bans on-disk persistence."
-                    )
-            elif isinstance(node, ast.Attribute):
-                assert node.attr not in forbidden_attrs, (
-                    f"GateKeyCache uses forbidden filesystem call ``.{node.attr}``; "
-                    "proposal §6.3 bans on-disk persistence."
-                )
-
-        # Also assert the obvious built-ins aren't called in real code.
-        # ``open(...)`` is allowed nowhere in this module.
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                assert node.func.id != "open", (
-                    "GateKeyCache uses open(); proposal §6.3 bans on-disk persistence."
-                )
+    def test_clear_empties_persisted_file(self, tmp_path) -> None:
+        path = tmp_path / "vetkeys.json"
+        c = GateKeyCache(persist_path=path)
+        c.put(GateKeyCache.make_key(chain="EthMainnet",
+                                    token_address="0x" + "ab" * 20,
+                                    threshold=1, epoch=1), _bundle())
+        c.clear()
+        assert len(GateKeyCache(persist_path=path)) == 0
 
     def test_lookup_independent_of_current_epoch(self, monkeypatch) -> None:
         """The Sprint 4 brief's scenario-(D) regression.

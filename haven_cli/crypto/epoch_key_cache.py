@@ -26,7 +26,14 @@ Invariants:
     ``(chain, token_address, threshold, epoch)`` 4-tuple with canonical
     types. This is intentional — a future refactor that unifies both
     caches into one keyed structure is trivial with this shape.
-  * Process-lifetime only. No disk persistence. Process restart clears.
+  * Disk persistence: the process singleton persists entries to a
+    0600 JSON file in ``$HAVEN_CACHE_DIR`` (default
+    ``~/.config/haven/epoch_aes_keys.json``), so per-epoch keys survive
+    restarts and one epoch keeps one stable ``encryptedAesKey`` blob.
+    Bare instances (tests, tooling) pass ``persist_path=None`` and stay
+    in-memory only. Raw AES keys live in the file — outside access to
+    it breaks epoch-bucket confidentiality; operator accepted the
+    tradeoff over a new key per restart.
   * ``threshold == 0`` collapses ``epoch`` to ``0`` at the caller side
     (see :func:`compute_epoch_cache_key`) so the whole threshold-0
     corpus lands in a single cache slot regardless of wall-clock time.
@@ -35,15 +42,27 @@ Invariants:
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import os
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
 #: Same key-tuple shape as :data:`haven_cli.crypto.gate_key_cache.CacheKey`.
 EpochCacheKey = Tuple[str, str, int, int]
+
+
+def _default_persist_path() -> Path:
+    """Persistence file for the epoch AES-key singleton (0600 JSON)."""
+    cache_dir = os.environ.get("HAVEN_CACHE_DIR") or str(
+        Path.home() / ".config" / "haven"
+    )
+    return Path(cache_dir) / "epoch_aes_keys.json"
 
 
 @dataclass(frozen=True)
@@ -79,9 +98,69 @@ class EpochAesKeyCache:
         the same bucket share one factory call.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persist_path: Path | None = None) -> None:
         self._entries: dict[EpochCacheKey, EpochAesKey] = {}
         self._lock = threading.Lock()
+        self._persist_path = persist_path
+        if persist_path is not None:
+            self._load()
+
+    def _load(self) -> None:
+        """Load persisted entries. Corrupt/missing file → start empty."""
+        if self._persist_path is None:
+            return
+        try:
+            raw = self._persist_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except FileNotFoundError:
+            return
+        except Exception as exc:  # corrupt JSON etc: never crash import
+            logger.warning(
+                "EpochAesKeyCache: cannot read %s: %s (starting empty)",
+                self._persist_path, exc,
+            )
+            return
+        try:
+            for token, entry in data.items():
+                key = EpochAesKeyCache.make_key(
+                    chain=entry["chain"],
+                    token_address=entry["token"],
+                    threshold=entry["threshold"],
+                    epoch=entry["epoch"],
+                )
+                self._entries[key] = EpochAesKey(
+                    raw_key=base64.b64decode(entry["raw_b64"]),
+                    encrypted_aes_key_b64=entry["encrypted_aes_key_b64"],
+                )
+        except Exception as exc:
+            logger.warning(
+                "EpochAesKeyCache: bad persisted data in %s: %s (starting empty)",
+                self._persist_path, exc,
+            )
+            self._entries.clear()
+
+    def _persist(self) -> None:
+        """Atomic 0600 rewrite of the persist file (call under lock)."""
+        if self._persist_path is None:
+            return
+        data = {
+            f"{k[0]}|{k[1]}|{k[2]}|{k[3]}": {
+                "chain": k[0], "token": k[1],
+                "threshold": k[2], "epoch": k[3],
+                "raw_b64": base64.b64encode(v.raw_key).decode("ascii"),
+                "encrypted_aes_key_b64": v.encrypted_aes_key_b64,
+            }
+            for k, v in self._entries.items()
+        }
+        path = self._persist_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.chmod(0o600)
+            tmp.replace(path)
+        except Exception as exc:
+            logger.warning("EpochAesKeyCache: persist failed: %s", exc)
 
     @staticmethod
     def make_key(
@@ -132,6 +211,7 @@ class EpochAesKeyCache:
             )
         with self._lock:
             self._entries[key] = value
+            self._persist()
         logger.debug(
             "EpochAesKeyCache put chain=%s threshold=%s epoch=%s",
             key[0], key[2], key[3],
@@ -171,6 +251,7 @@ class EpochAesKeyCache:
                     f"got {type(new_value).__name__}"
                 )
             self._entries[key] = new_value
+            self._persist()
             logger.debug(
                 "EpochAesKeyCache miss-fill chain=%s threshold=%s epoch=%s",
                 key[0], key[2], key[3],
@@ -181,6 +262,7 @@ class EpochAesKeyCache:
         with self._lock:
             count = len(self._entries)
             self._entries.clear()
+            self._persist()
         if count:
             logger.debug("EpochAesKeyCache cleared (%d entries dropped)", count)
 
@@ -189,10 +271,12 @@ class EpochAesKeyCache:
             return len(self._entries)
 
 
-#: Process-wide singleton. Encrypt callers reach for this by default;
-#: tests may pass their own :class:`EpochAesKeyCache` instance to keep
-#: state isolated.
-epoch_aes_key_cache: EpochAesKeyCache = EpochAesKeyCache()
+#: Process-wide singleton (persisted). Encrypt callers reach for this
+#: by default; tests may pass their own :class:`EpochAesKeyCache`
+#: instance to keep state isolated.
+epoch_aes_key_cache: EpochAesKeyCache = EpochAesKeyCache(
+    persist_path=_default_persist_path()
+)
 
 
 __all__ = [
