@@ -48,3 +48,6 @@ logs/
 
 # Local virtualenv
 .venv/
+
+# Local torrent downloads (bug #9: plugin writes under CWD, not data_dir)
+downloads/

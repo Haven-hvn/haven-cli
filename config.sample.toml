@@ -91,7 +91,7 @@ cleanup_enabled = false
 # speed_history_enabled = true
 
 # Processing Settings
-max_concurrent_videos = 4
+max_concurrent_videos = 1
 retry_attempts = 3
 retry_delay = 5.0
 
@@ -129,8 +129,8 @@ max_concurrent = 5
 [scheduler]
 enabled = true
 check_interval = 60  # seconds
-max_concurrent_jobs = 2
-default_cron = "0 */6 * * *"  # Every 6 hours
+max_concurrent_jobs = 1
+default_cron = "hourly_random"  # Hourly at a random minute
 job_timeout = 3600  # 1 hour
 state_file = "~/.local/share/haven/scheduler_state.json"
 
@@ -178,7 +178,7 @@ disabled_plugins = []
 # BitTorrent plugin settings
 # [plugins.settings.bittorrent]
 # download_dir = "downloads/bittorrent"  # Directory to save downloaded files
-# max_concurrent_downloads = 3           # Maximum concurrent torrent downloads
+# max_concurrent_downloads = 1           # Maximum concurrent torrent downloads
 # max_download_speed = 0                 # Maximum download speed in bytes/sec (0 = unlimited)
 # max_upload_speed = 0                   # Maximum upload speed in bytes/sec (0 = unlimited)
 # seed_ratio = 0.0                       # Minimum seed ratio before stopping (0 = don't stop)

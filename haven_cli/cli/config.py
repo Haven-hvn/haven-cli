@@ -280,9 +280,10 @@ def _prompt_bittorrent_plugin(config: Any) -> Optional[BitTorrentJobInitSpec]:
                     default=config.scheduler.default_cron,
                 ).strip()
                 try:
-                    from croniter import croniter
+                    if schedule != "hourly_random":
+                        from croniter import croniter
 
-                    croniter(schedule)
+                        croniter(schedule)
                     break
                 except ValueError as exc:
                     console.print(f"[red]Invalid cron: {exc}[/red]")

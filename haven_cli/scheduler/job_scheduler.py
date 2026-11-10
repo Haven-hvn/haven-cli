@@ -11,8 +11,9 @@ survive daemon restarts.
 import asyncio
 import json
 import logging
+import random
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -20,6 +21,7 @@ from uuid import UUID, uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.events import (
@@ -37,6 +39,23 @@ _global_scheduler: Optional["JobScheduler"] = None
 
 # Global singleton instance for CLI access
 _scheduler_instance: Optional["JobScheduler"] = None
+
+#: Schedule token for hourly jobs that run at a random minute each hour.
+HOURLY_RANDOM_SCHEDULE = "hourly_random"
+
+
+def _random_minute() -> int:
+    """Return a random minute in [0, 59]. Separate for test injection."""
+    return random.randint(0, 59)
+
+
+def _next_hourly_random_time(
+    now: Optional[datetime] = None,
+) -> datetime:
+    """Next hour boundary plus a random minute (00-59)."""
+    base = now or datetime.now(timezone.utc)
+    next_hour = base.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return next_hour.replace(minute=_random_minute(), second=0, microsecond=0)
 
 
 def get_scheduler(load_jobs: bool = True) -> "JobScheduler":
@@ -137,7 +156,7 @@ class RecurringJob:
     job_id: UUID = field(default_factory=uuid4)
     name: str = ""
     plugin_name: str = ""
-    schedule: str = "0 * * * *"  # Default: hourly
+    schedule: str = "hourly_random"  # Default: hourly at a random minute
     on_success: OnSuccessAction = OnSuccessAction.ARCHIVE_NEW
     enabled: bool = True
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -603,8 +622,13 @@ class JobScheduler:
             return
 
         try:
-            # Parse cron schedule (support 5 or 6 part formats)
-            trigger = self._parse_cron_trigger(job.schedule)
+            if job.schedule == HOURLY_RANDOM_SCHEDULE:
+                trigger: Any = DateTrigger(
+                    run_date=_next_hourly_random_time(), timezone="UTC"
+                )
+            else:
+                # Parse cron schedule (support 5 or 6 part formats)
+                trigger = self._parse_cron_trigger(job.schedule)
 
             # Add job using module-level wrapper to avoid pickling issues
             self._scheduler.add_job(
@@ -714,6 +738,8 @@ class JobScheduler:
 
     def _calculate_next_run(self, schedule: str) -> datetime:
         """Calculate next run time from cron expression."""
+        if schedule == HOURLY_RANDOM_SCHEDULE:
+            return _next_hourly_random_time()
         from croniter import croniter
 
         try:
@@ -752,6 +778,11 @@ class JobScheduler:
             logger.error(f"Timeout recording execution for job {job_id}")
         except Exception as e:
             logger.error(f"Error recording execution for job {job_id}: {e}")
+
+        # DateTrigger fires once; reschedule hourly_random with a fresh
+        # random minute for the next hour before reading next_run.
+        if job.schedule == HOURLY_RANDOM_SCHEDULE and self._scheduler:
+            self._add_to_apscheduler(job)
 
         # Update next run time from APScheduler
         if self._scheduler:

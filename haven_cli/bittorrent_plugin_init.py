@@ -23,6 +23,8 @@ class BitTorrentJobInitSpec:
 
 
 def _validate_cron(schedule: str) -> None:
+    if schedule.strip() == "hourly_random":
+        return
     from croniter import croniter
 
     croniter(schedule)

@@ -397,7 +397,8 @@ def schedule(
     try:
         metadata = parse_job_options(option or [])
         action = OnSuccessAction(on_success)
-        croniter(cron)
+        if cron.strip() != "hourly_random":
+            croniter(cron)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc

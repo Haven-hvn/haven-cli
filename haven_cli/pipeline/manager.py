@@ -124,11 +124,17 @@ class PipelineManager:
         """
         started_at = datetime.now(timezone.utc)
         step_results: List[StepResult] = []
-        
+
         # Track active pipeline
         pipeline_id = str(context.context_id)
         self._active_pipelines[pipeline_id] = context
-        
+
+        # Gate concurrent pipelines. Daemon enqueues detached tasks per file
+        # via create_task; without this the semaphore never applied (only
+        # process_batch used it), so N files hashed/DB-wrote concurrently
+        # and ingest DB commits failed with SQLite lock contention that was
+        # then swallowed, leaving video_id=None for every file.
+        await self._semaphore.acquire()
         try:
             # Emit pipeline started event.
             #
@@ -182,8 +188,9 @@ class PipelineManager:
                 })
             
             return pipeline_result
-            
+
         finally:
+            self._semaphore.release()
             # Remove from active pipelines
             self._active_pipelines.pop(pipeline_id, None)
     

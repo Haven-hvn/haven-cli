@@ -930,7 +930,7 @@ def _validate_cron(cron: str) -> bool:
     cron_pattern = r"^((\*|\d{1,2}|\d{1,2}-\d{1,2}|\*/\d+|\d{1,2}/\d+)(,\d{1,2})*\s+){4}(\*|\d{1,2}|\d{1,2}-\d{1,2}|\*/\d+|\d{1,2}/\d+|\d{1,2},\d{1,2})+$"
     
     # Special cases
-    special_cases = ["@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly"]
+    special_cases = ["@yearly", "@annually", "@monthly", "@weekly", "@daily", "@midnight", "@hourly", "hourly_random"]
     
     if cron in special_cases:
         return True

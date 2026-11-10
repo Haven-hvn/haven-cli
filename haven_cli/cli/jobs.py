@@ -258,10 +258,11 @@ def create_job(
         console.print(f"[red]Invalid on-success action. Choose from: {valid}[/red]")
         raise typer.Exit(code=1)
     
-    # Validate cron expression
+    # Validate cron expression (hourly_random is a supported token, not cron)
     try:
-        from croniter import croniter
-        croniter(schedule)
+        if schedule.strip() != "hourly_random":
+            from croniter import croniter
+            croniter(schedule)
     except ValueError as e:
         console.print(f"[red]Invalid cron expression: {e}[/red]")
         raise typer.Exit(code=1)

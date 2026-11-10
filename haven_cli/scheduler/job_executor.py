@@ -100,6 +100,11 @@ class JobExecutor:
         self._pipeline_manager = pipeline_manager
         self._config = config or {}
         self._accumulator = accumulator
+        # Strong refs to fire-and-forget pipeline tasks. Without these the
+        # only reference is the event loop's weak set, and GC can collect a
+        # pending task before it ever runs (observed: completed torrents
+        # produced zero pipeline rows). Tasks discard themselves on done.
+        self._active_tasks: "set[asyncio.Task[None]]" = set()
         
         # Initialize source tracker for persistent known source storage
         data_dir = Path(self._config.get("data_dir", Path.home() / ".haven" / "scheduler"))
@@ -479,6 +484,8 @@ class JobExecutor:
             },
         )
         
+        self._persist_enqueue_event(context, job)
+
         # Fire-and-forget: schedule the pipeline task on the event loop
         # without awaiting it.  Awaiting would block APScheduler's single
         # allowed instance (max_instances=1) for the full pipeline duration
@@ -486,13 +493,17 @@ class JobExecutor:
         #
         # The task still runs to completion in the background; on success
         # _process_with_logging feeds the BatchAccumulator, and on failure
-        # the done_callback logs the error.
+        # the done_callback logs the error. Strong-ref retained (see
+        # __init__) so GC cannot collect it while pending.
         task = asyncio.create_task(
-            self._process_with_logging(context, job.job_id)
+            self._process_with_logging(context, job.job_id),
+            name=f"pipeline-{job.job_id}",
         )
+        self._active_tasks.add(task)
 
         def _on_pipeline_done(t: asyncio.Task) -> None:
             """Log errors from the background pipeline task."""
+            self._active_tasks.discard(t)
             if t.cancelled():
                 return
             exc = t.exception()
@@ -503,6 +514,49 @@ class JobExecutor:
                 )
 
         task.add_done_callback(_on_pipeline_done)
+
+    def _persist_enqueue_event(
+        self,
+        context: Any,
+        job: RecurringJob,
+    ) -> None:
+        """Durably record that a file was enqueued for pipeline processing.
+
+        Written synchronously before the task is created so a restart (or a
+        dead task) still leaves a queryable trace of what was enqueued.
+        Best-effort: never blocks enqueue on database failure.
+        """
+        import json
+        from datetime import datetime, timezone
+
+        from haven_cli.database.connection import get_db_session
+        from haven_cli.database.models import PipelineEvent
+
+        try:
+            with get_db_session() as session:
+                session.add(
+                    PipelineEvent(
+                        ts=datetime.now(timezone.utc),
+                        event_type="job_pipeline_enqueued",
+                        correlation_id=str(context.correlation_id)
+                        if getattr(context, "correlation_id", None)
+                        else None,
+                        source="job_executor",
+                        payload_json=json.dumps(
+                            {
+                                "job_id": str(job.job_id),
+                                "source_path": str(context.source_path),
+                            },
+                            default=str,
+                        ),
+                    )
+                )
+                session.commit()
+        except Exception as e:
+            logger.warning(
+                "Failed to persist enqueue event for %s: %s",
+                context.source_path, e,
+            )
     
     async def _process_with_logging(
         self,

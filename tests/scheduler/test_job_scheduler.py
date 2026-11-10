@@ -83,9 +83,9 @@ class TestRecurringJob:
         assert job.status == JobStatus.DISABLED
 
     def test_default_schedule(self) -> None:
-        """Test default schedule is hourly."""
+        """Test default schedule is hourly (random minute each hour)."""
         job = RecurringJob()
-        assert job.schedule == "0 * * * *"
+        assert job.schedule == "hourly_random"
 
     def test_default_on_success(self) -> None:
         """Test default on_success action."""
