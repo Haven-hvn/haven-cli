@@ -26,12 +26,28 @@ app = typer.Typer(
 console = Console()
 
 
-async def _js_call(method: str, params: dict) -> dict:
+async def _js_call(method: str, params: dict, config: object = None) -> dict:
+    """Call a synapse method (connecting first, like the upload path)."""
     from haven_cli.js_runtime.manager import JSBridgeManager
+    from haven_cli.services.blockchain_network import get_network_config
 
-    result: dict = await JSBridgeManager.get_instance().call_with_retry(
-        method, params, max_retries=1
+    manager = JSBridgeManager.get_instance()
+    filecoin_mode = getattr(
+        getattr(config, "blockchain", None),
+        "effective_filecoin_network_mode",
+        "testnet",
     )
+    try:
+        rpc_url = get_network_config(filecoin_mode).filecoin_rpc_url
+    except Exception:
+        rpc_url = None
+    await manager.call_with_retry(
+        "synapse.connect",
+        {"rpcUrl": rpc_url, "networkMode": filecoin_mode},
+        timeout=120.0,
+        max_retries=1,
+    )
+    result: dict = await manager.call_with_retry(method, params, max_retries=1)
     return result
 
 
@@ -61,7 +77,7 @@ def list_datasets(
 
     async def _chain_rows() -> list:
         try:
-            result: dict = await _js_call("synapse.listDataSets", {})
+            result: dict = await _js_call("synapse.listDataSets", {}, config)
             if isinstance(result, list):
                 rows: list = result
                 return rows
@@ -144,7 +160,7 @@ def terminate_dataset(
 
     from haven_cli.services.datasets import account_dataset
 
-    _load_config_or_die(config_file)
+    config = _load_config_or_die(config_file)
 
     try:
         accounting = account_dataset(dataset_id)
@@ -175,7 +191,7 @@ def terminate_dataset(
 
     async def _terminate() -> dict:
         result: dict = await _js_call(
-            "synapse.terminateDataSet", {"dataSetId": str(dataset_id)}
+            "synapse.terminateDataSet", {"dataSetId": str(dataset_id)}, config
         )
         return result
 

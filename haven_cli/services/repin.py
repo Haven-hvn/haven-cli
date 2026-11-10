@@ -128,7 +128,7 @@ def resolve_from_entity(entity_key: str, arkiv_config: Any = None) -> RepinTarge
         from arkiv import Arkiv
         from arkiv.account import NamedAccount
         from arkiv.provider import ProviderBuilder
-        from arkiv.types import (  # type: ignore[attr-defined]  # stub lacks UPDATED_AT
+        from arkiv.types import (
             ATTRIBUTES,
             CONTENT_TYPE,
             CREATED_AT,
@@ -137,19 +137,25 @@ def resolve_from_entity(entity_key: str, arkiv_config: Any = None) -> RepinTarge
             PAYLOAD,
             EntityKey,
         )
-        from arkiv.types import UPDATED_AT  # type: ignore[attr-defined]
     except ImportError as exc:
         raise RuntimeError(
             "arkiv package is required for entity resolution. Install: pip install arkiv"
         ) from exc
+    try:
+        from arkiv.types import UPDATED_AT  # type: ignore[attr-defined]
+    except ImportError:
+        UPDATED_AT = None  # older SDKs lack this flag; harmless to omit
 
     provider = ProviderBuilder().custom(arkiv_config.rpc_url).build()
     account = NamedAccount.from_private_key("haven-cli", arkiv_config.private_key)
+    attributes = KEY | ATTRIBUTES | PAYLOAD | CONTENT_TYPE | OWNER | CREATED_AT
+    if UPDATED_AT is not None:
+        attributes = attributes | UPDATED_AT
     # arkiv stubs disagree with the runtime (same as cli/entity.py).
     client = Arkiv(provider=provider, account=account)  # type: ignore[arg-type]
     entity = client.arkiv.get_entity(  # type: ignore[call-arg]
         EntityKey(entity_key),  # type: ignore[arg-type]
-        attributes=KEY | ATTRIBUTES | PAYLOAD | CONTENT_TYPE | OWNER | CREATED_AT | UPDATED_AT,
+        attributes=attributes,
     )
     if not entity:
         raise ValueError(f"Arkiv entity not found: {entity_key}")
@@ -175,8 +181,8 @@ def resolve_from_entity(entity_key: str, arkiv_config: Any = None) -> RepinTarge
             f"Arkiv entity {entity_key} gate metadata did not parse "
             "(refusing to repin without a preserved gate)"
         )
-    attributes = dict(getattr(entity, "attributes", {}) or {})
-    title = attributes.get("title") or payload.get("name") or ""
+    entity_attributes = dict(getattr(entity, "attributes", {}) or {})
+    title = entity_attributes.get("title") or payload.get("name") or ""
     return RepinTarget(
         piece_cid=str(piece),
         root_cid=None,
@@ -199,7 +205,13 @@ def resolve_target(
         return found
     # Not in the local DB — treat the input as an Arkiv entity key.
     lookup = entity_lookup or (lambda key: resolve_from_entity(key))
-    resolved = lookup(target)
+    try:
+        resolved = lookup(target)
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot repin {target!r}: not in the local DB and Arkiv "
+            f"entity lookup failed ({exc})"
+        ) from exc
     if resolved is None:
         raise ValueError(
             f"Cannot repin {target!r}: not found in the local DB and not a "

@@ -180,17 +180,18 @@ def account_dataset(dataset_id: str) -> DatasetAccounting:
             .filter(Video.piece_cid.is_not(None), Video.piece_cid != "")
             .all()
         )
-    by_dataset: dict[str, set] = {}
-    epochs_by_dataset: dict[str, set] = {}
-    for row in rows:
-        ds = row.filecoin_data_set_id
-        if ds is None:
-            continue
-        ds = str(ds)
-        by_dataset.setdefault(ds, set()).add(row.piece_cid)
-        epoch = _lenient_epoch(row.encryption_metadata)
-        if epoch is not None:
-            epochs_by_dataset.setdefault(ds, set()).add(epoch)
+        # Aggregate inside the session (detached reads would fail).
+        by_dataset: dict[str, set] = {}
+        epochs_by_dataset: dict[str, set] = {}
+        for row in rows:
+            ds = row.filecoin_data_set_id
+            if ds is None:
+                continue
+            ds = str(ds)
+            by_dataset.setdefault(ds, set()).add(row.piece_cid)
+            epoch = _lenient_epoch(row.encryption_metadata)
+            if epoch is not None:
+                epochs_by_dataset.setdefault(ds, set()).add(epoch)
 
     own = by_dataset.get(str(dataset_id), set())
     others: set = set()
@@ -231,18 +232,20 @@ def list_local_datasets() -> list[DatasetView]:
             .order_by(Video.filecoin_uploaded_at.desc())
             .all()
         )
-    views: dict[str, DatasetView] = {}
-    for row in rows:
-        ds = row.filecoin_data_set_id
-        if ds is None:
-            continue
-        view = views.setdefault(str(ds), DatasetView(dataset_id=str(ds)))
-        view.piece_count += 1
-        if view.last_upload is None and row.filecoin_uploaded_at is not None:
-            view.last_upload = row.filecoin_uploaded_at
-        epoch = _lenient_epoch(row.encryption_metadata)
-        if epoch is not None and epoch not in view.epochs:
-            view.epochs.append(epoch)
-    for view in views.values():
-        view.epochs.sort()
+        # Aggregate inside the session: attribute reads after close
+        # would hit DetachedInstanceError on lazy refresh.
+        views: dict[str, DatasetView] = {}
+        for row in rows:
+            ds = row.filecoin_data_set_id
+            if ds is None:
+                continue
+            view = views.setdefault(str(ds), DatasetView(dataset_id=str(ds)))
+            view.piece_count += 1
+            if view.last_upload is None and row.filecoin_uploaded_at is not None:
+                view.last_upload = row.filecoin_uploaded_at
+            epoch = _lenient_epoch(row.encryption_metadata)
+            if epoch is not None and epoch not in view.epochs:
+                view.epochs.append(epoch)
+        for view in views.values():
+            view.epochs.sort()
     return sorted(views.values(), key=lambda v: v.dataset_id)
