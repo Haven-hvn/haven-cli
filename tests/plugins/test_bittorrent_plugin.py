@@ -22,15 +22,17 @@ class TestBitTorrentConfig:
         assert len(config.video_extensions) > 0
         assert config.min_video_size == 10 * 1024 * 1024
         assert config.max_video_size == 50 * 1024 * 1024 * 1024
+        assert config.select_mode == "all"
         assert config.sources == []
         assert config.enabled is True
-    
+
     def test_from_dict(self):
         """Test creating config from dictionary."""
         config = BitTorrentConfig.from_dict({
             "download_dir": "/tmp/torrents",
             "max_concurrent_downloads": 5,
             "max_download_speed": 1024 * 1024,
+            "select_mode": "largest",
             "sources": [
                 {
                     "name": "test",
@@ -43,8 +45,14 @@ class TestBitTorrentConfig:
         assert config.download_dir == "/tmp/torrents"
         assert config.max_concurrent_downloads == 5
         assert config.max_download_speed == 1024 * 1024
+        assert config.select_mode == "largest"
         assert len(config.sources) == 1
         assert config.sources[0]["name"] == "test"
+
+    def test_invalid_select_mode_rejected(self):
+        """Only 'all' and 'largest' are valid selection modes."""
+        with pytest.raises(ValueError):
+            BitTorrentConfig.from_dict({"select_mode": "smallest"})
 
 
 class TestBitTorrentPlugin:
@@ -124,6 +132,16 @@ class TestBitTorrentSizeLimits:
         
         assert plugin._bt_config.min_video_size == 50 * 1024 * 1024
         assert plugin._bt_config.max_video_size == 20 * 1024 * 1024 * 1024
+
+    def test_flat_plugin_settings(self):
+        """Settings passed directly (scheduler/configure path) are applied."""
+        plugin = BitTorrentPlugin(config={
+            "min_video_size": 50 * 1024 * 1024,
+            "select_mode": "largest",
+        })
+
+        assert plugin._bt_config.min_video_size == 50 * 1024 * 1024
+        assert plugin._bt_config.select_mode == "largest"
     
     def test_size_limit_validation_reasonable_values(self):
         """Test that reasonable size limit values are accepted."""

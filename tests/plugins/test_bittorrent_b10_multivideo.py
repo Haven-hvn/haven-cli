@@ -68,6 +68,31 @@ class TestSelectVideoFiles:
         assert eligible == []
         assert len(skipped) == 1
 
+    def test_largest_mode_keeps_only_biggest(self):
+        files = _FakeFiles([("a.mp4", 100), ("b.mkv", 300), ("c.mov", 200)])
+        eligible, skipped = BitTorrentPlugin._select_video_files(
+            files, [".mp4", ".mkv", ".mov"], 10, 1000, mode="largest"
+        )
+        assert [i for i, _, _ in eligible] == [1]
+        assert [s[0] for s in skipped] == [0, 2]
+        assert all("select_mode=largest" in s[3] for s in skipped)
+
+    def test_largest_mode_single_eligible(self):
+        files = _FakeFiles([("only.mp4", 100), ("notes.txt", 5000)])
+        eligible, skipped = BitTorrentPlugin._select_video_files(
+            files, [".mp4"], 10, 1000, mode="largest"
+        )
+        assert [i for i, _, _ in eligible] == [0]
+        assert skipped == []
+
+    def test_largest_mode_oversize_not_chosen(self):
+        files = _FakeFiles([("big.mp4", 5000), ("ok.mp4", 100)])
+        eligible, skipped = BitTorrentPlugin._select_video_files(
+            files, [".mp4"], 10, 1000, mode="largest"
+        )
+        assert [i for i, _, _ in eligible] == [1]
+        assert [s[0] for s in skipped] == [0]
+
 
 class TestTitlesAndMetadata:
     def test_single_file_no_titles(self):

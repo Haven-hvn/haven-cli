@@ -63,6 +63,9 @@ class BitTorrentConfig:
         video_extensions: List of video file extensions to prioritize
         min_video_size: Minimum video file size in bytes
         max_video_size: Maximum video file size in bytes
+        select_mode: Which videos to archive from a multi-file torrent;
+            ``"all"`` keeps every eligible video, ``"largest"`` keeps only
+            the biggest eligible one
         sources: List of source configurations
         enabled: Whether the plugin is enabled
         max_download_time: Maximum time to wait for download in seconds (0 = unlimited)
@@ -83,6 +86,7 @@ class BitTorrentConfig:
     ])
     min_video_size: int = 10 * 1024 * 1024  # 10 MB
     max_video_size: int = 50 * 1024 * 1024 * 1024  # 50 GB
+    select_mode: str = "all"  # "all" or "largest"
     sources: List[Dict[str, Any]] = field(default_factory=list)
     enabled: bool = True
     # Background download tracking options (Option #2)
@@ -96,7 +100,13 @@ class BitTorrentConfig:
     metadata_retries: int = 5  # Number of retry attempts
     # Connection limits
     max_connections: int = 50  # Max peer connections per torrent
-    
+
+    def __post_init__(self) -> None:
+        if self.select_mode not in ("all", "largest"):
+            raise ValueError(
+                f"select_mode must be 'all' or 'largest', got {self.select_mode!r}"
+            )
+
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "BitTorrentConfig":
         """Create config from dictionary."""
@@ -112,6 +122,7 @@ class BitTorrentConfig:
             ]),
             min_video_size=config.get("min_video_size", 10 * 1024 * 1024),
             max_video_size=config.get("max_video_size", 50 * 1024 * 1024 * 1024),
+            select_mode=str(config.get("select_mode", "all")).strip().lower(),
             sources=config.get("sources", []),
             enabled=config.get("enabled", True),
             max_download_time=config.get("max_download_time", 0),
@@ -165,12 +176,20 @@ class BitTorrentPlugin(ArchiverPlugin):
             config: Plugin configuration dictionary
         """
         super().__init__(config)
-        # Extract bittorrent-specific config from plugins.plugin_settings.bittorrent
-        bt_settings = self._config.get("plugins", {})
-        if hasattr(bt_settings, "plugin_settings"):
-            bt_settings = bt_settings.plugin_settings.get("bittorrent", {})
-        elif isinstance(bt_settings, dict):
-            bt_settings = bt_settings.get("plugin_settings", {}).get("bittorrent", {})
+        # Extract bittorrent-specific config.  Settings arrive either
+        # nested (``plugins.plugin_settings.bittorrent``, used by the
+        # daemon) or as the plugin-specific dict itself (``configure()``
+        # / ``PluginManager.register(config=...)`` from the scheduler).
+        raw = self._config
+        plugins = raw.get("plugins", raw) if isinstance(raw, dict) else raw
+        if hasattr(plugins, "plugin_settings"):
+            bt_settings = plugins.plugin_settings.get("bittorrent", {})
+        elif isinstance(plugins, dict) and isinstance(plugins.get("plugin_settings"), dict):
+            bt_settings = plugins["plugin_settings"].get("bittorrent", {})
+        elif isinstance(plugins, dict):
+            bt_settings = plugins
+        else:
+            bt_settings = {}
         self._bt_config = BitTorrentConfig.from_dict(bt_settings)
         self._sources: List[MagnetSource] = []
         self._seen_infohashes: set[str] = set()
@@ -305,6 +324,7 @@ class BitTorrentPlugin(ArchiverPlugin):
         video_extensions: List[str],
         min_video_size: int,
         max_video_size: int,
+        mode: str = "all",
     ) -> tuple[List[tuple[int, str, int]], List[tuple[int, str, int, str]]]:
         """Split a torrent's video files into eligible and skipped (B10).
 
@@ -312,6 +332,10 @@ class BitTorrentPlugin(ArchiverPlugin):
         ``[min_video_size, max_video_size]`` is eligible — not only the
         largest.  Oversize and undersize videos are reported individually
         so the caller can archive the rest and explain each skip.
+
+        With ``mode="largest"`` only the biggest eligible video is kept;
+        the other eligible videos are reported as skipped so the reason
+        is visible in the logs.
 
         Returns:
             ``(eligible, skipped)`` where eligible items are
@@ -338,6 +362,22 @@ class BitTorrentPlugin(ArchiverPlugin):
                 ))
             else:
                 eligible.append((i, file_path, file_size))
+
+        if mode == "largest" and len(eligible) > 1:
+            largest = max(eligible, key=lambda item: item[2])
+            for i, file_path, file_size in eligible:
+                if i == largest[0]:
+                    continue
+                skipped.append((
+                    i, file_path, file_size,
+                    f"select_mode=largest: only the largest video is archived "
+                    f"({largest[2]} bytes)",
+                ))
+            eligible = [largest]
+        elif mode not in ("all", "largest"):
+            raise ValueError(
+                f"select_mode must be 'all' or 'largest', got {mode!r}"
+            )
         return eligible, skipped
 
     @staticmethod
@@ -973,6 +1013,7 @@ class BitTorrentPlugin(ArchiverPlugin):
                 video_extensions,
                 min_video_size,
                 effective_max_video_size,
+                mode=self._bt_config.select_mode,
             )
             all_video_files = [
                 (i, path, size)
@@ -2101,6 +2142,7 @@ class BitTorrentPlugin(ArchiverPlugin):
             "video_extensions": self._bt_config.video_extensions,
             "min_video_size": self._bt_config.min_video_size,
             "max_video_size": self._bt_config.max_video_size,
+            "select_mode": self._bt_config.select_mode,
             "sources": self._bt_config.sources,
             "enabled": self._bt_config.enabled,
             "max_download_time": self._bt_config.max_download_time,
