@@ -53,6 +53,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     shutdown drains.
 
 ### Changed
+- **JS bridge upgraded to `@filoz/synapse-core` 0.11.0** (`js-services/deno.json`,
+  `js-services/package.json`, `js-services/package-lock.json`). Direct core usage
+  now resolves provider piece URLs with 0.11.0's `serviceURLJoin` fix (keeps
+  path-prefixed provider URLs), uses `SP.isReachable` for provider probes, and
+  downloads FOC pieces through `Piece.downloadStream` so bytes are PieceCID-
+  validated and size-capped before the file is kept. `filecoin-pin` 2.x and
+  `@filoz/synapse-sdk` 2.x still pin core `^0.10.0`, so their runtime path keeps
+  a nested 0.10.3; bump those when filecoin-pin publishes a core-0.11-compatible
+  release.
 - **`batch_sync_flush_timeout` default raised from 30 s → 18000 s (30 min)**
   (`BATCH_SYNC_REMEDIATION_PLAN.md` Phase 4b). Typical Haven ingest cadence
   is 1–6 minutes per item (yt-dlp + VLM + encryption + Filecoin upload),

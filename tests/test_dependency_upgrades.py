@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from datetime import UTC, datetime
@@ -94,3 +95,23 @@ def test_pillow_13_resampling_lanczos() -> None:
     frame = Image.new("RGB", (32, 32))
     resized = frame.resize((16, 16), Image.Resampling.LANCZOS)
     assert resized.size == (16, 16)
+
+
+def test_js_services_synapse_core_is_pinned_to_0_11() -> None:
+    """The JS bridge must build against synapse-core 0.11.0.
+
+    ``filecoin-pin`` 2.x still depends on ``@filoz/synapse-core@^0.10.0``, so
+    npm/Deno install a nested 0.10.3 for the SDK/filecoin-pin runtime path.
+    The direct pin (used by ``synapse-wrapper.ts`` and ``probe_providers.ts``)
+    must stay on 0.11.0 until filecoin-pin publishes a compatible release.
+    """
+    js_services = _REPO / "js-services"
+    package = json.loads((js_services / "package.json").read_text())
+    deno = json.loads((js_services / "deno.json").read_text())
+    lock = json.loads((js_services / "package-lock.json").read_text())
+
+    assert package["dependencies"]["@filoz/synapse-core"] == "0.11.0"
+    assert deno["imports"]["@filoz/synapse-core"] == "npm:@filoz/synapse-core@0.11.0"
+    assert (
+        lock["packages"]["node_modules/@filoz/synapse-core"]["version"] == "0.11.0"
+    ), "package-lock.json top-level synapse-core pin is stale"

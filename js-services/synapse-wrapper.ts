@@ -42,11 +42,17 @@ import {
   chainResolver,
   filbeamResolver,
   resolvePieceUrl,
+  downloadStream,
   type resolvePieceUrl as ResolvePieceUrlTypes,
 } from '@filoz/synapse-core/piece';
 import { CID } from 'multiformats/cid';
 
-import { carFileByteLength, openCarReadableStream, streamHttpResponseToFile } from './car_stream.ts';
+import {
+  carFileByteLength,
+  openCarReadableStream,
+  streamHttpResponseToFile,
+  streamReadableToFile,
+} from './car_stream.ts';
 import {
   buildSingleBlockCar,
   removeSingleBlockCar,
@@ -187,6 +193,7 @@ declare const Deno: {
     readable: ReadableStream<Uint8Array>;
   };
   exit(code?: number): never;
+  remove(path: string): Promise<void>;
 };
 
 // Filecoin upload size limits
@@ -697,7 +704,11 @@ class SynapseWrapperImpl implements SynapseWrapper {
     const owner = this._catalogOwnerAddress(synapse, catalogOwner);
     return resolvePieceUrl({
       address: owner,
-      client: synapse.client,
+      // synapse-sdk 2.x/filecoin-pin still resolve a nested synapse-core
+      // 0.10.3, so `synapse.client` is typed against a different (but
+      // runtime-identical) viem copy than core 0.11.0. Cast only the
+      // client at this boundary; the object is a viem Client either way.
+      client: synapse.client as unknown as Parameters<typeof resolvePieceUrl>[0]['client'],
       pieceCid: parsed,
       resolvers: pieceUrlResolvers(synapse),
     });
@@ -1467,39 +1478,65 @@ class SynapseWrapperImpl implements SynapseWrapper {
     catalogOwner: string | undefined,
     onProgress?: DownloadProgressCallback
   ): Promise<SynapseDownloadResult> {
+    const parsed = tryFrom(pieceCid);
+    if (parsed == null) {
+      throw new Error(`Invalid piece CID: ${pieceCid}`);
+    }
+    const expectedSize = Number(parsed.size);
     const synapse = await this._ensureSynapseInitialized();
     const retrievalUrl = await this._resolvePieceRetrievalUrl(synapse, pieceCid, catalogOwner);
 
-    onProgress?.({ bytesDownloaded: 0, totalBytes: 0, percentage: 0 });
+    onProgress?.({ bytesDownloaded: 0, totalBytes: expectedSize, percentage: 0 });
 
-    const response = await fetch(retrievalUrl, {
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!response.ok) {
-      throw new Error(`FOC retrieval failed: HTTP ${response.status} ${response.statusText}`);
+    // synapse-core 0.11.0's downloadStream hashes every chunk against the
+    // PieceCID and aborts as soon as the body exceeds the encoded size. The
+    // stream only closes cleanly after the final chunk validates, so the file
+    // is untrusted until streamReadableToFile returns.
+    let stream: ReadableStream<Uint8Array>;
+    try {
+      stream = await downloadStream({
+        url: retrievalUrl,
+        expectedPieceCid: pieceCid,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`FOC retrieval failed: ${message}`);
     }
 
-    const bytesDownloaded = await streamHttpResponseToFile(response, outputPath, {
-      timeoutMs,
-      onProgress: ({ bytesDownloaded, totalBytes }) => {
-        const percentage =
-          totalBytes > 0 ? Math.round((bytesDownloaded / totalBytes) * 100) : 0;
-        onProgress?.({ bytesDownloaded, totalBytes, percentage });
-      },
-    });
+    try {
+      const bytesDownloaded = await streamReadableToFile(stream, outputPath, {
+        timeoutMs,
+        totalBytes: expectedSize,
+        onProgress: ({ bytesDownloaded, totalBytes }) => {
+          const percentage =
+            totalBytes > 0 ? Math.round((bytesDownloaded / totalBytes) * 100) : 0;
+          onProgress?.({ bytesDownloaded, totalBytes, percentage });
+        },
+      });
 
-    onProgress?.({
-      bytesDownloaded,
-      totalBytes: bytesDownloaded,
-      percentage: 100,
-    });
+      onProgress?.({
+        bytesDownloaded,
+        totalBytes: bytesDownloaded,
+        percentage: 100,
+      });
 
-    return {
-      success: true,
-      size: bytesDownloaded,
-      cid: pieceCid,
-      outputPath,
-    };
+      return {
+        success: true,
+        size: bytesDownloaded,
+        cid: pieceCid,
+        outputPath,
+      };
+    } catch (error) {
+      // PieceCID validation errors surface when the stream ends, after some
+      // or all bytes were written. Discard the untrusted file and rethrow.
+      try {
+        await Deno.remove(outputPath);
+      } catch {
+        // Best effort: the validation error is the useful one.
+      }
+      throw error;
+    }
   }
 
   private async _downloadFromIpfsGateways(
