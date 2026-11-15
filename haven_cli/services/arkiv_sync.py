@@ -283,8 +283,8 @@ def build_arkiv_config(
     if is_sunset_arkiv_rpc_url(final_rpc_url):
         logger.warning(
             "⚠️  Arkiv RPC URL targets a sunset testnet (%s). "
-            "Kaolin and Braga were sunset; use Tiramisu: "
-            "https://rpc.tiramisu.db-chain.testnet.arkiv.network",
+            "Kaolin, Braga and Rabdi were sunset; use Rabdi: "
+            "https://rpc.rabdi.db-chain.testnet.arkiv.network",
             final_rpc_url,
         )
 
@@ -706,11 +706,11 @@ def _is_413_error(exc: Exception) -> bool:
     return False
 
 
-# ── Tiramisu write dialect ──────────────────────────────────────────
+# ── Rabdi write dialect ──────────────────────────────────────────────
 #
-# The bundled ``arkiv`` SDK (1.0.0b3.dev0) only speaks the pre-Tiramisu
+# The bundled ``arkiv`` SDK (1.0.0b3.dev0) only speaks the pre-Rabdi
 # ``execute`` ABI (full operation tuples), whose selector the live engine
-# rejects (``execution reverted: unknown selector``). Tiramisu narrowed
+# rejects (``execution reverted: unknown selector``). Rabdi narrowed
 # ``execute`` to a tagged union over ABI-encoded per-operation payloads
 # (see ``@arkiv-network/sdk`` ``src/entity/operations.ts``):
 #
@@ -727,33 +727,33 @@ def _is_413_error(exc: Exception) -> bool:
 # new engine answers natively (``eth_getCode`` is empty).
 
 #: Arkiv system address (unchanged across dialects).
-TIRAMISU_SYSTEM_ADDRESS = "0x4400000000000000000000000000000000000044"
+RABDI_SYSTEM_ADDRESS = "0x4400000000000000000000000000000000000044"
 
-#: Tiramisu block time; lifetimes must be a whole number of blocks.
-TIRAMISU_BLOCK_TIME_S = 2
+#: Rabdi block time; lifetimes must be a whole number of blocks.
+RABDI_BLOCK_TIME_S = 2
 
 #: Engine limits (``@arkiv-network/sdk`` ``src/attr/attributes.ts``).
-TIRAMISU_MAX_ATTRIBUTES = 32
-TIRAMISU_MAX_PAYLOAD_BYTES = 128 * 1024
+RABDI_MAX_ATTRIBUTES = 32
+RABDI_MAX_PAYLOAD_BYTES = 128 * 1024
 
 #: Operation tags of the ``execute`` tagged union.
-TIRAMISU_OP_CREATE = 1
-TIRAMISU_OP_PATCH = 2
+RABDI_OP_CREATE = 1
+RABDI_OP_PATCH = 2
 
 #: Attribute type ids used here (full table in the TS SDK ``attr/types``).
-TIRAMISU_TYPE_I32 = 2
-TIRAMISU_TYPE_BYTES = 7
-TIRAMISU_TYPE_STR = 8
+RABDI_TYPE_I32 = 2
+RABDI_TYPE_BYTES = 7
+RABDI_TYPE_STR = 8
 
 #: ``$payload`` / ``$contentType`` system cells.
-TIRAMISU_PAYLOAD_CELL = "$payload"
-TIRAMISU_CONTENT_TYPE_CELL = "$contentType"
+RABDI_PAYLOAD_CELL = "$payload"
+RABDI_CONTENT_TYPE_CELL = "$contentType"
 
 #: ``Ident32`` name grammar: leading letter, then letters/digits/``.``/``-``/``_``.
-_TIRAMISU_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+_RABDI_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 
 #: Query-language words the engine rejects as attribute names.
-_TIRAMISU_RESERVED_NAMES = frozenset({
+_RABDI_RESERVED_NAMES = frozenset({
     "and", "or", "not", "true", "false", "startswith", "exists", "typeof",
     "bool", "i32", "u64", "u256", "dec", "bytes32", "bytes", "str",
     "addr", "key",
@@ -763,21 +763,21 @@ _I32_MIN = -(2 ** 31)
 _I32_MAX = 2 ** 31 - 1
 
 
-def _tiramisu_execute_selector() -> bytes:
+def _RABDI_execute_selector() -> bytes:
     """First 4 bytes of ``keccak("execute((uint8,bytes)[])")``."""
     from eth_utils import keccak
 
     return keccak(b"execute((uint8,bytes)[])")[:4]
 
 
-def _tiramisu_entity_created_topic() -> bytes:
+def _RABDI_entity_created_topic() -> bytes:
     """Topic0 of ``EntityCreated(bytes32,address,uint64,uint8)``."""
     from eth_utils import keccak
 
     return keccak(b"EntityCreated(bytes32,address,uint64,uint8)")
 
 
-def _tiramisu_ident32(name: str) -> bytes:
+def _RABDI_ident32(name: str) -> bytes:
     """Validate *name* and encode it as a null-padded 32-byte ``Ident32``."""
     if not name:
         raise ValueError("Arkiv attribute name is empty")
@@ -786,26 +786,26 @@ def _tiramisu_ident32(name: str) -> bytes:
             f"Arkiv attribute {name!r}: '$' is reserved for system attributes"
         )
     raw = name.encode("utf-8")
-    if len(raw) > 32 or not _TIRAMISU_NAME_RE.match(name):
+    if len(raw) > 32 or not _RABDI_NAME_RE.match(name):
         raise ValueError(
             f"Arkiv attribute {name!r}: must match [A-Za-z][A-Za-z0-9._-]* "
             "and fit in 32 bytes"
         )
-    if name.lower() in _TIRAMISU_RESERVED_NAMES:
+    if name.lower() in _RABDI_RESERVED_NAMES:
         raise ValueError(
             f"Arkiv attribute {name!r}: reserved by the query language"
         )
     return raw + b"\x00" * (32 - len(raw))
 
 
-def _tiramisu_encode_i32(value: int) -> bytes:
+def _RABDI_encode_i32(value: int) -> bytes:
     """Encode *value* as a sign-extended 32-byte ``i32`` word."""
     if not _I32_MIN <= value <= _I32_MAX:
         raise ValueError(f"Arkiv i32 attribute out of range: {value!r}")
     return (value & (2**256 - 1)).to_bytes(32, "big")
 
 
-def tiramisu_encode_cells(
+def RABDI_encode_cells(
     attributes: dict[str, str | int],
     payload: bytes,
     content_type: str,
@@ -816,56 +816,56 @@ def tiramisu_encode_cells(
     cells (matching what the old SDK's ints read back as); the payload
     and content type become the ``$payload``/``$contentType`` cells.
     """
-    if len(payload) > TIRAMISU_MAX_PAYLOAD_BYTES:
+    if len(payload) > RABDI_MAX_PAYLOAD_BYTES:
         raise ValueError(
             f"Arkiv payload is {len(payload)} bytes, "
-            f"over the {TIRAMISU_MAX_PAYLOAD_BYTES}-byte limit"
+            f"over the {RABDI_MAX_PAYLOAD_BYTES}-byte limit"
         )
     cells: list[tuple[bytes, int, bytes]] = []
     for name, value in attributes.items():
-        ident = _tiramisu_ident32(name)
+        ident = _RABDI_ident32(name)
         if isinstance(value, bool):
             raise ValueError(
                 f"Arkiv attribute {name!r}: bool is not expressible; "
                 "use 0/1"
             )
         if isinstance(value, int):
-            cells.append((ident, TIRAMISU_TYPE_I32, _tiramisu_encode_i32(value)))
+            cells.append((ident, RABDI_TYPE_I32, _RABDI_encode_i32(value)))
         elif isinstance(value, str):
-            cells.append((ident, TIRAMISU_TYPE_STR, value.encode("utf-8")))
+            cells.append((ident, RABDI_TYPE_STR, value.encode("utf-8")))
         else:
             raise ValueError(
                 f"Arkiv attribute {name!r}: expected str or int, "
                 f"got {type(value).__name__}"
             )
     cells.append((
-        TIRAMISU_PAYLOAD_CELL.encode() + b"\x00" * (32 - len(TIRAMISU_PAYLOAD_CELL)),
-        TIRAMISU_TYPE_BYTES,
+        RABDI_PAYLOAD_CELL.encode() + b"\x00" * (32 - len(RABDI_PAYLOAD_CELL)),
+        RABDI_TYPE_BYTES,
         bytes(payload),
     ))
     cells.append((
-        TIRAMISU_CONTENT_TYPE_CELL.encode()
-        + b"\x00" * (32 - len(TIRAMISU_CONTENT_TYPE_CELL)),
-        TIRAMISU_TYPE_STR,
+        RABDI_CONTENT_TYPE_CELL.encode()
+        + b"\x00" * (32 - len(RABDI_CONTENT_TYPE_CELL)),
+        RABDI_TYPE_STR,
         content_type.encode("utf-8"),
     ))
-    if len(cells) > TIRAMISU_MAX_ATTRIBUTES:
+    if len(cells) > RABDI_MAX_ATTRIBUTES:
         raise ValueError(
             f"Arkiv operation carries {len(cells)} attributes, "
-            f"over the {TIRAMISU_MAX_ATTRIBUTES} limit"
+            f"over the {RABDI_MAX_ATTRIBUTES} limit"
         )
     cells.sort(key=lambda cell: cell[0])
     return cells
 
 
-def _tiramisu_min_lifetime(expires_in_s: int) -> int:
+def _RABDI_min_lifetime(expires_in_s: int) -> int:
     """Duration in seconds → whole-block lifetime floor (rounds up)."""
     if expires_in_s <= 0:
         raise ValueError(f"Arkiv expiry must be positive, got {expires_in_s!r}")
-    return -(-expires_in_s // TIRAMISU_BLOCK_TIME_S)
+    return -(-expires_in_s // RABDI_BLOCK_TIME_S)
 
 
-def tiramisu_encode_create(
+def RABDI_encode_create(
     attributes: dict[str, str | int],
     payload: bytes,
     content_type: str,
@@ -881,17 +881,17 @@ def tiramisu_encode_create(
         salt = secrets.randbits(128)
     if not 0 <= salt < 2**128:
         raise ValueError("Arkiv create salt must fit in uint128")
-    cells = tiramisu_encode_cells(attributes, payload, content_type)
+    cells = RABDI_encode_cells(attributes, payload, content_type)
     operation_data = encode(
         ["(uint128,uint64,uint64,uint8,(bytes32,uint8,bytes)[])"],
-        [(salt, 0, _tiramisu_min_lifetime(expires_in_s), 0, cells)],
+        [(salt, 0, _RABDI_min_lifetime(expires_in_s), 0, cells)],
     )
-    return _tiramisu_execute_selector() + encode(
-        ["(uint8,bytes)[]"], [[(TIRAMISU_OP_CREATE, operation_data)]]
+    return _RABDI_execute_selector() + encode(
+        ["(uint8,bytes)[]"], [[(RABDI_OP_CREATE, operation_data)]]
     )
 
 
-def tiramisu_encode_patch(
+def RABDI_encode_patch(
     entity_key: str,
     attributes: dict[str, str | int],
     payload: bytes,
@@ -909,17 +909,17 @@ def tiramisu_encode_patch(
         raise ValueError(f"Arkiv entity key is not hex: {entity_key!r}")
     if len(key_bytes) != 32:
         raise ValueError(f"Arkiv entity key must be 32 bytes: {entity_key!r}")
-    cells = tiramisu_encode_cells(attributes, payload, content_type)
+    cells = RABDI_encode_cells(attributes, payload, content_type)
     operation_data = encode(
         ["(bytes32,(bytes32,uint8,bytes)[])"],
         [(key_bytes, cells)],
     )
-    return _tiramisu_execute_selector() + encode(
-        ["(uint8,bytes)[]"], [[(TIRAMISU_OP_PATCH, operation_data)]]
+    return _RABDI_execute_selector() + encode(
+        ["(uint8,bytes)[]"], [[(RABDI_OP_PATCH, operation_data)]]
     )
 
 
-def _chain_uses_tiramisu_dialect(rpc_url: str) -> bool:
+def _chain_uses_RABDI_dialect(rpc_url: str) -> bool:
     """Whether the chain answers the system address natively (no EVM code)."""
     import requests
 
@@ -929,7 +929,7 @@ def _chain_uses_tiramisu_dialect(rpc_url: str) -> bool:
             "jsonrpc": "2.0",
             "id": 1,
             "method": "eth_getCode",
-            "params": [TIRAMISU_SYSTEM_ADDRESS, "latest"],
+            "params": [RABDI_SYSTEM_ADDRESS, "latest"],
         },
         timeout=15,
     )
@@ -937,7 +937,7 @@ def _chain_uses_tiramisu_dialect(rpc_url: str) -> bool:
     return resp.json().get("result") in ("0x", "", None)
 
 
-def _tiramisu_send_transaction(
+def _RABDI_send_transaction(
     rpc_url: str,
     private_key: str,
     calldata: bytes,
@@ -950,7 +950,7 @@ def _tiramisu_send_transaction(
     w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
     tx = {
         "from": account.address,
-        "to": Web3.to_checksum_address(TIRAMISU_SYSTEM_ADDRESS),
+        "to": Web3.to_checksum_address(RABDI_SYSTEM_ADDRESS),
         "data": calldata,
         "value": 0,
         "chainId": w3.eth.chain_id,
@@ -976,10 +976,10 @@ def _tiramisu_send_transaction(
     return receipt
 
 
-def _tiramisu_created_key(receipt: Any) -> str | None:
+def _RABDI_created_key(receipt: Any) -> str | None:
     """Entity key minted by a create batch: first ``EntityCreated`` log."""
-    address = TIRAMISU_SYSTEM_ADDRESS.lower()
-    topic0 = _tiramisu_entity_created_topic()
+    address = RABDI_SYSTEM_ADDRESS.lower()
+    topic0 = _RABDI_entity_created_topic()
     logs = receipt.get("logs", []) if hasattr(receipt, "get") else []
     for log in logs:
         log_address = log.get("address", "")
@@ -1053,7 +1053,7 @@ class ArkivSyncClient:
         if not self.config.enabled:
             return None
 
-        # NOTE: the bundled `arkiv` SDK (0.3.0) speaks the pre-Tiramisu query
+        # NOTE: the bundled `arkiv` SDK (0.3.0) speaks the pre-Rabdi query
         # dialect (`includeData`), which the live chain rejects. Query
         # `arkiv_query` directly in the current dialect until the SDK catches
         # up: `attr = str('…')`, options `{select, limit}`.
@@ -1133,8 +1133,8 @@ class ArkivSyncClient:
         existing = None if create_only else self.find_existing_entity(sha256_ct)
         
         try:
-            if _chain_uses_tiramisu_dialect(self.config.rpc_url):
-                return self._sync_tiramisu(
+            if _chain_uses_RABDI_dialect(self.config.rpc_url):
+                return self._sync_rabdi(
                     payload_bytes,
                     attributes,
                     expires_in_for(context, self.config.expires_in),
@@ -1221,33 +1221,33 @@ class ArkivSyncClient:
             logger.error("❌ Arkiv sync failed: %s", exc, exc_info=True)
             raise
 
-    def _sync_tiramisu(
+    def _sync_rabdi(
         self,
         payload_bytes: bytes,
         attributes: dict[str, str | int],
         expires_in_s: int,
         existing: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """Create or patch one entity in the Tiramisu write dialect."""
+        """Create or patch one entity in the Rabdi write dialect."""
         if not self.config.private_key:
             raise ValueError("Arkiv private key missing")
         is_update = bool(existing and existing.get("entity_key"))
         if is_update:
             entity_key = str(existing["entity_key"])  # type: ignore[index]
-            calldata = tiramisu_encode_patch(
+            calldata = RABDI_encode_patch(
                 entity_key, attributes, payload_bytes, "application/json"
             )
             operation = "update"
         else:
-            calldata = tiramisu_encode_create(
+            calldata = RABDI_encode_create(
                 attributes, payload_bytes, "application/json", expires_in_s
             )
             operation = "create"
-        receipt = _tiramisu_send_transaction(
+        receipt = _RABDI_send_transaction(
             self.config.rpc_url, self.config.private_key, calldata
         )
         if not is_update:
-            minted = _tiramisu_created_key(receipt)
+            minted = _RABDI_created_key(receipt)
             if not minted:
                 raise RuntimeError(
                     "Arkiv execute succeeded but emitted no EntityCreated event"

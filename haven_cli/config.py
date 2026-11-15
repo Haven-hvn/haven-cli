@@ -126,7 +126,7 @@ class BlockchainConfig:
         return (
             "https://mainnet.arkiv.network/rpc"
             if main
-            else "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
+            else "https://rpc.rabdi.db-chain.testnet.arkiv.network"
         )
 
 
@@ -1200,8 +1200,8 @@ def validate_config(config: Optional[HavenConfig] = None) -> List[ValidationErro
             errors.append(ValidationError(
                 field="blockchain.arkiv_rpc_override",
                 message=(
-                    "Arkiv testnet was sunset (Kaolin, Braga); use Tiramisu "
-                    "(https://rpc.tiramisu.db-chain.testnet.arkiv.network)."
+                    "Arkiv testnet was sunset (Kaolin, Braga, Tiramisu); use Rabdi "
+                    "(https://rpc.rabdi.db-chain.testnet.arkiv.network)."
                 ),
                 severity="warning",
             ))

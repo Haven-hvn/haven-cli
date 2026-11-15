@@ -113,7 +113,7 @@ class TestBlockchainConfigNetwork:
             filecoin_network_mode="mainnet",
             arkiv_network_mode="testnet",
         )
-        assert "tiramisu" in bc.get_arkiv_rpc_url()
+        assert "rabdi" in bc.get_arkiv_rpc_url()
 
     def test_is_mainnet_follows_filecoin_effective_mode(self) -> None:
         bc = BlockchainConfig(

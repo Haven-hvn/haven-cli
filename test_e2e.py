@@ -380,7 +380,7 @@ async def test_arkiv_sync():
         
         log_result("Arkiv Blockchain Sync", True, {
             "rpc_url": rpc_url,
-            "network": "tiramisu testnet",
+            "network": "rabdi testnet",
             "latest_block": block_num if 'block_num' in dir() else "unknown",
             "config_valid": True,
         })

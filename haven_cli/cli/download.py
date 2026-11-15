@@ -242,7 +242,7 @@ async def _decrypt_file(
         console.print(f"[dim]Fetching encryption metadata from Arkiv entity {entity_key}...[/dim]")
         arkiv_rpc = os.environ.get(
             "ARKIV_RPC_URL",
-            "https://rpc.tiramisu.db-chain.testnet.arkiv.network",
+            "https://rpc.rabdi.db-chain.testnet.arkiv.network",
         )
         private_key = os.environ.get("HAVEN_PRIVATE_KEY", "")
         if private_key:

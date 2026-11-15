@@ -260,6 +260,6 @@ Contributions are welcome! Please see our [Contributing Guide](CONTRIBUTING.md) 
 
 - https://beryx.io/faucet
 - https://forest-explorer.chainsafe.dev/faucet/calibnet_usdfc
-- https://rpc.tiramisu.db-chain.testnet.arkiv.network (Arkiv Tiramisu testnet RPC; Braga was sunset)
+- https://rpc.rabdi.db-chain.testnet.arkiv.network (Arkiv Rabdi testnet RPC; Braga and Tiramisu were sunset)
 - https://stg.usdfc.net/#/
 - https://pay.filecoin.cloud/console

@@ -194,11 +194,11 @@ class TestSunsetArkivRpcUrl:
             "https://braga.hoodi.arkiv.network/rpc"
         ) is True
 
-    def test_tiramisu_not_sunset(self) -> None:
+    def test_rabdi_not_sunset(self) -> None:
         from haven_cli.services.evm_utils import is_sunset_arkiv_rpc_url
 
         assert is_sunset_arkiv_rpc_url(
-            "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
+            "https://rpc.rabdi.db-chain.testnet.arkiv.network"
         ) is False
 
 
