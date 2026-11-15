@@ -73,66 +73,52 @@ def get_entity(
     
     async def fetch_entity() -> None:
         try:
-            # Import arkiv SDK
-            from arkiv import Arkiv
-            from arkiv.account import NamedAccount
-            from arkiv.provider import ProviderBuilder
-            from arkiv.types import KEY, ATTRIBUTES, PAYLOAD, CONTENT_TYPE, OWNER, CREATED_AT, UPDATED_AT
-            
-            # Create provider and account
-            provider = ProviderBuilder().custom(arkiv_config.rpc_url).build()
-            account = NamedAccount.from_private_key("haven-cli", arkiv_config.private_key)
-            client = Arkiv(provider=provider, account=account)
-            
-            # Query entity
-            from arkiv.types import EntityKey
-            key = EntityKey(entity_key)
-            
-            entity = client.arkiv.get_entity(
-                key,
-                attributes=KEY | ATTRIBUTES | PAYLOAD | CONTENT_TYPE | OWNER | CREATED_AT | UPDATED_AT
+            from haven_cli.crypto.metadata import (
+                arkiv_get_entity,
+                arkiv_row_attributes,
             )
-            
-            if not entity:
+
+            row = arkiv_get_entity(arkiv_config.rpc_url, entity_key)
+            if not row:
                 console.print(f"[red]✗[/red] Entity not found: {entity_key}")
                 raise typer.Exit(code=1)
-            
-            # Parse payload
+
+            attributes = arkiv_row_attributes(row)
+
+            # Parse payload (stored as a plain `payload` bytes attribute)
             payload = {}
-            if hasattr(entity, 'payload') and entity.payload:
-                try:
-                    if raw:
-                        payload = {"raw": entity.payload.decode('utf-8', errors='replace')}
-                    else:
-                        payload = json.loads(entity.payload.decode('utf-8'))
-                except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    payload = {"error": f"Failed to parse payload: {e}", "raw": str(entity.payload)[:200]}
-            
-            # Get attributes
-            attributes = {}
-            if hasattr(entity, 'attributes') and entity.attributes:
-                attributes = dict(entity.attributes)
-            
+            payload_bytes = attributes.get("payload")
+            if isinstance(payload_bytes, bytes):
+                text = payload_bytes.decode("utf-8", errors="replace")
+                if raw:
+                    payload = {"raw": text}
+                else:
+                    try:
+                        payload = json.loads(text)
+                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                        payload = {
+                            "error": f"Failed to parse payload: {e}",
+                            "raw": text[:200],
+                        }
+
             # Build result
             result = {
-                "entity_key": str(entity.key) if hasattr(entity, 'key') else entity_key,
-                "owner": str(entity.owner) if hasattr(entity, 'owner') else None,
-                "content_type": str(entity.content_type) if hasattr(entity, 'content_type') else None,
-                "created_at": str(entity.created_at) if hasattr(entity, 'created_at') else None,
-                "updated_at": str(entity.updated_at) if hasattr(entity, 'updated_at') else None,
+                "entity_key": row.get("key") or entity_key,
+                "owner": row.get("owner"),
+                "content_type": attributes.get("content_type"),
+                "created_at": row.get("createdAt"),
+                "updated_at": row.get("updatedAt"),
                 "payload": payload,
-                "attributes": attributes,
+                "attributes": {k: v for k, v in attributes.items() if k != "payload"},
             }
-            
+
             if json_output:
                 console.print(json.dumps(result, indent=2, default=str))
             else:
                 _print_entity_table(result)
-                
-        except ImportError:
-            console.print("[red]✗[/red] arkiv package is required for entity queries.")
-            console.print("Install with: pip install arkiv")
-            raise typer.Exit(code=1)
+
+        except typer.Exit:
+            raise
         except Exception as e:
             console.print(f"[red]✗[/red] Failed to fetch entity: {e}")
             raise typer.Exit(code=1)
@@ -191,53 +177,49 @@ def query_entities(
     
     async def do_query() -> None:
         try:
-            from arkiv import Arkiv
-            from arkiv.account import NamedAccount
-            from arkiv.provider import ProviderBuilder
-            from arkiv.types import KEY, ATTRIBUTES, PAYLOAD, CONTENT_TYPE, OWNER, CREATED_AT, QueryOptions
-            
-            # Create provider and account
-            provider = ProviderBuilder().custom(arkiv_config.rpc_url).build()
-            account = NamedAccount.from_private_key("haven-cli", arkiv_config.private_key)
-            client = Arkiv(provider=provider, account=account)
-            
-            # Build query options
-            query_options = QueryOptions(
-                attributes=KEY | ATTRIBUTES | CONTENT_TYPE | OWNER | CREATED_AT,
-                max_results_per_page=limit,
+            from haven_cli.crypto.metadata import (
+                arkiv_query,
+                arkiv_row_attributes,
+                arkiv_row_payload,
             )
-            
-            # Execute query
-            entities = list(client.arkiv.query_entities(
-                query=query,
-                options=query_options
-            ))
-            
-            if not entities:
+
+            rows = arkiv_query(
+                arkiv_config.rpc_url,
+                query,
+                limit=limit,
+                select={
+                    "key": True,
+                    "owner": True,
+                    "creator": True,
+                    "createdAt": True,
+                    "updatedAt": True,
+                    "expiresAt": True,
+                    "attributes": True,
+                },
+            )
+
+            if not rows:
                 console.print(f"[yellow]No entities found for query:[/yellow] {query}")
                 return
-            
+
             # Build results
             results = []
-            for entity in entities[:limit]:
-                result = {
-                    "entity_key": str(entity.key) if hasattr(entity, 'key') else None,
-                    "owner": str(entity.owner) if hasattr(entity, 'owner') else None,
-                    "content_type": str(entity.content_type) if hasattr(entity, 'content_type') else None,
-                    "created_at": str(entity.created_at) if hasattr(entity, 'created_at') else None,
-                    "attributes": dict(entity.attributes) if hasattr(entity, 'attributes') else {},
-                }
-                results.append(result)
-            
+            for row in rows[:limit]:
+                attrs = arkiv_row_attributes(row)
+                results.append({
+                    "entity_key": row.get("key"),
+                    "owner": row.get("owner"),
+                    "content_type": attrs.get("content_type"),
+                    "created_at": row.get("createdAt"),
+                    "attributes": {k: v for k, v in attrs.items() if k != "payload"},
+                    "payload": arkiv_row_payload(row),
+                })
+
             if json_output:
                 console.print(json.dumps(results, indent=2, default=str))
             else:
                 _print_query_results(results, query)
-                
-        except ImportError:
-            console.print("[red]✗[/red] arkiv package is required for entity queries.")
-            console.print("Install with: pip install arkiv")
-            raise typer.Exit(code=1)
+
         except Exception as e:
             console.print(f"[red]✗[/red] Query failed: {e}")
             raise typer.Exit(code=1)

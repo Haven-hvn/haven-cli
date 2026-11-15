@@ -142,37 +142,124 @@ def _gate_from_arkiv_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]
     return parse_gate_metadata(gate_raw)
 
 
+#: Attribute that carries the serialized JSON entity payload on Rabdi.
+ARKIV_PAYLOAD_ATTR = "payload"
+
+#: Entity fields selected by :func:`arkiv_get_entity`.
+_ARKIV_ENTITY_SELECT = {
+    "key": True,
+    "owner": True,
+    "creator": True,
+    "createdAt": True,
+    "updatedAt": True,
+    "expiresAt": True,
+    "creationFlags": True,
+    "attributes": True,
+}
+
+
+def arkiv_query(
+    rpc_url: str,
+    query: str,
+    limit: int = 10,
+    select: Optional[Dict[str, bool]] = None,
+) -> list[Dict[str, Any]]:
+    """Run an ``arkiv_query`` JSON-RPC call and return the result rows.
+
+    Talks to the node directly because the bundled ``arkiv`` SDK still
+    speaks the pre-Rabdi query dialect (``includeData``), which Rabdi
+    rejects.
+    """
+    import requests
+
+    if select is None:
+        select = {"key": True, "attributes": True}
+    resp = requests.post(
+        rpc_url,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "arkiv_query",
+            "params": [query, {"select": select, "limit": limit}],
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("result", {}).get("data", []) or []
+
+
+def arkiv_get_entity(rpc_url: str, entity_key: str) -> Optional[Dict[str, Any]]:
+    """Fetch one entity by key via ``arkiv_query`` (Rabdi dialect)."""
+    rows = arkiv_query(
+        rpc_url,
+        f"$key = key({entity_key})",
+        limit=1,
+        select=_ARKIV_ENTITY_SELECT,
+    )
+    return rows[0] if rows else None
+
+
+def _arkiv_attr_value(attr: Dict[str, Any]) -> Any:
+    """Decode one ``arkiv_query`` attribute ``{type, value}`` to Python."""
+    typ = str(attr.get("type", "")).lower()
+    value = attr.get("value")
+    if value is None:
+        return None
+    if typ == "str":
+        return value
+    if typ == "bytes":
+        if isinstance(value, str):
+            return bytes.fromhex(value[2:] if value.startswith("0x") else value)
+        return bytes(value)
+    if isinstance(value, str):
+        try:
+            return int(value, 16) if value.startswith("0x") else int(value)
+        except ValueError:
+            return value
+    return value
+
+
+def arkiv_row_attributes(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Decode an entity row's attributes into a ``{name: value}`` map."""
+    return {
+        a.get("name"): _arkiv_attr_value(a)
+        for a in (row.get("attributes") or [])
+        if a.get("name") is not None
+    }
+
+
+def arkiv_row_payload(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Decode the ``payload`` attribute of an entity row to a dict."""
+    raw = arkiv_row_attributes(row).get(ARKIV_PAYLOAD_ATTR)
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    return json.loads(bytes(raw).decode("utf-8"))
+
+
 async def load_encryption_metadata_from_arkiv_entity(
     entity_key: str,
     rpc_url: str,
     private_key: str,
 ) -> Optional[EncryptionMetadata]:
     try:
-        from arkiv import Arkiv
-        from arkiv.account import NamedAccount
-        from arkiv.provider import ProviderBuilder
-        from arkiv.types import EntityKey
-
-        provider = ProviderBuilder().custom(rpc_url).build()
-        account = NamedAccount.from_private_key("haven-cli", private_key)
-        client = Arkiv(provider=provider, account=account)
-
-        entity = client.arkiv.get_entity(EntityKey(entity_key))
-
-        if not entity or not entity.payload:
-            logger.warning(f"Entity {entity_key} not found or has no payload")
+        row = arkiv_get_entity(rpc_url, entity_key)
+        if row is None:
+            logger.warning(f"Entity {entity_key} not found")
             return None
 
-        payload = json.loads(entity.payload.decode("utf-8"))
+        payload = arkiv_row_payload(row)
+        if payload is None:
+            logger.warning(f"Entity {entity_key} has no payload")
+            return None
+
         gate = _gate_from_arkiv_payload(payload)
         if not gate:
             logger.warning(f"Entity {entity_key} has no content gate")
             return None
         return EncryptionMetadata(gate=gate)
 
-    except ImportError:
-        logger.warning("arkiv package not installed, cannot fetch entity metadata")
-        return None
     except Exception as e:
         logger.warning(f"Failed to load encryption metadata from Arkiv entity {entity_key}: {e}")
         return None
@@ -190,33 +277,16 @@ async def load_encryption_metadata_from_arkiv_query(
     client-side since 2.0 carries no ``is_encrypted`` flag.
     """
     try:
-        from arkiv import Arkiv
-        from arkiv.account import NamedAccount
-        from arkiv.provider import ProviderBuilder
-        from arkiv.types import EntityKey, QueryOptions
-
-        provider = ProviderBuilder().custom(rpc_url).build()
-        account = NamedAccount.from_private_key("haven-cli", private_key)
-        client = Arkiv(provider=provider, account=account)
-
-        entities = list(
-            client.arkiv.query_entities(
-                query=f'sha256_ct = "{sha256_ct}"',
-                options=QueryOptions(max_results_per_page=5),
-            )
-        )
-
-        if not entities:
+        rows = arkiv_query(rpc_url, f"sha256_ct = str('{sha256_ct}')", limit=5)
+        if not rows:
             logger.warning(f"No entities found for locator hash {sha256_ct}")
             return None
 
-        for candidate in entities:
-            entity = client.arkiv.get_entity(EntityKey(str(candidate.key)))
-
-            if not entity or not entity.payload:
+        for row in rows:
+            payload = arkiv_row_payload(row)
+            if payload is None:
                 continue
 
-            payload = json.loads(entity.payload.decode("utf-8"))
             gate = _gate_from_arkiv_payload(payload)
             if gate:
                 return EncryptionMetadata(gate=gate)
@@ -224,9 +294,6 @@ async def load_encryption_metadata_from_arkiv_query(
         logger.warning(f"No gated entity found for locator hash {sha256_ct}")
         return None
 
-    except ImportError:
-        logger.warning("arkiv package not installed, cannot query Arkiv")
-        return None
     except Exception as e:
         logger.warning(f"Failed to query Arkiv for locator hash {sha256_ct}: {e}")
         return None

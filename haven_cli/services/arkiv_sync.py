@@ -719,12 +719,15 @@ def _is_413_error(exc: Exception) -> bool:
 #            uint8 creationFlags, (bytes32 name, uint8 typeId, bytes value)[])
 #   patch:  (bytes32 entityKey, (bytes32 name, uint8 typeId, bytes value)[])
 #
-# The payload and content type travel as the ``$payload`` (bytes) and
-# ``$contentType`` (str) system cells inside the attribute array. Like the
-# query workaround in :meth:`ArkivSyncClient.find_existing_entity`, this
-# path talks to the chain directly until the Python SDK catches up.
-# Detection: the old dialect needs EVM code at the system address; the
-# new engine answers natively (``eth_getCode`` is empty).
+# The payload and its content type travel as ordinary ``payload`` (bytes) and
+# ``content_type`` (str) attributes. Rabdi reserves ``$``-prefixed names for
+# engine system attributes (the engine reverts with ``SystemAttributeNotWritable``),
+# so unlike the old ``$payload``/``$contentType`` system cells these are plain
+# attributes. Like the query workaround in
+# :meth:`ArkivSyncClient.find_existing_entity`, this path talks to the chain
+# directly until the Python SDK catches up. Detection: the old dialect needs
+# EVM code at the system address; the new engine answers natively
+# (``eth_getCode`` is empty).
 
 #: Arkiv system address (unchanged across dialects).
 RABDI_SYSTEM_ADDRESS = "0x4400000000000000000000000000000000000044"
@@ -745,9 +748,20 @@ RABDI_TYPE_I32 = 2
 RABDI_TYPE_BYTES = 7
 RABDI_TYPE_STR = 8
 
-#: ``$payload`` / ``$contentType`` system cells.
-RABDI_PAYLOAD_CELL = "$payload"
-RABDI_CONTENT_TYPE_CELL = "$contentType"
+#: Attribute names for the entity body. Rabdi reserves ``$``-prefixed names
+#: for engine system attributes (``SystemAttributeNotWritable``), so the
+#: payload and its content type travel as ordinary attributes.
+RABDI_PAYLOAD_CELL = "payload"
+RABDI_CONTENT_TYPE_CELL = "content_type"
+
+#: Bit 7 of the ``typeId`` byte: set when the engine should index the
+#: attribute (making it filterable in ``arkiv_query``). ``bytes`` is never
+#: indexed. See ``@arkiv-network/sdk`` ``src/schema/types.ts``.
+RABDI_INDEXED_FLAG = 0x80
+
+#: ARKIV_FORMAT 2.0.0 indexes every public attribute (they are the query
+#: surface: grp/title/gate_*/sha256_ct/...). Only the body cells
+#: (payload/content_type) are stored unindexed.
 
 #: ``Ident32`` name grammar: leading letter, then letters/digits/``.``/``-``/``_``.
 _RABDI_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
@@ -810,18 +824,27 @@ def RABDI_encode_cells(
     payload: bytes,
     content_type: str,
 ) -> list[tuple[bytes, int, bytes]]:
-    """Encode user attributes plus system cells, sorted by name.
+    """Encode user attributes plus the body, sorted by name.
 
     ``str`` values become ``str`` cells, ``int`` values become ``i32``
-    cells (matching what the old SDK's ints read back as); the payload
-    and content type become the ``$payload``/``$contentType`` cells.
+    cells (matching what the old SDK's ints read back as). Every public
+    attribute gets the indexed flag (the ARKIV_FORMAT 2.0.0 query
+    surface). The payload becomes a ``payload`` (bytes) attribute and the
+    content type a ``content_type`` (str) attribute — both plain, since
+    Rabdi reserves ``$``-prefixed names and ``bytes`` is never indexed.
     """
     if len(payload) > RABDI_MAX_PAYLOAD_BYTES:
         raise ValueError(
             f"Arkiv payload is {len(payload)} bytes, "
             f"over the {RABDI_MAX_PAYLOAD_BYTES}-byte limit"
         )
+    if RABDI_PAYLOAD_CELL in attributes or RABDI_CONTENT_TYPE_CELL in attributes:
+        raise ValueError(
+            f"Arkiv attribute {RABDI_PAYLOAD_CELL!r}/"
+            f"{RABDI_CONTENT_TYPE_CELL!r} is reserved for the entity body"
+        )
     cells: list[tuple[bytes, int, bytes]] = []
+
     for name, value in attributes.items():
         ident = _RABDI_ident32(name)
         if isinstance(value, bool):
@@ -830,22 +853,29 @@ def RABDI_encode_cells(
                 "use 0/1"
             )
         if isinstance(value, int):
-            cells.append((ident, RABDI_TYPE_I32, _RABDI_encode_i32(value)))
+            cells.append((
+                ident,
+                RABDI_TYPE_I32 | RABDI_INDEXED_FLAG,
+                _RABDI_encode_i32(value),
+            ))
         elif isinstance(value, str):
-            cells.append((ident, RABDI_TYPE_STR, value.encode("utf-8")))
+            cells.append((
+                ident,
+                RABDI_TYPE_STR | RABDI_INDEXED_FLAG,
+                value.encode("utf-8"),
+            ))
         else:
             raise ValueError(
                 f"Arkiv attribute {name!r}: expected str or int, "
                 f"got {type(value).__name__}"
             )
     cells.append((
-        RABDI_PAYLOAD_CELL.encode() + b"\x00" * (32 - len(RABDI_PAYLOAD_CELL)),
+        _RABDI_ident32(RABDI_PAYLOAD_CELL),
         RABDI_TYPE_BYTES,
         bytes(payload),
     ))
     cells.append((
-        RABDI_CONTENT_TYPE_CELL.encode()
-        + b"\x00" * (32 - len(RABDI_CONTENT_TYPE_CELL)),
+        _RABDI_ident32(RABDI_CONTENT_TYPE_CELL),
         RABDI_TYPE_STR,
         content_type.encode("utf-8"),
     ))

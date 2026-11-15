@@ -11,6 +11,7 @@ from eth_abi import decode as abi_decode
 from eth_utils import keccak
 
 from haven_cli.services.arkiv_sync import (
+    RABDI_INDEXED_FLAG,
     RABDI_MAX_ATTRIBUTES,
     RABDI_MAX_PAYLOAD_BYTES,
     RABDI_OP_CREATE,
@@ -63,22 +64,46 @@ class TestI32:
 
 
 class TestCells:
-    def test_types_sorting_and_system_cells(self):
+    def test_types_sorting_and_body_cells(self):
         cells = RABDI_encode_cells(
             {"title": "Sintel", "dur_s": 889},
             b'{"fcid":"bafy"}',
             "application/json",
         )
         by_name = {name.rstrip(b"\x00").decode(): (tid, val) for name, tid, val in cells}
-        assert by_name["title"] == (RABDI_TYPE_STR, b"Sintel")
-        assert by_name["dur_s"] == (RABDI_TYPE_I32, _RABDI_encode_i32(889))
-        assert by_name["$payload"] == (RABDI_TYPE_BYTES, b'{"fcid":"bafy"}')
-        assert by_name["$contentType"] == (
+        assert by_name["title"] == (RABDI_TYPE_STR | RABDI_INDEXED_FLAG, b"Sintel")
+        assert by_name["dur_s"] == (
+            RABDI_TYPE_I32 | RABDI_INDEXED_FLAG,
+            _RABDI_encode_i32(889),
+        )
+        assert by_name["payload"] == (RABDI_TYPE_BYTES, b'{"fcid":"bafy"}')
+        assert by_name["content_type"] == (
             RABDI_TYPE_STR,
             b"application/json",
         )
         names = [name for name, _, _ in cells]
         assert names == sorted(names)
+
+    def test_indexed_flag_on_public_attrs(self):
+        cells = RABDI_encode_cells(
+            {"sha256_ct": "ab" * 32, "title": "x", "dur_s": 5},
+            b"{}",
+            "application/json",
+        )
+        by_name = {name.rstrip(b"\x00").decode(): tid for name, tid, _ in cells}
+        # public attributes are indexed (ARKIV_FORMAT 2.0.0 query surface)
+        assert by_name["sha256_ct"] == RABDI_TYPE_STR | RABDI_INDEXED_FLAG
+        assert by_name["title"] == RABDI_TYPE_STR | RABDI_INDEXED_FLAG
+        assert by_name["dur_s"] == RABDI_TYPE_I32 | RABDI_INDEXED_FLAG
+        # body cells are stored unindexed; bytes can never be indexed
+        assert by_name["payload"] == RABDI_TYPE_BYTES
+        assert by_name["content_type"] == RABDI_TYPE_STR
+
+    def test_rejects_reserved_body_names(self):
+        with pytest.raises(ValueError):
+            RABDI_encode_cells({"payload": "x"}, b"{}", "t")
+        with pytest.raises(ValueError):
+            RABDI_encode_cells({"content_type": "x"}, b"{}", "t")
 
     def test_rejects_bool_and_big_payload(self):
         with pytest.raises(ValueError):
@@ -121,7 +146,7 @@ class TestEncodeCreate:
             operation_data,
         )
         assert (salt, expires_at, min_lifetime, flags) == (7, 0, 60, 0)
-        assert len(attrs) == 3  # grp + $payload + $contentType
+        assert len(attrs) == 3  # grp + payload + content_type
 
     def test_default_salt_is_128_bits(self):
         seen = {

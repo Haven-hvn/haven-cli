@@ -121,52 +121,20 @@ def resolve_from_db(target: str) -> RepinTarget | None:
 def resolve_from_entity(entity_key: str, arkiv_config: Any = None) -> RepinTarget:
     """Resolve an Arkiv entity into a repin target (raises on failure)."""
     from haven_cli.crypto.gate_metadata import parse_gate_metadata
+    from haven_cli.crypto.metadata import (
+        arkiv_get_entity,
+        arkiv_row_attributes,
+        arkiv_row_payload,
+    )
     from haven_cli.services.arkiv_sync import build_arkiv_config
 
     arkiv_config = arkiv_config or build_arkiv_config(enabled=True)
-    try:
-        from arkiv import Arkiv
-        from arkiv.account import NamedAccount
-        from arkiv.provider import ProviderBuilder
-        from arkiv.types import (
-            ATTRIBUTES,
-            CONTENT_TYPE,
-            CREATED_AT,
-            KEY,
-            OWNER,
-            PAYLOAD,
-            EntityKey,
-        )
-    except ImportError as exc:
-        raise RuntimeError(
-            "arkiv package is required for entity resolution. Install: pip install arkiv"
-        ) from exc
-    try:
-        from arkiv.types import UPDATED_AT  # type: ignore[attr-defined]
-    except ImportError:
-        UPDATED_AT = None  # older SDKs lack this flag; harmless to omit
 
-    provider = ProviderBuilder().custom(arkiv_config.rpc_url).build()
-    account = NamedAccount.from_private_key("haven-cli", arkiv_config.private_key)
-    attributes = KEY | ATTRIBUTES | PAYLOAD | CONTENT_TYPE | OWNER | CREATED_AT
-    if UPDATED_AT is not None:
-        attributes = attributes | UPDATED_AT
-    # arkiv stubs disagree with the runtime (same as cli/entity.py).
-    client = Arkiv(provider=provider, account=account)  # type: ignore[arg-type]
-    entity = client.arkiv.get_entity(  # type: ignore[call-arg]
-        EntityKey(entity_key),  # type: ignore[arg-type]
-        attributes=attributes,
-    )
-    if not entity:
+    row = arkiv_get_entity(arkiv_config.rpc_url, entity_key)
+    if not row:
         raise ValueError(f"Arkiv entity not found: {entity_key}")
 
-    payload: dict[str, Any] = {}
-    raw_payload = getattr(entity, "payload", None)
-    if raw_payload:
-        try:
-            payload = json.loads(raw_payload.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise ValueError(f"Arkiv entity payload is not JSON: {exc}") from exc
+    payload: dict[str, Any] = arkiv_row_payload(row) or {}
 
     piece = payload.get("piece") or payload.get("fcid")
     if not piece:
@@ -181,7 +149,7 @@ def resolve_from_entity(entity_key: str, arkiv_config: Any = None) -> RepinTarge
             f"Arkiv entity {entity_key} gate metadata did not parse "
             "(refusing to repin without a preserved gate)"
         )
-    entity_attributes = dict(getattr(entity, "attributes", {}) or {})
+    entity_attributes = arkiv_row_attributes(row)
     title = entity_attributes.get("title") or payload.get("name") or ""
     return RepinTarget(
         piece_cid=str(piece),
