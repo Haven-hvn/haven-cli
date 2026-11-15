@@ -18,6 +18,9 @@ Type=simple
 WorkingDirectory=/root/workspace/haven-cli
 # libtorrent shared libraries shipped in-tree (Python 3.14 build).
 Environment=LD_LIBRARY_PATH=/root/workspace/haven-cli/wheels/libs/usr/lib
+# Deno (JS bridge runtime) and yt-dlp live in ~/.local/bin, which is not on
+# systemd's default secure_path. The daemon discovers Deno via shutil.which().
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # Optional per-user secrets (HAVEN_PRIVATE_KEY, etc.). Systemd tolerates a
 # missing EnvironmentFile when prefixed with '-'.
 EnvironmentFile=-%h/.config/haven/haven.env
