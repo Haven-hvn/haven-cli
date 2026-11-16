@@ -46,6 +46,17 @@ class VideoHashError(VideoMetadataError):
     pass
 
 
+class NoVideoFramesError(VideoHashError):
+    """Raised when a file has no video frames to hash.
+
+    Typically an audio-only file that carries a video-ish container
+    extension (e.g. ``.ogg``). Callers treat this as audio: pHash is
+    skipped and byte-exact sha256 dedup still applies.
+    """
+
+    pass
+
+
 def calculate_frame_phash(image: Image.Image, hash_size: int = DEFAULT_HASH_SIZE) -> str:
     """
     Calculate perceptual hash for a single image/frame.
@@ -133,7 +144,7 @@ async def calculate_video_phash(
         )
 
         if not frames:
-            raise VideoHashError(
+            raise NoVideoFramesError(
                 "No frames could be extracted from video",
                 path=str(video_path),
             )

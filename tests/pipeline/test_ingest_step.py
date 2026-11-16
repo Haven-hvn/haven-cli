@@ -130,6 +130,55 @@ class TestIngestStepMetadataExtraction:
         assert context.video_metadata.has_audio is True
 
     @pytest.mark.asyncio
+    async def test_audio_only_with_video_extension_skips_phash(self, tmp_path):
+        """Audio-only files with a video-ish extension (e.g. .ogg) ingest without pHash.
+
+        Regression: ``.ogg`` is in VIDEO_EXTENSIONS, so ingest tried frame-based
+        pHash and failed with 'No frames could be extracted'. Audio-only content
+        must be reclassified and skip both pHash and pHash dedup.
+        """
+        audio_file = tmp_path / "song.ogg"
+        audio_file.write_bytes(b"fake ogg data")
+
+        step = IngestStep()
+        context = PipelineContext(source_path=audio_file, options={"dedup_enabled": False})
+
+        mock_tech_metadata = MagicMock()
+        mock_tech_metadata.duration = 120.0
+        mock_tech_metadata.width = 0
+        mock_tech_metadata.height = 0
+        mock_tech_metadata.fps = 0.0
+        mock_tech_metadata.codec = "vorbis"
+        mock_tech_metadata.bitrate = 128000
+        mock_tech_metadata.audio_codec = "vorbis"
+        mock_tech_metadata.audio_channels = 2
+        mock_tech_metadata.container = "ogg"
+        mock_tech_metadata.has_audio = True
+
+        with patch("haven_cli.pipeline.steps.ingest_step.detect_mime_type", return_value="audio/ogg"):
+            with patch.object(step, '_calculate_phash', new_callable=AsyncMock, return_value=""):
+                with patch.object(step, '_check_duplicate', new_callable=AsyncMock, return_value=False) as mock_dup:
+                    with patch("haven_cli.pipeline.steps.ingest_step.extract_video_metadata", new_callable=AsyncMock, return_value=mock_tech_metadata):
+                        with patch("haven_cli.database.connection.get_db_session") as mock_get_session:
+                            mock_session = MagicMock()
+                            mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+                            mock_get_session.return_value.__exit__ = MagicMock(return_value=None)
+
+                            mock_repo = MagicMock()
+                            mock_repo.get_by_source_path.return_value = None
+                            mock_video = MagicMock()
+                            mock_video.id = 43
+                            mock_repo.create.return_value = mock_video
+
+                            with patch("haven_cli.database.repositories.VideoRepository", return_value=mock_repo):
+                                result = await step.process(context)
+
+        assert result.success is True
+        assert result.data["phash"] == ""
+        assert result.data["mime_type"] == "audio/ogg"
+        mock_dup.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_ingest_without_tech_metadata(self, tmp_path):
         """Test ingestion when ffprobe fails (graceful degradation)."""
         video_file = tmp_path / "test.mp4"

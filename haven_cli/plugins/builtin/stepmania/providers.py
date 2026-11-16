@@ -294,7 +294,10 @@ class StepManiaOnlineProvider:
 
         candidates: list[PackCandidate] = []
         try:
-            reader = csv.DictReader(io.StringIO(response.text.lstrip("\ufeff")))
+            reader = csv.DictReader(
+                io.StringIO(response.text.lstrip("\ufeff")),
+                skipinitialspace=True,
+            )
             for row in reader:
                 candidate = self._candidate_from_row(row)
                 if candidate is not None:

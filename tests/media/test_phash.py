@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 
 from haven_cli.media.phash import (
+    NoVideoFramesError,
     VideoHashError,
     calculate_frame_phash,
     calculate_hash_similarity,
@@ -250,6 +251,22 @@ class TestCalculateVideoPhash:
         from pathlib import Path
         with pytest.raises(FileNotFoundError):
             await calculate_video_phash(Path("/nonexistent/video.mp4"))
+
+    @pytest.mark.asyncio
+    async def test_no_frames_raises_no_video_frames_error(self, monkeypatch, tmp_path) -> None:
+        """Audio-only content (no frames) raises NoVideoFramesError, not a generic hash error."""
+        from pathlib import Path
+
+        async def fake_extract(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr(
+            "haven_cli.media.phash.extract_frames_uniform", fake_extract
+        )
+        path = tmp_path / "audio-only.ogg"
+        path.write_bytes(b"not really audio")
+        with pytest.raises(NoVideoFramesError):
+            await calculate_video_phash(Path(path))
 
 
 class TestPhashIntegration:

@@ -339,7 +339,7 @@ class StepManiaPlugin(ArchiverPlugin):
             "generic_file_reject": list(settings.generic_file_reject),
         }
         return MediaSource(
-            id=candidate.source_id,
+            source_id=candidate.source_id,
             media_type=MEDIA_TYPE,
             uri=candidate.download_url,
             title=candidate.name,
@@ -720,6 +720,9 @@ class StepManiaPlugin(ArchiverPlugin):
             for info in archive.infolist():
                 if info.is_dir() or info.filename.endswith("/"):
                     continue
+                raw_parts = PurePosixPath(info.filename.replace("\\", "/")).parts
+                if raw_parts and raw_parts[0].lower() == "__macosx":
+                    continue
                 if info.flag_bits & 0x1:
                     raise StepManiaError(
                         f"Encrypted ZIP entry is not supported: {info.filename}",
@@ -784,7 +787,9 @@ class StepManiaPlugin(ArchiverPlugin):
                 rel_parts = path.relative_to(root).parts
             except ValueError:
                 continue
-            if "__MACOSX" in rel_parts or any(part.startswith(".") for part in rel_parts):
+            if any(part.lower() in ("__macosx", "macosx") for part in rel_parts) or any(
+                part.startswith(".") for part in rel_parts
+            ):
                 continue
             suffix = path.suffix.lower()
             if suffix in exclude:

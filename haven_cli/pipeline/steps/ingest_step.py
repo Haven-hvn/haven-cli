@@ -29,7 +29,7 @@ from haven_cli.media import detect_mime_type, extract_video_metadata
 from haven_cli.media.metadata import is_audio_file, is_supported_media_file
 from haven_cli.media.exceptions import VideoMetadataError
 from haven_cli.media.filetype import POINTER_KINDS, detect_mime, media_kind, mime_matches
-from haven_cli.media.phash import calculate_video_phash, VideoHashError
+from haven_cli.media.phash import NoVideoFramesError, calculate_video_phash, VideoHashError
 from haven_cli.pipeline.context import PipelineContext, UploadResult, VideoMetadata
 from haven_cli.pipeline.events import Event, EventType
 from haven_cli.pipeline.results import StepError, StepResult
@@ -163,7 +163,12 @@ class IngestStep(PipelineStep):
 
                 # Calculate perceptual hash (video only — audio has no frames, so
                 # it skips pHash and relies on byte-exact sha256 dedup below).
+                # Audio-only files that carry a video-ish extension (e.g. .ogg)
+                # return an empty hash and are reclassified as audio here.
                 phash = "" if is_audio else await self._calculate_phash(video_path)
+                if not is_audio and not phash:
+                    is_audio = True
+                    context.set_step_data(self.name, "media_kind", "audio")
 
                 # Extract video technical metadata using ffprobe
                 try:
@@ -481,6 +486,14 @@ class IngestStep(PipelineStep):
         try:
             phash = await calculate_video_phash(path)
             return phash
+        except NoVideoFramesError:
+            # Audio-only content (or a container with no video stream): no
+            # frame-based hash applies. Callers fall back to sha256 dedup.
+            logger.info(
+                "No video frames in %s; skipping pHash and treating as audio-only",
+                path,
+            )
+            return ""
         except VideoHashError:
             # Re-raise specific errors
             raise

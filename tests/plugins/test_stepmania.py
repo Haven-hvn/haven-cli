@@ -24,7 +24,7 @@ def test_load_settings_defaults_and_song_validation() -> None:
     assert settings.unit == "pack"
     assert settings.generic_file_accept == ("*",)
 
-    with pytest.raises(SettingsError, match="unit 'song' requires"):
+    with pytest.raises(SettingsError, match="unit = 'song' requires"):
         load_settings({"providers": ["stepmania_online"], "unit": "song"})
 
     song_settings = load_settings({"providers": ["etterna"], "unit": "song"})
@@ -91,7 +91,7 @@ async def test_discover_sources_for_uses_seeded_random_draw(monkeypatch, tmp_pat
     sources = await plugin.discover_sources_for({"stepmania_seed": 123})
 
     assert len(sources) == 3
-    assert {source.id for source in sources} == {
+    assert {source.source_id for source in sources} == {
         "stepmania_online:0",
         "stepmania_online:1",
         "stepmania_online:2",
@@ -135,7 +135,7 @@ async def test_archive_extracts_zip_and_emits_generic_pipeline_options(
             size_bytes=zip_path.stat().st_size,
         )
         source = MediaSource(
-            id=candidate.source_id,
+            source_id=candidate.source_id,
             title=candidate.name,
             uri=candidate.download_url,
             media_type="stepmania",
