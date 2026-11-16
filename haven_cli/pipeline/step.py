@@ -135,6 +135,23 @@ class PipelineStep(ABC):
                 result = result.with_timing(started_at)
                 result.attempts = attempts
                 
+                # A step may explicitly return ``StepResult.skip()`` from
+                # ``process()`` (e.g. ingest for an unsupported file). That is
+                # a non-failure: without this branch the loop fell through to
+                # the retry-exhausted path below and rewrote the skip as
+                # "Step failed without specific error", which also made
+                # ``haven upload file`` report a successful upload as failed.
+                if result.skipped:
+                    reason = str(result.metadata.get("skip_reason", ""))
+                    await self.on_skip(context, reason)
+                    await self._emit_event(EventType.STEP_SKIPPED, context, {
+                        "video_id": context.video_id,
+                        "step_name": self.name,
+                        "stage": self.name,
+                        "reason": reason,
+                    })
+                    return result
+                
                 if result.success:
                     # Call on_complete hook
                     await self.on_complete(context, result)
