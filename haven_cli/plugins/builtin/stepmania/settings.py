@@ -164,6 +164,14 @@ class StepManiaSettings:
 
     extract_archive: bool = True
     keep_zip: bool = False
+    # Pack mode: upload the pack ZIP as a single Arkiv entity with a
+    # ``stepmania-pack`` manifest (what FeetOnFire's social feed reads),
+    # instead of splitting the pack into per-file entities. Takes priority
+    # over ``extract_archive``.
+    upload_as_pack: bool = True
+    # Upper bound on songs listed in the ``x.dance`` manifest (advisory only;
+    # the ZIP itself always carries the full content).
+    pack_manifest_max_songs: int = 250
     include_extensions: tuple[str, ...] = DEFAULT_INCLUDE_EXTENSIONS
     exclude_extensions: tuple[str, ...] = DEFAULT_EXCLUDE_EXTENSIONS
 
@@ -227,6 +235,8 @@ def load_settings(raw: dict[str, Any] | None) -> StepManiaSettings:
         "max_files_per_pack",
         "extract_archive",
         "keep_zip",
+        "upload_as_pack",
+        "pack_manifest_max_songs",
         "include_extensions",
         "exclude_extensions",
         "catalog_ttl_s",
@@ -315,6 +325,15 @@ def load_settings(raw: dict[str, Any] | None) -> StepManiaSettings:
         raw.get("extract_archive", settings.extract_archive), "extract_archive"
     )
     settings.keep_zip = _bool(raw.get("keep_zip", settings.keep_zip), "keep_zip")
+    settings.upload_as_pack = _bool(
+        raw.get("upload_as_pack", settings.upload_as_pack), "upload_as_pack"
+    )
+    settings.pack_manifest_max_songs = _int(
+        raw.get("pack_manifest_max_songs", settings.pack_manifest_max_songs),
+        "pack_manifest_max_songs",
+        minimum=0,
+        maximum=5000,
+    )
 
     if "include_extensions" in raw:
         settings.include_extensions = _extensions(raw["include_extensions"], "include_extensions")

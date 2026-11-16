@@ -6,10 +6,12 @@ Random Selection API spec:
 * ``etterna`` draws random song/pack IDs against the public Typesense API.
 * ``stepmania_online`` downloads the SMO CSV catalog and samples locally.
 
-Pack ZIPs are downloaded with the guarded HTTP fetcher, extracted with
-path-sanitizing ZIP handling, and the song content files are returned as
-``output_paths`` so the scheduler can feed each file through Haven's
-generic-file pipeline.
+Pack ZIPs are downloaded with the guarded HTTP fetcher. By default
+(``upload_as_pack = true``) the ZIP is archived whole and described with a
+FeetOnFire ``stepmania-pack`` manifest under the Arkiv payload's ``x.dance``,
+so the game's social feed can list and import it. Set ``upload_as_pack =
+false`` to extract with path-sanitizing ZIP handling and feed each song file
+through Haven's generic-file pipeline instead.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import shutil
 import tempfile
 import time
@@ -54,7 +57,14 @@ from haven_cli.plugins.builtin.stepmania.settings import (
 logger = logging.getLogger(__name__)
 
 MEDIA_TYPE = "stepmania"
-_STATE_VERSION = 1
+_STATE_VERSION = 2
+
+#: FeetOnFire's social feed reads ``payload.x.dance`` manifests; this is the
+#: ``kind``/``version`` it validates (see FeetOnFire src/social/protocol.ts).
+DANCE_MANIFEST_KIND = "stepmania-pack"
+DANCE_MANIFEST_VERSION = 1
+#: Cap on bytes read from a single simfile when building the manifest.
+_MANIFEST_ENTRY_MAX_BYTES = 2 * 1024 * 1024
 
 
 class StepManiaError(RuntimeError):
@@ -198,6 +208,8 @@ class StepManiaPlugin(ArchiverPlugin):
                     "download_dir": {"type": "string"},
                     "extract_archive": {"type": "boolean", "default": True},
                     "keep_zip": {"type": "boolean", "default": False},
+                    "upload_as_pack": {"type": "boolean", "default": True},
+                    "pack_manifest_max_songs": {"type": "integer", "default": 250},
                     "include_extensions": {"type": "array", "items": {"type": "string"}},
                     "max_download_bytes": {"type": "integer"},
                     "max_extracted_bytes": {"type": "integer"},
@@ -372,6 +384,7 @@ class StepManiaPlugin(ArchiverPlugin):
         candidate: PackCandidate,
         output_paths: List[str],
         output_titles: Dict[str, str],
+        manifest: Optional[Dict[str, Any]] = None,
     ) -> None:
         marker = {
             "version": _STATE_VERSION,
@@ -381,6 +394,7 @@ class StepManiaPlugin(ArchiverPlugin):
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "output_paths": list(output_paths),
             "output_titles": dict(output_titles),
+            "manifest": manifest,
         }
         try:
             (pack_dir / ".haven-stepmania.json").write_text(
@@ -392,6 +406,7 @@ class StepManiaPlugin(ArchiverPlugin):
     def _marker_matches(self, marker: Optional[Dict[str, Any]], candidate: PackCandidate) -> bool:
         return bool(
             marker
+            and marker.get("version") == _STATE_VERSION
             and marker.get("provider") == candidate.provider
             and str(marker.get("pack_id")) == candidate.pack_id
         )
@@ -564,9 +579,25 @@ class StepManiaPlugin(ArchiverPlugin):
     ) -> ArchiveResult:
         pack_dir.mkdir(parents=True, exist_ok=True)
         zip_path = await self._download_zip(candidate, settings)
+        manifest: Optional[Dict[str, Any]] = None
+        extra_pipeline: Optional[Dict[str, Any]] = None
 
         try:
-            if not settings.extract_archive:
+            if settings.upload_as_pack:
+                # FeetOnFire reads one Arkiv record per pack: a ZIP whose
+                # entity carries a ``stepmania-pack`` manifest. Keep the ZIP
+                # intact and describe its songs for the advisory list.
+                archive_path = self._move_zip_into_pack(zip_path, candidate, pack_dir)
+                output_paths = [str(archive_path)]
+                output_titles = {str(archive_path): candidate.name}
+                file_size = archive_path.stat().st_size
+                manifest = self._build_pack_manifest(archive_path, candidate, settings)
+                if manifest:
+                    extra_pipeline = {
+                        "arkiv_grp": "haven.file.full",
+                        "arkiv_payload_extra": {"dance": manifest},
+                    }
+            elif not settings.extract_archive:
                 archive_path = self._move_zip_into_pack(zip_path, candidate, pack_dir)
                 output_paths = [str(archive_path)]
                 output_titles = {str(archive_path): candidate.name}
@@ -606,7 +637,7 @@ class StepManiaPlugin(ArchiverPlugin):
             zip_path.unlink(missing_ok=True)
             raise
 
-        self._write_marker(pack_dir, candidate, output_paths, output_titles)
+        self._write_marker(pack_dir, candidate, output_paths, output_titles, manifest)
         return ArchiveResult(
             success=True,
             output_path=output_paths[0],
@@ -617,6 +648,7 @@ class StepManiaPlugin(ArchiverPlugin):
                 settings,
                 output_paths,
                 output_titles,
+                extra_pipeline_options=extra_pipeline,
             ),
         )
 
@@ -829,6 +861,80 @@ class StepManiaPlugin(ArchiverPlugin):
             titles[output_path] = title
         return titles
 
+    @staticmethod
+    def _simfile_tag(text: str, tag: str) -> str:
+        """First ``#TAG:value;`` value in an SM/SSC file, or ``""``.
+
+        Captures up to the first ``;`` or line end, so CRLF files and the
+        optional trailing semicolon do not leak into the value.
+        """
+        match = re.search(
+            rf"^#{re.escape(tag)}:([^;\r\n]*)",
+            text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        return match.group(1).strip() if match else ""
+
+    def _build_pack_manifest(
+        self,
+        zip_path: Path,
+        candidate: PackCandidate,
+        settings: StepManiaSettings,
+    ) -> Optional[Dict[str, Any]]:
+        """Describe a pack ZIP as a FeetOnFire ``stepmania-pack`` manifest.
+
+        The manifest is advisory: FeetOnFire lists these songs but always
+        imports the full ZIP. Returns ``None`` when the archive cannot be
+        read, so the upload still proceeds as a plain ZIP record.
+        """
+        songs: List[Dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                for info in archive.infolist():
+                    if info.is_dir() or info.filename.endswith("/"):
+                        continue
+                    parts = PurePosixPath(info.filename.replace("\\", "/")).parts
+                    if parts and parts[0].lower() == "__macosx":
+                        continue
+                    if Path(info.filename).suffix.lower() not in (".sm", ".ssc"):
+                        continue
+                    if len(songs) >= settings.pack_manifest_max_songs:
+                        break
+                    if info.file_size > _MANIFEST_ENTRY_MAX_BYTES:
+                        continue
+                    try:
+                        with archive.open(info) as handle:
+                            raw = handle.read(_MANIFEST_ENTRY_MAX_BYTES + 1)
+                    except (OSError, zipfile.BadZipFile):
+                        continue
+                    text = raw.decode("utf-8", errors="replace")
+                    title = self._simfile_tag(text, "TITLE")
+                    artist = self._simfile_tag(text, "ARTIST")
+                    if not title and not artist:
+                        continue
+                    key = (title.lower(), artist.lower())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    songs.append(
+                        {
+                            "title": title or Path(info.filename).stem,
+                            "artist": artist,
+                        }
+                    )
+        except (OSError, zipfile.BadZipFile) as exc:
+            logger.warning("Could not build StepMania manifest for %s: %s", zip_path, exc)
+            return None
+
+        return {
+            "kind": DANCE_MANIFEST_KIND,
+            "version": DANCE_MANIFEST_VERSION,
+            "album": candidate.name,
+            "sample": True,
+            "songs": songs,
+        }
+
     def _result_metadata(
         self,
         source: MediaSource,
@@ -838,14 +944,24 @@ class StepManiaPlugin(ArchiverPlugin):
         output_titles: Dict[str, str],
         *,
         already_archived: bool = False,
+        extra_pipeline_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         metadata: Dict[str, Any] = dict(source.metadata or {})
-        pipeline_options = {
+        pipeline_options: Dict[str, Any] = {
             "generic_files_enabled": True,
             "generic_file_accept": list(settings.generic_file_accept),
             "generic_file_reject": list(settings.generic_file_reject),
             **settings.pipeline_options,
         }
+        for key, value in (extra_pipeline_options or {}).items():
+            if (
+                key == "arkiv_payload_extra"
+                and isinstance(value, dict)
+                and isinstance(pipeline_options.get(key), dict)
+            ):
+                pipeline_options[key] = {**pipeline_options[key], **value}
+            else:
+                pipeline_options[key] = value
         metadata.update(
             {
                 "output_paths": list(output_paths),
@@ -881,6 +997,15 @@ class StepManiaPlugin(ArchiverPlugin):
 
         if paths:
             file_size = sum(Path(path).stat().st_size for path in paths if Path(path).exists())
+            manifest = marker.get("manifest")
+            if not isinstance(manifest, dict) and settings.upload_as_pack:
+                manifest = self._build_pack_manifest(Path(paths[0]), candidate, settings)
+            extra_pipeline = None
+            if isinstance(manifest, dict):
+                extra_pipeline = {
+                    "arkiv_grp": "haven.file.full",
+                    "arkiv_payload_extra": {"dance": manifest},
+                }
             return ArchiveResult(
                 success=True,
                 output_path=paths[0],
@@ -892,6 +1017,7 @@ class StepManiaPlugin(ArchiverPlugin):
                     paths,
                     {str(k): str(v) for k, v in titles.items() if str(k) in paths},
                     already_archived=True,
+                    extra_pipeline_options=extra_pipeline,
                 ),
             )
 

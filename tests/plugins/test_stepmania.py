@@ -1,5 +1,6 @@
 """Tests for the built-in StepMania random-selection plugin."""
 
+import json
 import random
 import zipfile
 from pathlib import Path
@@ -23,6 +24,8 @@ def test_load_settings_defaults_and_song_validation() -> None:
     assert settings.count == 1
     assert settings.unit == "pack"
     assert settings.generic_file_accept == ("*",)
+    assert settings.upload_as_pack is True
+    assert settings.pack_manifest_max_songs == 250
 
     with pytest.raises(SettingsError, match="unit = 'song' requires"):
         load_settings({"providers": ["stepmania_online"], "unit": "song"})
@@ -107,6 +110,7 @@ async def test_archive_extracts_zip_and_emits_generic_pipeline_options(
     plugin = StepManiaPlugin(
         {
             "download_dir": str(tmp_path / "stepmania"),
+            "upload_as_pack": False,
             "extract_archive": True,
             "include_extensions": [".sm", ".png"],
             "generic_file_accept": [".sm", ".png"],
@@ -157,5 +161,84 @@ async def test_archive_extracts_zip_and_emits_generic_pipeline_options(
         )
         assert marker.exists()
         assert not zip_path.exists()
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_archive_uploads_pack_zip_with_dance_manifest(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Pack mode keeps the ZIP whole and emits a FeetOnFire stepmania-pack manifest."""
+    plugin = StepManiaPlugin(
+        {
+            "download_dir": str(tmp_path / "stepmania"),
+            "upload_as_pack": True,
+        }
+    )
+    await plugin.initialize()
+    try:
+        zip_path = plugin._download_dir / ".tmp" / "pack.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.writestr(
+                "Songs/Song One/song.sm",
+                "#TITLE:Song One;\n#ARTIST:Artist A;\n#MUSIC:song.ogg;\n",
+            )
+            archive.writestr(
+                "Songs/Song Two/song.ssc",
+                "#TITLE:Song Two;\n#ARTIST:Artist B;\n#MUSIC:song2.ogg;\n",
+            )
+            archive.writestr("__MACOSX/junk.txt", "ignored")
+
+        async def fake_download(candidate, settings):
+            return zip_path
+
+        monkeypatch.setattr(plugin, "_download_zip", fake_download)
+        candidate = PackCandidate(
+            provider="stepmania_online",
+            pack_id="10458",
+            name="Sai Memes",
+            download_url="https://example.test/pack-10458.zip",
+            song_count=2,
+            size_bytes=zip_path.stat().st_size,
+        )
+        source = MediaSource(
+            source_id=candidate.source_id,
+            title=candidate.name,
+            uri=candidate.download_url,
+            media_type="stepmania",
+            metadata={"stepmania_candidate": candidate.to_dict()},
+        )
+
+        result = await plugin.archive(source)
+
+        assert result.success, result.error
+        # One ZIP output, kept whole (not deleted, not extracted).
+        assert len(result.metadata["output_paths"]) == 1
+        output = Path(result.metadata["output_paths"][0])
+        assert output.suffix == ".zip"
+        assert output.is_file()
+
+        options = result.metadata["pipeline_options"]
+        assert options["arkiv_grp"] == "haven.file.full"
+        dance = options["arkiv_payload_extra"]["dance"]
+        assert dance["kind"] == "stepmania-pack"
+        assert dance["version"] == 1
+        assert dance["album"] == "Sai Memes"
+        assert dance["sample"] is True
+        assert {(song["title"], song["artist"]) for song in dance["songs"]} == {
+            ("Song One", "Artist A"),
+            ("Song Two", "Artist B"),
+        }
+
+        marker = json.loads(
+            (
+                plugin._download_dir
+                / "stepmania_online"
+                / "Sai Memes"
+                / ".haven-stepmania.json"
+            ).read_text()
+        )
+        assert marker["manifest"]["kind"] == "stepmania-pack"
     finally:
         await plugin.shutdown()

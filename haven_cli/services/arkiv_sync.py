@@ -65,7 +65,10 @@ MEDIA_KIND_TO_GROUP: dict[str, str] = {
 _GROUP_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$")
 
 #: Upper bound on the serialized ``x`` (extra provenance) payload object.
-PAYLOAD_EXTRA_MAX_BYTES = 2048
+#: Sized for FeetOnFire ``stepmania-pack`` manifests (advisory song lists),
+#: which can run to tens of KiB for large packs. The Arkiv per-record limit
+#: (``RABDI_MAX_PAYLOAD_BYTES``) is 128 KiB, so this stays well within it.
+PAYLOAD_EXTRA_MAX_BYTES = 32 * 1024
 
 #: Haven-AOL chain variant → EIP-155 id (replaces "EthMainnet"-style strings).
 CHAIN_VARIANT_TO_EIP155: dict[str, int] = {

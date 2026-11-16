@@ -203,7 +203,11 @@ disabled_plugins = []
 # count = 1                              # Random packs per provider per discovery
 # unit = "pack"                          # "pack"; "song" requires the etterna provider
 # download_dir = "~/haven/downloads/stepmania"
-# extract_archive = true                 # Extract pack ZIPs and archive song files
+# upload_as_pack = true                  # Upload one ZIP per pack with a stepmania-pack
+#                                         # manifest (FeetOnFire social feed). Takes priority
+#                                         # over extract_archive.
+# pack_manifest_max_songs = 250          # Advisory song list cap in the manifest
+# extract_archive = true                 # (upload_as_pack=false) Extract and archive song files
 # keep_zip = false                       # Keep downloaded pack ZIPs under archives/
 # include_extensions = [".sm", ".ssc", ".dwi", ".png", ".jpg", ".ogg", ".mp3"]
 # max_download_bytes = 4294967296        # 4 GiB per pack ZIP
