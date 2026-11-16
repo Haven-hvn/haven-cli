@@ -447,10 +447,18 @@ class JSRuntimeBridge:
         self._stderr_task = asyncio.create_task(self._read_stderr_loop())
     
     async def _read_loop(self) -> None:
-        """Read and process messages from the subprocess stdout."""
+        """Read and process messages from the subprocess stdout.
+
+        stdout is reserved for JSON-RPC. Some JS dependencies log via
+        ``console.debug``/``console.log`` (which write to stdout), so a stray
+        non-JSON line is possible. We skip those without flooding the log:
+        at DEBUG volume (tens of thousands of lines per upload) logging every
+        line blocks the read loop and can stall the bridge.
+        """
         if not self._process or not self._process.stdout:
             return
-        
+
+        non_json_lines = 0
         try:
             while True:
                 line = await self._process.stdout.readline()
@@ -463,29 +471,29 @@ class JSRuntimeBridge:
                     if self._state in (RuntimeState.READY, RuntimeState.STARTING):
                         await self._handle_unexpected_exit()
                     break
-                
+
                 try:
                     decoded = line.decode().strip()
                     if not decoded:
                         continue
-                    
-                    # Check for Synapse SDK logs from underlying packages (filecoin-pin, etc.)
-                    # These are non-JSON log messages that should be captured
-                    sdk_log_tags = ('[Synapse]', '[filecoin-pin]', '[haven-js]', '[browser-shim]')
-                    if any(tag in decoded for tag in sdk_log_tags):
-                        logger.info(f"JS: {decoded}")
+
+                    # JSON-RPC messages are JSON objects (or arrays). Anything
+                    # else is a stray log line from the JS side; skip it and
+                    # only surface a throttled sample so it can't flood/block.
+                    if not (decoded.startswith('{') or decoded.startswith('[')):
+                        non_json_lines += 1
+                        if non_json_lines <= 5 or non_json_lines % 1000 == 0:
+                            logger.debug(
+                                "JS runtime non-JSON stdout line #%d: %s",
+                                non_json_lines, decoded[:200],
+                            )
                         continue
-                    
-                    # Check for other common log patterns from JS dependencies
-                    if decoded.startswith('INFO:') or decoded.startswith('DEBUG:') or decoded.startswith('WARN:') or decoded.startswith('ERROR:'):
-                        logger.info(f"JS: {decoded}")
-                        continue
-                    
+
                     # Try to handle as JSON-RPC message
                     await self._handle_message(decoded)
                 except Exception as e:
                     logger.error(f"Error handling message: {e}")
-                    
+
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -534,25 +542,34 @@ class JSRuntimeBridge:
         if not self._process or not self._process.stderr:
             return
         
+        info_lines = 0
+        debug_lines = 0
         try:
             while True:
                 line = await self._process.stderr.readline()
                 if not line:
                     break
-                
+
                 try:
                     decoded = line.decode().strip()
                     if decoded:
-                        # Log Synapse SDK messages at appropriate level
+                        # Log Synapse SDK messages at appropriate level. Throttle
+                        # the high-volume debug/info lines: a single upload can
+                        # emit thousands of them, and logging every one blocks
+                        # the loop and floods the journal.
                         if '[Synapse]' in decoded:
-                            logger.info(f"JS: {decoded}")
+                            info_lines += 1
+                            if info_lines <= 20 or info_lines % 500 == 0:
+                                logger.info(f"JS: {decoded}")
                         elif 'error' in decoded.lower() or 'ERROR' in decoded:
                             logger.error(f"JS stderr: {decoded}")
                         else:
-                            logger.debug(f"JS stderr: {decoded}")
+                            debug_lines += 1
+                            if debug_lines <= 20 or debug_lines % 1000 == 0:
+                                logger.debug(f"JS stderr: {decoded}")
                 except Exception as e:
                     logger.debug(f"Error reading stderr: {e}")
-                    
+
         except asyncio.CancelledError:
             pass
         except Exception as e:

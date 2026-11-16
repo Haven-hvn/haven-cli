@@ -296,7 +296,11 @@ function createLogger(): Logger {
     },
     debug: (msg: unknown, ...args: unknown[]) => {
       if (isDebug) {
-        console.debug('[Synapse]', msg, ...args);
+        // NOTE: Deno's console.debug/console.info write to *stdout*, which is
+        // the JSON-RPC channel to the Python bridge. Emitting logs there
+        // corrupts the stream (the bridge sees non-JSON lines) and, at high
+        // volume, can stall the upload. All logs must go to stderr.
+        console.error('[Synapse]', msg, ...args);
       }
     },
     fatal: (msg: unknown, ...args: unknown[]) => {
@@ -304,7 +308,7 @@ function createLogger(): Logger {
     },
     trace: (msg: unknown, ...args: unknown[]) => {
       if (isDebug) {
-        console.trace('[Synapse]', msg, ...args);
+        console.error('[Synapse]', msg, ...args);
       }
     },
     silent: (msg: unknown, ...args: unknown[]) => {

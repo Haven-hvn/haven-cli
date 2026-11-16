@@ -239,7 +239,11 @@ def _get_deno_args(
     ]
 
     if debug:
-        args.append("--inspect")
+        # Use an ephemeral port (0) so a bridge restart can never fail with
+        # "Address already in use" while the previous inspector socket is in
+        # TIME_WAIT. The inspector is only for humans; the Python bridge talks
+        # to Deno over stdio, so the specific port is irrelevant.
+        args.append("--inspect=0")
 
     args.append(str(entry_point))
 

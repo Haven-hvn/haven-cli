@@ -34,7 +34,9 @@ class TestDenoOnlyRuntime:
         args = discovery.get_runtime_args(
             "/usr/local/bin/deno", Path("js-services/main.ts"), debug=True
         )
-        assert "--inspect" in args
+        # Debug mode enables the inspector on an ephemeral port (--inspect=0)
+        # so a bridge restart can't collide with a lingering socket.
+        assert any(a == "--inspect" or a.startswith("--inspect=") for a in args)
 
     @pytest.mark.parametrize("exe", ["/usr/bin/node", "/usr/bin/nodejs", "/usr/bin/bun"])
     def test_non_deno_rejected(self, exe):

@@ -5,6 +5,10 @@
  * to the Python CLI via stdio.
  */
 
+// stdout is reserved for the JSON-RPC protocol. Install the guard before any
+// other import so dependency logging can never corrupt the stream.
+import './stdout-guard.ts';
+import { writeRpc } from './stdout-guard.ts';
 // Install browser shim FIRST before any other imports
 import { installBrowserShim } from './browser-shim.ts';
 installBrowserShim();
@@ -121,7 +125,23 @@ function extractBalanceInfo(error: unknown): { available?: string; required?: st
 }
 
 function sendResponse(response: JSONRPCResponse): void {
-  console.log(stringifyForRpc(response));
+  try {
+    writeRpc(stringifyForRpc(response));
+  } catch (err) {
+    // Last-resort guard: if the result cannot be serialized, still answer with
+    // the same request id so the Python bridge can match it instead of waiting
+    // forever for a response that never comes.
+    const id = (response as { id?: string | number | null }).id ?? null;
+    try {
+      writeRpc(JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32603, message: `Failed to serialize response: ${String(err)}` },
+      }));
+    } catch {
+      console.error('[haven-js] Failed to serialize error response:', err);
+    }
+  }
 }
 
 function sendNotification(method: string, params?: unknown): void {
@@ -130,7 +150,13 @@ function sendNotification(method: string, params?: unknown): void {
     method,
     params: params as Record<string, unknown>,
   };
-  console.log(stringifyForRpc(notification));
+  try {
+    writeRpc(stringifyForRpc(notification));
+  } catch (err) {
+    // A failed notification (e.g. non-serializable progress payload) must never
+    // propagate into the SDK callback and abort the upload.
+    console.error('[haven-js] Failed to serialize notification:', err);
+  }
 }
 
 // ============================================================================
@@ -359,14 +385,19 @@ async function main(): Promise<void> {
 
         if (!line) continue;
 
+        let requestId: string | number | null = null;
         try {
           const request = JSON.parse(line) as JSONRPCRequest;
+          requestId = request.id ?? null;
           await handleRequest(request);
         } catch (parseError) {
-          // Send parse error response
+          // Send parse error response. Use the parsed request id when we have
+          // one (e.g. a handler threw after the request was parsed) so the
+          // Python bridge can match the error to its pending future instead of
+          // waiting forever for a response with id=null.
           sendResponse(
             createErrorResponse(
-              null,
+              requestId,
               ErrorCodes.PARSE_ERROR,
               'Parse error',
               parseError instanceof Error ? parseError.message : String(parseError)
