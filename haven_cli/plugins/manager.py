@@ -16,7 +16,12 @@ from haven_cli.plugins.base import (
 )
 
 # Built-in plugins
-from haven_cli.plugins.builtin import BitTorrentPlugin, WebVideoPlugin, YouTubePlugin
+from haven_cli.plugins.builtin import (
+    BitTorrentPlugin,
+    StepManiaPlugin,
+    WebVideoPlugin,
+    YouTubePlugin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +393,13 @@ class PluginManager:
             logger.debug("Loaded built-in plugin: WebVideoPlugin")
         except Exception as e:
             logger.warning(f"Failed to load WebVideoPlugin: {e}")
+
+        # Register StepMania plugin
+        try:
+            self.register(StepManiaPlugin)
+            logger.debug("Loaded built-in plugin: StepManiaPlugin")
+        except Exception as e:
+            logger.warning(f"Failed to load StepManiaPlugin: {e}")
     
     async def load_builtin_plugins(self) -> Dict[str, bool]:
         """Load and initialize all built-in plugins.

@@ -197,6 +197,36 @@ disabled_plugins = []
 # metadata_retries = 5                   # Number of retry attempts for metadata fetch
 # max_connections = 50                   # Max peer connections per torrent
 
+# StepMania plugin settings
+# [plugins.settings.StepManiaPlugin]
+# providers = ["stepmania_online"]       # "etterna", "stepmania_online", or both
+# count = 1                              # Random packs per provider per discovery
+# unit = "pack"                          # "pack"; "song" requires the etterna provider
+# download_dir = "~/haven/downloads/stepmania"
+# extract_archive = true                 # Extract pack ZIPs and archive song files
+# keep_zip = false                       # Keep downloaded pack ZIPs under archives/
+# include_extensions = [".sm", ".ssc", ".dwi", ".png", ".jpg", ".ogg", ".mp3"]
+# max_download_bytes = 4294967296        # 4 GiB per pack ZIP
+# max_extracted_bytes = 8589934592       # 8 GiB extracted per pack
+# max_files_per_pack = 5000
+# etterna_min_overall = 18.0             # Optional Etterna MSD pack filter
+# etterna_max_overall = 22.0
+# etterna_tags = ["4k", "keyboard"]      # All listed tags must be present
+# etterna_exclude_nsfw = true
+# smo_pack_types = ["kb"]                # Optional SMO PackType filter
+# smo_min_version = "Stepmania 5"
+# smo_max_version = ""
+# smo_min_size_bytes = 0
+# smo_max_size_bytes = 0
+# pipeline_options = { vlm_enabled = false }
+#
+# Job options (haven jobs create --option):
+#   stepmania_provider=etterna
+#   stepmania_providers=etterna,stepmania_online
+#   stepmania_count=2
+#   stepmania_unit=pack
+#   stepmania_seed=12345
+
 # ============================================================================
 # JavaScript Runtime Configuration
 # ============================================================================
