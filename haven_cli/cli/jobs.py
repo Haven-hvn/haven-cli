@@ -413,6 +413,11 @@ def run_job(
     async def execute() -> None:
         # Initialize JS Bridge for blockchain operations
         config = get_config()
+        # The module-level scheduler singleton is created without config.
+        # Without this, JobExecutor sees an empty config and falls back to
+        # defaults (encrypt=True, sync=False), ignoring config.toml. Mirror
+        # the daemon, which passes config into JobScheduler at construction.
+        scheduler._config = config.__dict__
         try:
             debug_mode = (
                 os.environ.get("DEBUG") == "1"
@@ -484,6 +489,16 @@ def run_job(
         
         try:
             result = await scheduler.run_job_now(job.job_id)
+            # Job execution enqueues pipeline uploads as fire-and-forget
+            # tasks so the daemon isn't blocked by long uploads. A one-shot
+            # CLI run must wait for them before shutting down the JS bridge,
+            # otherwise uploads are killed mid-flight ("Runtime stopped").
+            pending = scheduler.pending_pipeline_task_count()
+            if pending:
+                console.print(
+                    f"[dim]Waiting for {pending} pipeline task(s) to finish...[/dim]"
+                )
+                await scheduler.wait_for_pending_pipeline_tasks()
         finally:
             # Stop flush loop and drain remaining
             if flush_task is not None:

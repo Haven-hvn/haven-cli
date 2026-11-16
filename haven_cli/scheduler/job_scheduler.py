@@ -238,6 +238,9 @@ class JobScheduler:
         self._pipeline_manager = pipeline_manager
         self._config = config or {}
         self._accumulator = accumulator
+        # Executor from the most recent job run. Kept so one-shot CLI runs
+        # can await its fire-and-forget pipeline tasks before shutting down.
+        self._last_executor: Optional[Any] = None
         self._jobs: Dict[UUID, RecurringJob] = {}
         self._scheduler: Optional[AsyncIOScheduler] = None
         self._running = False
@@ -460,6 +463,42 @@ class JobScheduler:
         self._record_execution(result, plugin_name=job.plugin_name)
         
         return result
+
+    def pending_pipeline_task_count(self) -> int:
+        """Number of fire-and-forget pipeline tasks still running.
+
+        Job execution enqueues pipeline work as background tasks so the
+        daemon is not blocked by long uploads. One-shot CLI runs need this
+        to know whether anything is still in flight.
+        """
+        executor = self._last_executor
+        if executor is None:
+            return 0
+        return sum(
+            1 for t in getattr(executor, "_active_tasks", ()) if not t.done()
+        )
+
+    async def wait_for_pending_pipeline_tasks(
+        self, timeout: Optional[float] = None
+    ) -> None:
+        """Await background pipeline tasks from the most recent job run.
+
+        The daemon relies on the process staying alive to finish these
+        tasks; a one-shot ``haven jobs run`` must await them explicitly, or
+        the event loop shuts down and kills uploads mid-flight.
+        """
+        executor = self._last_executor
+        if executor is None:
+            return
+        tasks = [
+            t for t in getattr(executor, "_active_tasks", ()) if not t.done()
+        ]
+        if not tasks:
+            return
+        if timeout is not None:
+            await asyncio.wait(tasks, timeout=timeout)
+        else:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def start(self) -> None:
         """Start the scheduler.
@@ -838,6 +877,7 @@ class JobScheduler:
                 config=self._config,
                 accumulator=self._accumulator,
             )
+            self._last_executor = executor
 
             # Execute job
             result = await executor.execute(job)
