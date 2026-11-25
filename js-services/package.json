@@ -10,11 +10,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@filoz/synapse-core": "0.11.0",
-    "@filoz/synapse-sdk": "2.0.2",
+    "@filoz/synapse-core": "0.11.1",
+    "@filoz/synapse-sdk": "3.0.1",
     "ethers": "6.17.0",
     "filecoin-pin": "2.3.0",
     "multiformats": "14.0.5",
-    "viem": "2.57.17"
+    "viem": "2.58.6"
   }
 }
