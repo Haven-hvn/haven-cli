@@ -14,7 +14,10 @@ import {
 import { createUnixfsCarBuilder } from 'filecoin-pin/core/unixfs';
 import {
   buildSingleBlockCar,
+  buildSingleBlockCarPrefix,
   encodeVarint,
+  hashFileSha256,
+  openSingleBlockCarStream,
   packSingleBlockCar,
   removeSingleBlockCar,
   sha256Reference,
@@ -155,4 +158,53 @@ Deno.test('oversize files are rejected (fall back to chunked builder)', async ()
 
 Deno.test('missing path is not single-block eligible', async () => {
   assertEquals(await shouldPackSingleBlock('/nonexistent/haven-xyz-123'), false);
+});
+
+Deno.test('openSingleBlockCarStream matches packSingleBlockCar byte-for-byte with bounded chunks', async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = `${dir}/streamed.bin`;
+    const data = new Uint8Array(600_000);
+    fillPseudoRandom(data, 0xabcdef01);
+    await Deno.writeFile(path, data);
+
+    const { digest, size } = await hashFileSha256(path, 64 * 1024);
+    assertEquals(size, data.length);
+    const { prefix, rootCid, carByteLength } = buildSingleBlockCarPrefix(digest, size);
+    const packed = await packSingleBlockCar(data);
+    assertEquals(rootCid, packed.rootCid);
+    assertEquals(carByteLength, packed.carBytes.length);
+
+    const { stream, close } = openSingleBlockCarStream(path, prefix, {
+      chunkSize: 64 * 1024,
+      expectedDataLength: size,
+    });
+    try {
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let maxChunk = 0;
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        total += value.byteLength;
+        if (value.byteLength > maxChunk) maxChunk = value.byteLength;
+      }
+      assertEquals(total, carByteLength);
+      assert(maxChunk <= 64 * 1024, `expected chunk <= 64 KiB, got ${maxChunk}`);
+      assert(chunks.length > 2, 'expected multiple chunks');
+      const merged = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) {
+        merged.set(c, off);
+        off += c.byteLength;
+      }
+      assertEquals(merged, packed.carBytes);
+    } finally {
+      close();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

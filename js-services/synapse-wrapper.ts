@@ -55,6 +55,9 @@ import {
 } from './car_stream.ts';
 import {
   buildSingleBlockCar,
+  buildSingleBlockCarPrefix,
+  hashFileSha256,
+  openSingleBlockCarStream,
   removeSingleBlockCar,
   shouldPackSingleBlock,
 } from './single-block-car.ts';
@@ -726,6 +729,68 @@ class SynapseWrapperImpl implements SynapseWrapper {
    * the standard chunked UnixFS builder. The result's `dispose` deletes the
    * temp CAR (or runs the builder cleanup) — callers must always call it.
    */
+  /**
+   * Prepare a CAR stream source for upload without materializing a temp CAR
+   * file for single-block inputs. Single-block files stream their ~100 B CARv1
+   * prefix + raw file chunks straight from disk; larger files fall back to the
+   * chunked UnixFS builder.
+   */
+  private async prepareCarForUpload(
+    filePath: string,
+    createCarOptions: CreateCarOptions
+  ): Promise<{
+    rootCid: string;
+    carByteLength: number;
+    sourceLabel: string;
+    openStream: () => Promise<{ stream: ReadableStream<Uint8Array>; close: () => void }>;
+    dispose: () => Promise<void>;
+  }> {
+    if (await shouldPackSingleBlock(filePath)) {
+      console.error(`[synapse-wrapper] single-block CAR stream (no temp file): ${filePath}`);
+      const { digest, size } = await hashFileSha256(filePath);
+      const { prefix, rootCid, carByteLength } = buildSingleBlockCarPrefix(digest, size);
+      return {
+        rootCid,
+        carByteLength,
+        sourceLabel: `stream:${filePath}`,
+        openStream: async () =>
+          openSingleBlockCarStream(filePath, prefix, { expectedDataLength: size }),
+        dispose: async () => {},
+      };
+    }
+    const unixfsCarBuilder = createUnixfsCarBuilder();
+    const carBuildResult: CarBuildResult = await unixfsCarBuilder.buildCar(
+      filePath,
+      createCarOptions
+    );
+    const carByteLength = await carFileByteLength(carBuildResult.carPath);
+    return {
+      rootCid: carBuildResult.rootCid.toString(),
+      carByteLength,
+      sourceLabel: carBuildResult.carPath,
+      openStream: async () => {
+        const { handle, stream } = await openCarReadableStream(carBuildResult.carPath);
+        return {
+          stream,
+          close: () => {
+            try {
+              handle.close();
+            } catch {
+              // Ignore close errors (e.g. already closed)
+            }
+          },
+        };
+      },
+      dispose: async () => {
+        try {
+          await unixfsCarBuilder.cleanup(carBuildResult.carPath, this._logger);
+        } catch {
+          // Ignore cleanup errors
+        }
+      },
+    };
+  }
+
   private async buildCarSmart(
     filePath: string,
     createCarOptions: CreateCarOptions
@@ -835,13 +900,12 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 10,
       });
 
-      // Create CAR file (single-block for small files, chunked UnixFS above)
+      // Prepare CAR stream (zero-temp-file single-block stream for small files, chunked UnixFS above)
       const createCarOptions: CreateCarOptions = {
         logger: this._logger,
       };
 
-      const carBuild = await this.buildCarSmart(filePath, createCarOptions);
-      const carBuildResult = { carPath: carBuild.carPath, rootCid: carBuild.rootCid };
+      const carBuild = await this.prepareCarForUpload(filePath, createCarOptions);
 
       onProgress?.({
         bytesUploaded: 0,
@@ -849,10 +913,10 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 20,
       });
 
-      // CAR byte length for readiness / payment (stat before streaming — no full-file buffer)
-      console.error('[synapse-wrapper] CAR path for upload stream:', carBuildResult.carPath);
-      const carFileSize = await carFileByteLength(carBuildResult.carPath);
-      console.error('[synapse-wrapper] CAR file size (stat):', carFileSize);
+      // CAR byte length for readiness / payment (exact length before streaming — no full-file buffer)
+      console.error('[synapse-wrapper] CAR source for upload stream:', carBuild.sourceLabel);
+      const carFileSize = carBuild.carByteLength;
+      console.error('[synapse-wrapper] CAR byte length:', carFileSize);
 
       onProgress?.({
         bytesUploaded: 0,
@@ -938,23 +1002,26 @@ class SynapseWrapperImpl implements SynapseWrapper {
         percentage: 35,
       });
 
-      const rootCidString = carBuildResult.rootCid.toString();
+      const rootCidString = carBuild.rootCid.toString();
       const rootCid = CID.parse(rootCidString);
 
-      const uploadResult = await this._executeUploadWithTimeout(
-        synapse,
-        carBuildResult.carPath,
-        carFileSize,
-        rootCid,
-        filePath,
-        onProgress,
-        3,
-        18000000,
-        reuseDataSetId
-      );
-
-      // Clean up CAR file
-      await carBuild.dispose();
+      let uploadResult: UploadExecutionResult;
+      try {
+        uploadResult = await this._executeUploadWithTimeout(
+          synapse,
+          carBuild.openStream,
+          carFileSize,
+          rootCid,
+          filePath,
+          onProgress,
+          3,
+          18000000,
+          reuseDataSetId
+        );
+      } finally {
+        // Clean up temp CAR file if one was created (no-op for streaming single-block)
+        await carBuild.dispose();
+      }
 
       onProgress?.({
         bytesUploaded: carFileSize,
@@ -1074,7 +1141,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
    */
   private async _executeUploadWithTimeout(
     synapse: Synapse,
-    carPath: string,
+    openStream: () => Promise<{ stream: ReadableStream<Uint8Array>; close: () => void }>,
     carByteLength: number,
     rootCid: CID,
     filePath: string,
@@ -1086,7 +1153,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
     let lastError: Error | null = null;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const { handle, stream } = await openCarReadableStream(carPath);
+      const { stream, close } = await openStream();
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
         this._logger.info(`Upload attempt ${attempt}/${maxRetries} for ${filePath}`);
@@ -1233,11 +1300,7 @@ class SynapseWrapperImpl implements SynapseWrapper {
           throw error;
         }
       } finally {
-        try {
-          handle.close();
-        } catch {
-          // Ignore close errors (e.g. already closed)
-        }
+        close();
         if (timeoutId !== undefined) clearTimeout(timeoutId);
       }
     }
@@ -1424,6 +1487,12 @@ class SynapseWrapperImpl implements SynapseWrapper {
     };
 
     try {
+      if (await shouldPackSingleBlock(filePath)) {
+        const { digest, size } = await hashFileSha256(filePath);
+        const { rootCid } = buildSingleBlockCarPrefix(digest, size);
+        return { cid: rootCid };
+      }
+
       const carBuild = await this.buildCarSmart(filePath, createCarOptions);
 
       // Clean up the CAR file immediately (we just wanted the CID)

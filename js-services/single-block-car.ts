@@ -17,15 +17,35 @@
  * piece limits) and rely on readers that reassemble multi-block CARs.
  */
 
+import { createHash } from 'node:crypto';
 import { CID } from 'multiformats/cid';
 
 /** Files at or under this size pack as one raw block. */
 export const SINGLE_BLOCK_THRESHOLD_BYTES = 32 * 1024 * 1024;
 
+/** Default chunk size (256 KiB) for streaming SHA-256 hashing and CAR reads. */
+export const DEFAULT_STREAM_CHUNK_BYTES = 256 * 1024;
+
 export interface SingleBlockCarResult {
   carPath: string;
   /** Base32 CIDv1 string (raw codec, sha2-256). */
   rootCid: string;
+}
+
+export interface FileSha256Result {
+  /** Raw 32-byte SHA-256 digest. */
+  digest: Uint8Array;
+  /** Exact byte length of the hashed file. */
+  size: number;
+}
+
+export interface SingleBlockCarPrefix {
+  /** CARv1 prefix bytes: headerLen || headerBody || blockLen || cidBytes (~96–101 B). */
+  prefix: Uint8Array;
+  /** Base32 CIDv1 string (raw codec, sha2-256). */
+  rootCid: string;
+  /** Exact total CAR byte length (`prefix.length + dataLength`). */
+  carByteLength: number;
 }
 
 /** True when the file at *filePath* qualifies for single-block packing. */
@@ -56,14 +76,62 @@ export function encodeVarint(value: number): Uint8Array {
 }
 
 /**
- * Pack already-loaded *data* as a single-raw-block CARv1.
- * Returns the CAR bytes and the root CID string.
+ * Stream a file through SHA-256 without buffering it in RAM.
+ * Verifies the streamed byte count matches `Deno.stat(filePath).size`.
  */
-export async function packSingleBlockCar(
-  data: Uint8Array,
-): Promise<{ carBytes: Uint8Array; rootCid: string }> {
-  const bytes = Uint8Array.from(data);
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes.buffer));
+export async function hashFileSha256(
+  filePath: string,
+  chunkSize = DEFAULT_STREAM_CHUNK_BYTES,
+): Promise<FileSha256Result> {
+  const st = await Deno.stat(filePath);
+  if (!st.isFile) {
+    throw new Error(`hashFileSha256: not a regular file: ${filePath}`);
+  }
+  const hash = createHash('sha256');
+  const file = await Deno.open(filePath, { read: true });
+  const buf = new Uint8Array(chunkSize);
+  let size = 0;
+  try {
+    while (true) {
+      const n = await file.read(buf);
+      if (n === null) break;
+      hash.update(buf.subarray(0, n));
+      size += n;
+    }
+  } finally {
+    try {
+      file.close();
+    } catch {
+      // ignore close errors
+    }
+  }
+  if (size !== st.size) {
+    throw new Error(
+      `hashFileSha256: file ${filePath} changed size while hashing (stat=${st.size}, read=${size})`,
+    );
+  }
+  const raw = hash.digest();
+  return {
+    digest: new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength),
+    size,
+  };
+}
+
+/**
+ * Build the ~96–101 byte CARv1 prefix (`headerLen || headerBody || blockLen || cidBytes`)
+ * and root CID from a precomputed 32-byte SHA-256 digest and payload byte length,
+ * without touching or copying the payload bytes.
+ */
+export function buildSingleBlockCarPrefix(
+  digest: Uint8Array,
+  dataLength: number,
+): SingleBlockCarPrefix {
+  if (digest.length !== 32) {
+    throw new Error(`buildSingleBlockCarPrefix: expected 32-byte sha256 digest, got ${digest.length}`);
+  }
+  if (!Number.isSafeInteger(dataLength) || dataLength < 0) {
+    throw new Error(`buildSingleBlockCarPrefix: expected non-negative safe integer dataLength, got ${dataLength}`);
+  }
   // CIDv1 bytes: 0x01 (version) 0x55 (raw) 0x12 0x20 (sha2-256, 32 B) + digest.
   const cidBytes = new Uint8Array(4 + digest.length);
   cidBytes.set([0x01, 0x55, 0x12, 0x20], 0);
@@ -78,25 +146,119 @@ export async function packSingleBlockCar(
   headerBody.set(HEADER_SUFFIX, HEADER_PREFIX.length + digest.length);
 
   const headerLen = encodeVarint(headerBody.length);
-  const blockLen = encodeVarint(cidBytes.length + data.length);
-  const carBytes = new Uint8Array(
-    headerLen.length + headerBody.length + blockLen.length + cidBytes.length + data.length,
+  const blockLen = encodeVarint(cidBytes.length + dataLength);
+  const prefix = new Uint8Array(
+    headerLen.length + headerBody.length + blockLen.length + cidBytes.length,
   );
   let o = 0;
-  carBytes.set(headerLen, o);
+  prefix.set(headerLen, o);
   o += headerLen.length;
-  carBytes.set(headerBody, o);
+  prefix.set(headerBody, o);
   o += headerBody.length;
-  carBytes.set(blockLen, o);
+  prefix.set(blockLen, o);
   o += blockLen.length;
-  carBytes.set(cidBytes, o);
-  o += cidBytes.length;
-  carBytes.set(data, o);
+  prefix.set(cidBytes, o);
+
+  return {
+    prefix,
+    rootCid,
+    carByteLength: prefix.length + dataLength,
+  };
+}
+
+/**
+ * Open a zero-temp-file Web `ReadableStream<Uint8Array>` that emits the
+ * single-block CARv1 prefix followed by chunks streamed directly from `filePath`.
+ *
+ * Peak heap is O(chunkSize); the file handle is opened lazily after the prefix
+ * is pulled and closed cleanly on completion, cancel, error, or explicit `close()`.
+ */
+export function openSingleBlockCarStream(
+  filePath: string,
+  prefix: Uint8Array,
+  opts?: { chunkSize?: number; expectedDataLength?: number },
+): { stream: ReadableStream<Uint8Array>; close: () => void } {
+  const chunkSize = opts?.chunkSize ?? DEFAULT_STREAM_CHUNK_BYTES;
+  let prefixSent = false;
+  let dataBytesStreamed = 0;
+  let file: Deno.FsFile | null = null;
+  let closed = false;
+
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    if (file !== null) {
+      const f = file;
+      file = null;
+      try {
+        f.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!prefixSent) {
+        prefixSent = true;
+        controller.enqueue(prefix);
+        return;
+      }
+      try {
+        if (file === null) {
+          file = await Deno.open(filePath, { read: true });
+        }
+        const chunk = new Uint8Array(chunkSize);
+        const n = await file.read(chunk);
+        if (n === null) {
+          if (opts?.expectedDataLength !== undefined && dataBytesStreamed !== opts.expectedDataLength) {
+            const err = new Error(
+              `openSingleBlockCarStream: file ${filePath} changed size during upload ` +
+                `(expected ${opts.expectedDataLength} bytes, streamed ${dataBytesStreamed})`,
+            );
+            close();
+            controller.error(err);
+            return;
+          }
+          close();
+          controller.close();
+        } else {
+          dataBytesStreamed += n;
+          controller.enqueue(n === chunk.length ? chunk : chunk.subarray(0, n));
+        }
+      } catch (err) {
+        close();
+        controller.error(err);
+      }
+    },
+    cancel() {
+      close();
+    },
+  });
+
+  return { stream, close };
+}
+
+/**
+ * Pack already-loaded *data* as a single-raw-block CARv1.
+ * Returns the CAR bytes and the root CID string.
+ */
+export async function packSingleBlockCar(
+  data: Uint8Array,
+): Promise<{ carBytes: Uint8Array; rootCid: string }> {
+  const bytes = Uint8Array.from(data);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes.buffer));
+  const { prefix, rootCid, carByteLength } = buildSingleBlockCarPrefix(digest, data.length);
+  const carBytes = new Uint8Array(carByteLength);
+  carBytes.set(prefix, 0);
+  carBytes.set(data, prefix.length);
   return { carBytes, rootCid };
 }
 
 /**
- * Build a single-block CAR for the file at *filePath*.
+ * Build a single-block CAR file on disk for the file at *filePath* by streaming
+ * the prefix and file chunks (bounded memory, never reads the whole file into RAM).
  * Throws when the file is missing, not a regular file, or over the threshold
  * (callers must fall back to the chunked UnixFS builder in that case).
  */
@@ -111,16 +273,54 @@ export async function buildSingleBlockCar(filePath: string): Promise<SingleBlock
         `${SINGLE_BLOCK_THRESHOLD_BYTES} B: ${filePath}`,
     );
   }
-  const data = await Deno.readFile(filePath);
-  const { carBytes, rootCid } = await packSingleBlockCar(data);
+  const { digest, size } = await hashFileSha256(filePath);
+  const { prefix, rootCid } = buildSingleBlockCarPrefix(digest, size);
   const carPath = await Deno.makeTempFile({ prefix: 'haven-single-block-', suffix: '.car' });
+  const out = await Deno.open(carPath, { write: true, create: true, truncate: true });
+  const src = await Deno.open(filePath, { read: true });
   try {
-    await Deno.writeFile(carPath, carBytes);
+    await writeAll(out, prefix);
+    const buf = new Uint8Array(DEFAULT_STREAM_CHUNK_BYTES);
+    let copied = 0;
+    while (true) {
+      const n = await src.read(buf);
+      if (n === null) break;
+      await writeAll(out, buf.subarray(0, n));
+      copied += n;
+    }
+    if (copied !== size) {
+      throw new Error(
+        `buildSingleBlockCar: file ${filePath} changed size while writing CAR (expected ${size}, copied ${copied})`,
+      );
+    }
   } catch (error) {
+    try {
+      out.close();
+    } catch {
+      /* ignore */
+    }
     await Deno.remove(carPath).catch(() => {});
     throw error;
+  } finally {
+    try {
+      src.close();
+    } catch {
+      /* ignore */
+    }
+    try {
+      out.close();
+    } catch {
+      /* ignore */
+    }
   }
   return { carPath, rootCid };
+}
+
+async function writeAll(file: Deno.FsFile, bytes: Uint8Array): Promise<void> {
+  let written = 0;
+  while (written < bytes.length) {
+    written += await file.write(bytes.subarray(written));
+  }
 }
 
 /** Delete a temp CAR created by {@link buildSingleBlockCar}; never throws. */
