@@ -114,6 +114,7 @@ service : {
   getCurrentEpoch : () -> (nat) query;
   evictExpiredApprovals : (nat) -> (nat);
   getVetKDPublicKey : () -> (blob) query;
+  getVetKDPublicKeyV3 : () -> (blob) query;
   attestHolding : (AttestRequest) -> (AttestResult);
   batchAttestHolding : (MerkleAttestRequest) -> (MerkleAttestResult);
   getAttestationPublicKey : () -> (blob) query;
@@ -493,6 +494,40 @@ def get_vetkd_public_key_b64() -> str:
     response = _retry_on_transport_error(_call, context="getVetKDPublicKey")
     key_raw = _first_return_slot(response, context="getVetKDPublicKey")
     key_bytes = candid_blob_to_bytes(key_raw, context="getVetKDPublicKey")
+    return base64.b64encode(key_bytes).decode("ascii")
+
+
+def get_vetkd_public_key_v3_b64() -> str:
+    """Fetch the Haven-AOL v3 VetKD derived public key (context ``accessol_v3``) as base64.
+
+    v3 uses its own VetKD domain separation context, so v3 IBE seals must wrap
+    under ``getVetKDPublicKeyV3`` rather than the v1 ``getVetKDPublicKey``.
+    """
+    cfg = load_haven_aol_icp_config()
+    Agent, Canister, Client, Identity = _icp_sdk()
+
+    try:
+        pem = open(cfg.identity_pem_path, "r", encoding="utf-8").read()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to read ICP identity PEM at {cfg.identity_pem_path!r}"
+        ) from exc
+
+    identity = Identity.from_pem(pem)
+    if getattr(identity, "anonymous", False):
+        raise RuntimeError("Anonymous ICP identity is not allowed for Haven-AOL requests")
+
+    client = Client(url=cfg.host)
+    agent = Agent(identity, client)
+    canister = Canister(agent, HAVEN_AOL_CANISTER_ID, candid_str=HAVEN_AOL_DID)
+    verify = _icp_verify_certificate()
+
+    def _call():
+        return canister.getVetKDPublicKeyV3(verify_certificate=verify)
+
+    response = _retry_on_transport_error(_call, context="getVetKDPublicKeyV3")
+    key_raw = _first_return_slot(response, context="getVetKDPublicKeyV3")
+    key_bytes = candid_blob_to_bytes(key_raw, context="getVetKDPublicKeyV3")
     return base64.b64encode(key_bytes).decode("ascii")
 
 
