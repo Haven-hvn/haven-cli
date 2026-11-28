@@ -17,11 +17,16 @@ from rich.table import Table
 from haven_cli.config import load_config
 from haven_cli.js_runtime.manager import JSBridgeManager, js_call
 from haven_cli.js_runtime.protocol import JSRuntimeMethods
+from haven_cli.crypto.gate_metadata import (
+    GATE_METADATA_VERSION,
+    GATE_METADATA_VERSION_V3,
+)
 from haven_cli.crypto.haven_aol_local import (
     GateParams,
     derivation_threshold_from_access_condition,
     decrypt_file_streaming,
 )
+from haven_cli.crypto.haven_aol_v3 import decrypt_file_streaming_v3
 from haven_cli.services.evm_utils import normalize_haven_aol_chain
 from haven_cli.crypto import (
     EncryptionMetadata,
@@ -266,29 +271,99 @@ async def _decrypt_file(
         raise ValueError("HAVEN_ICP_IDENTITY_PEM_PATH is required for Haven-AOL ICP decryption")
 
     gate_dict = metadata.gate
-    token_address = str(gate_dict.get("tokenAddress", "")).strip()
-    if not token_address:
-        raise ValueError("Encryption metadata missing tokenAddress (gate v1)")
+    version = gate_dict.get("version")
+    if isinstance(version, bool):
+        raise ValueError(f"Unsupported gate metadata version: {version!r}")
 
-    cid_value = str(gate_dict.get("cid") or cid or "").strip()
-    if not cid_value:
-        cid_value = f"local-{input_path.name}"
+    if version == GATE_METADATA_VERSION_V3:
+        token_address = str(gate_dict.get("tokenAddress", "")).strip()
+        if not token_address:
+            raise ValueError("Encryption metadata missing tokenAddress (gate v3)")
 
-    chain_raw = str(gate_dict.get("chain", "")).strip()
-    if not chain_raw:
-        raise ValueError("Encryption metadata is missing chain (gate v1)")
+        chain_raw = str(gate_dict.get("chain", "")).strip()
+        if not chain_raw:
+            raise ValueError("Encryption metadata is missing chain (gate v3)")
 
-    try:
-        threshold = int(str(gate_dict.get("threshold", "1")))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Invalid gate threshold in encryption metadata") from exc
+        raw_threshold = gate_dict.get("threshold")
+        if raw_threshold is None or isinstance(raw_threshold, bool):
+            raise ValueError("Invalid gate threshold in encryption metadata")
+        try:
+            threshold = int(str(raw_threshold))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid gate threshold in encryption metadata") from exc
+        if threshold < 0:
+            raise ValueError("Invalid gate threshold in encryption metadata")
 
-    gate = GateParams(
-        chain=normalize_haven_aol_chain(chain_raw),
-        token_address=token_address,
-        threshold=threshold,
-        cid=cid_value,
-    )
+        raw_epoch = gate_dict.get("epoch")
+        if raw_epoch is None or isinstance(raw_epoch, bool):
+            raise ValueError("Encryption metadata is missing epoch (gate v3)")
+        try:
+            epoch = int(str(raw_epoch))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid gate epoch in encryption metadata") from exc
+        if epoch < 0:
+            raise ValueError("Invalid gate epoch in encryption metadata")
+
+        encrypted_aes_key = metadata.encrypted_aes_key.strip()
+        if not encrypted_aes_key:
+            raise ValueError("Encryption metadata missing encryptedAesKey (gate v3)")
+
+        v3_gate = {
+            **gate_dict,
+            "version": GATE_METADATA_VERSION_V3,
+            "chain": normalize_haven_aol_chain(chain_raw),
+            "tokenAddress": token_address,
+            "threshold": threshold,
+            "epoch": epoch,
+            "encryptedAesKey": encrypted_aes_key,
+        }
+
+        def _run_decrypt(target_output: Path) -> None:
+            decrypt_file_streaming_v3(
+                input_path=input_path,
+                output_path=target_output,
+                metadata=v3_gate,
+            )
+
+    elif version is None or version == GATE_METADATA_VERSION:
+        token_address = str(gate_dict.get("tokenAddress", "")).strip()
+        if not token_address:
+            raise ValueError("Encryption metadata missing tokenAddress (gate v1)")
+
+        cid_value = str(gate_dict.get("cid") or cid or "").strip()
+        if not cid_value:
+            cid_value = f"local-{input_path.name}"
+
+        chain_raw = str(gate_dict.get("chain", "")).strip()
+        if not chain_raw:
+            raise ValueError("Encryption metadata is missing chain (gate v1)")
+
+        raw_threshold = gate_dict.get("threshold", "1")
+        if isinstance(raw_threshold, bool):
+            raise ValueError("Invalid gate threshold in encryption metadata")
+        try:
+            threshold = int(str(raw_threshold))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid gate threshold in encryption metadata") from exc
+
+        gate = GateParams(
+            chain=normalize_haven_aol_chain(chain_raw),
+            token_address=token_address,
+            threshold=threshold,
+            cid=cid_value,
+        )
+
+        def _run_decrypt(target_output: Path) -> None:
+            decrypt_file_streaming(
+                input_path=input_path,
+                output_path=target_output,
+                private_key="",
+                encrypted_key_b64=metadata.encrypted_aes_key,
+                gate=gate,
+            )
+
+    else:
+        raise ValueError(f"Unsupported gate metadata version: {version!r}")
 
     if input_path.resolve() == output_path.resolve():
         with tempfile.NamedTemporaryFile(
@@ -298,25 +373,13 @@ async def _decrypt_file(
         ) as tmp_file:
             temp_output_path = Path(tmp_file.name)
         try:
-            decrypt_file_streaming(
-                input_path=input_path,
-                output_path=temp_output_path,
-                private_key="",
-                encrypted_key_b64=metadata.encrypted_aes_key,
-                gate=gate,
-            )
+            _run_decrypt(temp_output_path)
             temp_output_path.replace(output_path)
         finally:
             if temp_output_path.exists():
                 temp_output_path.unlink()
     else:
-        decrypt_file_streaming(
-            input_path=input_path,
-            output_path=output_path,
-            private_key="",
-            encrypted_key_b64=metadata.encrypted_aes_key,
-            gate=gate,
-        )
+        _run_decrypt(output_path)
 
 
 def _format_file_size(size_bytes: int) -> str:
