@@ -49,7 +49,6 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 # and the chunk-IV helper are version-agnostic.
 from haven_cli.crypto.haven_aol_local import (
     _derive_chunk_iv,
-    _get_or_cache_derived_public_key,
     _vetkd_unwrap_aes_key,
 )
 from haven_cli.crypto.gate_key_cache import (
@@ -59,6 +58,7 @@ from haven_cli.crypto.gate_key_cache import (
 )
 from haven_cli.services.haven_aol_icp import (
     DecryptionKeyResponse,
+    get_vetkd_public_key_v3_b64,
     request_decryption_key_v3,
 )
 from haven_aol.v3 import (
@@ -74,14 +74,15 @@ logger = logging.getLogger(__name__)
 # ── Upload (encrypt) ─────────────────────────────────────────────────
 
 
-def _ibe_encrypt_aes_key_v3(aes_key: bytes, derivation_input: bytes) -> bytes:
-    """IBE-wrap an AES key using the v3 derivation input.
+_cached_derived_public_key_v3: bytes | None = None
 
-    Mirrors :func:`haven_cli.crypto.haven_aol_local._ibe_encrypt_aes_key` —
-    the underlying ``vetkd_py.ibe_encrypt`` call is identical; only the
-    32-byte ``identity_bytes`` differ (v3 uses the corpus-scoped digest,
-    v1 uses the CID-bound digest).
-    """
+
+def _get_or_cache_derived_public_key_v3() -> bytes:
+    """Return the cached v3 VetKD derived public key, fetching on first call."""
+    global _cached_derived_public_key_v3
+    if _cached_derived_public_key_v3 is not None:
+        return _cached_derived_public_key_v3
+
     try:
         import vetkd_py
     except ImportError as exc:
@@ -90,7 +91,25 @@ def _ibe_encrypt_aes_key_v3(aes_key: bytes, derivation_input: bytes) -> bytes:
             "Install it from the vetkd_py/ directory: pip install ./vetkd_py"
         ) from exc
 
-    derived_public_key = _get_or_cache_derived_public_key()
+    verification_key_b64 = get_vetkd_public_key_v3_b64()
+    verification_key_bytes = base64.b64decode(verification_key_b64)
+    derived_public_key = vetkd_py.deserialize_derived_public_key(verification_key_bytes)
+    _cached_derived_public_key_v3 = derived_public_key
+    logger.debug("VetKD v3 derived public key cached (first fetch)")
+    return derived_public_key
+
+
+def _ibe_encrypt_aes_key_v3(aes_key: bytes, derivation_input: bytes) -> bytes:
+    """IBE-wrap an AES key using the v3 derivation input and v3 derived public key."""
+    try:
+        import vetkd_py
+    except ImportError as exc:
+        raise RuntimeError(
+            "vetkd_py package is required for Haven-AOL v3 IBE encryption. "
+            "Install it from the vetkd_py/ directory: pip install ./vetkd_py"
+        ) from exc
+
+    derived_public_key = _get_or_cache_derived_public_key_v3()
     return vetkd_py.ibe_encrypt(
         derived_public_key_bytes=derived_public_key,
         identity_bytes=derivation_input,
